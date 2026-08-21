@@ -1,12 +1,15 @@
 /**
- * TracePanel — the live trace of one assistant turn: the graph steps, every tool call
- * and its one outcome, in the order the stream produced them. The panel IS the transport
- * (ADR 0012), not a replay: each step appears as its event arrives.
+ * TracePanel — the trace of one assistant turn: the graph steps, every tool call and its one
+ * outcome, in the order they happened. For a live turn the panel IS the transport (ADR 0012) and
+ * each step appears as its event arrives; for a turn read back from the server it holds the tool
+ * evidence that was stored (ADR 0012 as amended), which is the same items minus the thinking.
  *
- * Collapsible, expanded while the turn streams and left as the reader puts it afterwards
- * (the disclosure is KB's `Collapsible`: a chevron, a caps label and a count chip). Each
- * item is one `TraceStep`; a call carries its arguments, then its result, its retry or
- * its refusal, so the failing statement and the reason it failed read as one card.
+ * Collapsible, and `open` is the state it starts in - expanded while a turn streams, and
+ * expanded for a replayed turn, whose evidence is the reason the panel is there at all. After
+ * that it stays where the reader put it (the disclosure is KB's `Collapsible`: a chevron, a caps
+ * label and a count chip). Each item is one `TraceStep`; a call carries its arguments, then its
+ * result, its retry or its refusal, so the failing statement and the reason it failed read as
+ * one card.
  *
  * A graph step whose node streamed reasoning shows it as that step's own disclosure, closed
  * to start with: the label the panel used to invent ("Reasoning") now opens onto the model's
@@ -49,8 +52,16 @@ const TOOL_ICONS: Record<string, string> = {
 
 const SQL_ARG = "sql";
 
-export function TracePanel({ items, streaming }: { items: TraceItem[]; streaming: boolean }) {
-  const [open, setOpen] = useState(streaming);
+export function TracePanel({
+  items,
+  streaming,
+  open: initial = streaming,
+}: {
+  items: TraceItem[];
+  streaming: boolean;
+  open?: boolean;
+}) {
+  const [open, setOpen] = useState(initial);
   if (items.length === 0) return null;
 
   return (

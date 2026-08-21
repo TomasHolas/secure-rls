@@ -24,6 +24,12 @@ holding canned exchanges per thread and recording every thread it was asked for 
 here is that the endpoint serves the transcript in order and never reads one for a thread the
 caller does not own; reconstructing it from a real checkpoint is `test_agent.py`'s job.
 
+The stored tool payloads (issue #70) are asserted end to end here rather than argued: a turn whose
+tool returned a chart spec is streamed, and the conversation is then fetched back to see that spec
+served beside the transcript, under the turn the transcript counts. The registry is real, so what
+the endpoint cannot leak is real too - a foreign fetch is the same 404 that reads nothing. The
+bounds on what is kept belong to `test_conversations.py`, which owns the store.
+
 `FakeTitler` is the titling seam (`PATCH /conversations/{id}`, ADR 0012 as amended): it answers
 with a canned title or raises like a dead endpoint, which is how "a titling failure leaves the
 thread with the title it had" is asserted without a model. What belongs here rather than in
@@ -89,6 +95,25 @@ EVENTS = (
     {"type": "done", "status": "ok", "answer": ANSWER, **USAGE},
 )
 STARTED = ({"type": "node_start", "node": "reason"}, {"type": "token", "text": "acme has"})
+CHART_SPEC = {
+    "kind": "bar",
+    "title": "Headcount by department",
+    "x_label": "department",
+    "y_label": "headcount",
+    "data": [{"x": "Engineering", "y": 12}],
+}
+PLOTTED = (
+    {"type": "node_start", "node": "execute_tool"},
+    {
+        "type": "tool_result",
+        "id": "c1",
+        "tool": "plot",
+        "content": "chart displayed to the user",
+        "data": {"chart_spec": CHART_SPEC},
+    },
+    {"type": "token", "text": ANSWER},
+    {"type": "done", "status": "ok", "answer": ANSWER, **USAGE},
+)
 # What a failing run must not put on the wire, whatever the exception carrying it says.
 SECRET_HOST = "http://ollama.internal:11434"
 INDEXED = "note index built"
@@ -107,16 +132,17 @@ PROTECTED_ROUTES = [
 
 @dataclass
 class FakeRunner:
-    """Records every turn it is asked to run and replays the canned trace events."""
+    """Records every turn it is asked to run and replays a canned trace-event sequence."""
 
     calls: list[dict[str, str]] = field(default_factory=list)
+    events: tuple[dict, ...] = EVENTS
 
     def __call__(self, *, tenant_id, thread_id, message, model):
         """Record the turn, then yield the fixed event sequence with the model echoed back."""
         self.calls.append(
             {"tenant_id": tenant_id, "thread_id": thread_id, "message": message, "model": model}
         )
-        for event in EVENTS:
+        for event in self.events:
             yield {**event, "model": model} if event["type"] == "done" else dict(event)
 
     @property
@@ -640,6 +666,91 @@ def test_get_conversation_replays_a_thread_never_chatted_in_as_empty(wiring):
     response = wiring.client.get(f"/conversations/{thread_id}", headers=headers)
     assert response.status_code == 200
     assert response.json()["messages"] == []
+    assert response.json()["tool_results"] == []
+
+
+def test_a_turns_tool_results_are_stored_and_replayed_beside_the_transcript(tmp_path):
+    """The chart a turn drew is served back with the conversation, so a reload re-renders it."""
+    transcripts = FakeTranscripts()
+    client = _client(tmp_path, chat_runner=FakeRunner(events=PLOTTED), transcript=transcripts)
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers, title=QUESTION)
+    transcripts.stored[thread_id] = list(TRANSCRIPT[:2])
+
+    client.post("/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers)
+
+    replayed = client.get(f"/conversations/{thread_id}", headers=headers).json()
+    assert replayed["messages"] == [asdict(message) for message in TRANSCRIPT[:2]]
+    assert replayed["tool_results"] == [
+        {"turn": 1, "tool": "plot", "data": {"chart_spec": CHART_SPEC}}
+    ]
+
+
+def test_stored_tool_results_are_keyed_by_the_turn_that_asked_for_them(tmp_path):
+    """One turn is one question, so the question count is what the evidence is filed under."""
+    transcripts = FakeTranscripts()
+    client = _client(tmp_path, chat_runner=FakeRunner(events=PLOTTED), transcript=transcripts)
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers, title=QUESTION)
+
+    transcripts.stored[thread_id] = list(TRANSCRIPT[:2])
+    client.post("/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers)
+    transcripts.stored[thread_id] = list(TRANSCRIPT)
+    client.post("/chat", json={"thread_id": thread_id, "message": "and in sales?"}, headers=headers)
+
+    replayed = client.get(f"/conversations/{thread_id}", headers=headers).json()["tool_results"]
+    assert [result["turn"] for result in replayed] == [1, 2]
+
+
+def test_a_turn_that_called_no_tool_stores_nothing_and_reads_no_transcript(wiring):
+    """The canned turn answers without a tool: nothing to keep, so nothing is looked up either."""
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers)
+
+    wiring.client.post("/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers)
+
+    assert wiring.transcripts.asked == []
+    replayed = wiring.client.get(f"/conversations/{thread_id}", headers=headers).json()
+    assert replayed["tool_results"] == []
+
+
+def test_a_broken_turn_stores_the_tool_results_it_did_produce(tmp_path):
+    """A turn that died after its tool ran still replays that tool's evidence (issue #66, #70)."""
+    transcripts = FakeTranscripts()
+    client = _client(tmp_path, chat_runner=BreakingRunner(PLOTTED[:2]), transcript=transcripts)
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers, title=QUESTION)
+    transcripts.stored[thread_id] = [Message(role="user", content=QUESTION)]
+
+    response = client.post(
+        "/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers
+    )
+
+    assert _sse_events(response.text)[-1]["status"] == STATUS_FAILED
+    replayed = client.get(f"/conversations/{thread_id}", headers=headers).json()["tool_results"]
+    assert [(result["turn"], result["tool"]) for result in replayed] == [(1, "plot")]
+
+
+def test_tool_results_of_a_foreign_thread_are_never_served(tmp_path):
+    """The 404 is the whole answer: no transcript, no payload, nothing about the thread at all."""
+    transcripts = FakeTranscripts()
+    client = _client(tmp_path, chat_runner=FakeRunner(events=PLOTTED), transcript=transcripts)
+    alice_headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, alice_headers, title=QUESTION)
+    client.post("/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=alice_headers)
+    transcripts.asked.clear()
+
+    bob_headers = _headers(client, BOB)
+    foreign = client.get(f"/conversations/{thread_id}", headers=bob_headers)
+    missing = client.get("/conversations/no-such-thread", headers=bob_headers)
+
+    assert foreign.status_code == missing.status_code == 404
+    assert foreign.json() == missing.json()
+    assert CHART_SPEC["title"] not in foreign.text
+    assert transcripts.asked == []
+    kept = client.get(f"/conversations/{thread_id}", headers=alice_headers).json()
+    assert len(kept["tool_results"]) == 1
+
 
 
 def test_patch_conversation_retitles_the_thread_from_its_first_exchange(wiring):

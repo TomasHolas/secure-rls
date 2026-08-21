@@ -40,6 +40,18 @@ memory silently continues. The identity check comes first and is unchanged: the 
 consulted before the checkpointer is opened, so a foreign or missing id is the same 404 and no
 transcript is read for a thread the caller may not see.
 
+Replayed tool evidence (ADR 0012 as amended). The same response carries `tool_results`, the
+server-produced payload of every `tool_result` the thread's turns produced, keyed by the turn
+whose question opened them - so a reopened thread renders its charts, its generated-versus-
+executed SQL pair and its tables through the same bricks a live turn does, instead of prose
+where a plot used to be. The evidence is collected off the `/chat` stream as it passes (`_recorded`)
+and written once the turn is over, under the turn number the transcript then reports: one turn
+is one question, so counting the questions is what aligns the evidence with the answer above it.
+A turn that broke mid-flight stores the payloads it did produce, and a storage failure is logged
+and never reaches the reader - the answer already streamed, and losing a replayable chart is not
+worth failing a turn over. What stays session-only is the thinking: the reasoning, the retries
+and the node steps are the transport of the turn that produced them and are not stored anywhere.
+
 Model selection (ADR 0005 as amended). The client never learns `OLLAMA_BASE_URL`: `/models`
 proxies the endpoint's `/api/tags`, and a client-chosen `model` on `/chat` is honored only if
 it is in that live list at request time - an allowlist over untrusted input. Absent, the
@@ -121,9 +133,12 @@ from pydantic import BaseModel
 
 from agent import (
     EVENT_DONE,
+    EVENT_TOOL_RESULT,
+    ROLE_USER,
     STATUS_FAILED,
     DoneEvent,
     Message,
+    ToolResultEvent,
     TraceEvent,
     build_agent,
     run_turn,
@@ -138,7 +153,7 @@ from auth import (
     verify_password,
     verify_token,
 )
-from conversations import ConversationRegistry, NotFound, Thread
+from conversations import ConversationRegistry, NotFound, Thread, ToolResult
 from db import DEFAULT_DB_PATH
 from rag import OllamaEmbed, ensure_index
 from runtime import runtime
@@ -227,12 +242,13 @@ class ConversationRequest(BaseModel):
 
 @dataclass(frozen=True)
 class Conversation:
-    """One thread as `GET /conversations/{id}` serves it: the registry row plus the transcript."""
+    """One thread as `GET /conversations/{id}` serves it: the row, the transcript, the evidence."""
 
     thread_id: str
     title: str
     created: str
     messages: list[Message]
+    tool_results: list[ToolResult]
 
 
 def bounded_model(base_url: str, model: str, *, reasoning: bool) -> ChatOllama:
@@ -475,14 +491,22 @@ def create_app(
         identity: Annotated[Identity, Depends(_identity)],
         response: Response,
     ) -> StreamingResponse:
-        """Stream one turn as SSE; the thread must belong to the token's identity."""
+        """Stream one turn as SSE; the thread must belong to the token's identity.
+
+        The turn's tool payloads are kept for replay on the way past (ADR 0012 as amended). The
+        recording sits between the runner and the SSE framing, so the frames on the wire are
+        exactly what the agent yielded and a storage failure cannot change a single one of them.
+        """
         threads.get_thread(identity, body.thread_id)
         model = _resolve_model(body.model, list_models)
-        events = run_chat(
-            tenant_id=identity.tenant_id,
-            thread_id=body.thread_id,
-            message=body.message,
-            model=model,
+        events = _recorded(
+            run_chat(
+                tenant_id=identity.tenant_id,
+                thread_id=body.thread_id,
+                message=body.message,
+                model=model,
+            ),
+            lambda results: _keep_results(threads, replay, identity, body.thread_id, results),
         )
         stream = StreamingResponse(_sse(events, model), media_type="text/event-stream")
         refreshed = response.headers.get(REFRESHED_TOKEN_HEADER)
@@ -506,17 +530,23 @@ def create_app(
     def get_conversation(
         thread_id: str, identity: Annotated[Identity, Depends(_identity)]
     ) -> Conversation:
-        """The caller's own thread and its transcript; a foreign or missing id is the same 404.
+        """The caller's own thread, its transcript and its tool evidence; a foreign id is a 404.
 
         The registry answers first, so an id the caller does not own never reaches the
-        checkpointer. `messages` replays the exchanges only - the questions asked and the
-        answers given. The live trace of a turn (tool calls, generated vs executed SQL,
-        security events, retries) is ephemeral by design (ADR 0012): it is the SSE transport of
-        the turn that produced it, watched once, never re-served. A thread never chatted in
-        replays as an empty list.
+        checkpointer and never reaches the payload store. `messages` replays what was said - the
+        questions asked and the answers given - and `tool_results` the server-produced payload of
+        each turn's tool calls, which is what lets a reopened thread re-render its charts, SQL
+        pair and tables (ADR 0012 as amended). The thinking around them stays session-only: the
+        model's reasoning, the retries and the graph steps are the SSE transport of the turn that
+        produced them, watched once and never re-served. A thread never chatted in replays as two
+        empty lists.
         """
         thread = threads.get_thread(identity, thread_id)
-        return Conversation(**asdict(thread), messages=replay(thread_id))
+        return Conversation(
+            **asdict(thread),
+            messages=replay(thread_id),
+            tool_results=threads.thread_tool_results(identity, thread_id),
+        )
 
     @app.patch("/conversations/{thread_id}")
     def retitle_conversation(
@@ -579,6 +609,56 @@ def _resolve_model(requested: str | None, list_models: ModelLister) -> str:
     if requested not in list_models():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _UNKNOWN_MODEL)
     return requested
+
+
+def _recorded(
+    events: Iterator[TraceEvent], keep: Callable[[list[ToolResultEvent]], None]
+) -> Iterator[TraceEvent]:
+    """Pass the turn through untouched, keeping its tool results for the store when it ends.
+
+    The write happens once, on the way out, so it costs the stream nothing while tokens are
+    flowing and so a turn that broke mid-flight still stores the payloads it did produce - the
+    `finally` runs whether the stream ended or raised. A turn that called no tool writes nothing
+    and is not even looked up. A storage failure is logged and swallowed here: by then the answer
+    has streamed, and a lost replayable chart is not worth turning a good turn into a failed one.
+    """
+    results: list[ToolResultEvent] = []
+    try:
+        for event in events:
+            if event["type"] == EVENT_TOOL_RESULT:
+                results.append(event)
+            yield event
+    finally:
+        try:
+            if results:
+                keep(results)
+        except Exception:
+            _LOG.exception("the turn's tool results were not stored")
+
+
+def _keep_results(
+    threads: ConversationRegistry,
+    transcript: Callable[[str], list[Message]],
+    identity: Identity,
+    thread_id: str,
+    results: list[ToolResultEvent],
+) -> None:
+    """Store one turn's tool payloads under the turn its question opened (ADR 0012 as amended).
+
+    The turn number is the count of questions the thread now holds: `/chat` appends exactly one
+    of them per turn, so counting them in the transcript gives the same ordinal the SPA arrives
+    at when it groups the replayed exchanges into turns. It is read after the turn, when the
+    checkpoint that made it the newest question is already written.
+    """
+    turn = sum(1 for message in transcript(thread_id) if message.role == ROLE_USER)
+    threads.record_tool_results(
+        identity,
+        thread_id,
+        [
+            ToolResult(turn=turn, tool=result["tool"], data=dict(result["data"]))
+            for result in results
+        ],
+    )
 
 
 def _sse(events: Iterator[TraceEvent], model: str) -> Iterator[str]:

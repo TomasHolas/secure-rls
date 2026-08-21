@@ -366,15 +366,21 @@ picker says so and the turn falls back to the server-side default.
 
 ```tsx
 <TracePanel items={turn.items} streaming={live} />
+<TracePanel items={turn.items} streaming={false} open />
 ```
 
-The live trace of one turn, folded by `lib/trace.ts` from the `lib/sse.ts` event stream:
-graph steps, each tool call with its arguments, and the **one** outcome that closes it —
-a result, a `retry` with its attempt counter and fed-back reason, or a `security_event`
-as a red blocked state naming the layer, kind and reason (ADR 0012). Collapsible,
-expanded while the turn streams. A graph step that streamed reasoning shows the model's
-own thinking as that step's disclosure, closed to start with. An outcome whose call was
-never announced still renders, so nothing the backend said is dropped.
+The trace of one turn, folded by `lib/trace.ts`: graph steps, each tool call with its
+arguments, and the **one** outcome that closes it — a result, a `retry` with its attempt
+counter and fed-back reason, or a `security_event` as a red blocked state naming the layer,
+kind and reason (ADR 0012). Collapsible; `open` is the state it starts in and defaults to
+`streaming`. A graph step that streamed reasoning shows the model's own thinking as that
+step's disclosure, closed to start with. An outcome whose call was never announced still
+renders, so nothing the backend said is dropped.
+The same panel renders a **replayed** turn (ADR 0012 as amended): `lib/trace.ts`'s
+`replayTurns` folds `GET /conversations/{id}`'s stored tool results into the same items, so a
+reopened thread shows its SQL pair, tables and charts through these bricks rather than a
+second renderer. Such a turn starts `open` — the evidence is why it is there — and carries no
+reasoning, retry or step timing, because none of those are stored.
 
 ### chat/TraceStep
 
@@ -400,7 +406,9 @@ A `tool_result` payload, each key through the brick that owns it: `generated_sql
 `executed_sql` side by side in the `.sql-pair` grid, `columns`/`rows` through `DataTable`,
 `chart_spec` through `Chart` verbatim, `notes` as note cards (employee-written text,
 quoted as data), `anomalies` as a derived table. A payload with no structured keys falls
-back to the text the model itself read, so no result ever renders as nothing.
+back to the text the model itself read, so no result ever renders as nothing. A replayed
+result passes `content=""`: the model-facing rendering of the same rows is not stored, and
+every stored payload has structured keys, so the fallback is a live-turn path only.
 
 ## Deviations from the KB originals
 

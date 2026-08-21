@@ -15,10 +15,12 @@
  * thread the reader is looking at. A failed refresh is logged and nothing else: the thread
  * keeps the first-message title it already had, which is a title, not an error to report.
  *
- * `replay` holds the exchanges the server remembers for the open thread - questions and
- * answers only. The trace of a past turn is not replayable by design (ADR 0012), so the
- * chat view renders replayed exchanges as plain bubbles and keeps trace panels for the
- * turns it streamed itself. `chatKey` changes on every switch: it is the signal the chat
+ * `replay` holds what the server remembers of the open thread, already folded into turns by
+ * `lib/trace.ts`: the questions, the answers, and the tool evidence each turn produced - its
+ * SQL pair, tables and charts (ADR 0012 as amended). The store folds it here, once, so the
+ * chat view receives turns of the same shape whether they were streamed or reopened. What no
+ * store holds is the thinking: the model's reasoning, the retries and the graph steps belong to
+ * the turn that streamed them. `chatKey` changes on every switch: it is the signal the chat
  * view resets its live turns on.
  */
 
@@ -32,7 +34,9 @@ import {
   listConversations,
   retitleConversation,
 } from "./api";
-import type { Message, Thread } from "./api";
+import type { Thread } from "./api";
+import { replayTurns } from "./trace";
+import type { Turn } from "./trace";
 
 const LIST_FAILURE = "Could not load your conversations.";
 const OPEN_FAILURE = "Could not open that conversation.";
@@ -42,7 +46,8 @@ const TITLE_FAILURE = "the conversation title was not refreshed";
 export interface ConversationsStore {
   threads: Thread[];
   activeId: string | null;
-  replay: Message[];
+  /** The open thread's past turns, as the server still remembers them. */
+  replay: Turn[];
   /** Bumped on every thread switch; the chat view drops its live turns when it changes. */
   chatKey: number;
   loading: boolean;
@@ -58,7 +63,7 @@ export interface ConversationsStore {
 
 interface Open {
   activeId: string | null;
-  replay: Message[];
+  replay: Turn[];
   chatKey: number;
 }
 
@@ -103,7 +108,7 @@ export function useConversations(): ConversationsStore {
         .then((conversation) => {
           setOpen((previous) => ({
             activeId: conversation.thread_id,
-            replay: conversation.messages,
+            replay: replayTurns(conversation.messages, conversation.tool_results),
             chatKey: previous.chatKey + 1,
           }));
         })

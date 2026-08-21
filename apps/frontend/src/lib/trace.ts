@@ -12,8 +12,16 @@
  * Two things a turn carries besides its items: the reasoning streamed inside a step, which
  * accumulates on that step and never on the answer, and what the turn cost, which arrives
  * with the terminal frame (ADR 0012 as amended).
+ *
+ * `replayTurns` folds the other source of the same shape: what `GET /conversations/{id}` still
+ * remembers of a reopened thread. It produces the very same `Turn` objects a stream produces,
+ * so a past turn renders through the bricks a live one does instead of through a second
+ * renderer. Only what the server stores can be in them - the questions, the answers and the
+ * tool evidence; the reasoning, the retries and the graph steps were the transport of that turn
+ * and are gone (ADR 0012 as amended).
  */
 
+import type { Message, ToolResultRecord } from "./api";
 import type {
   DoneEvent,
   RetryEvent,
@@ -28,6 +36,12 @@ export type CallOutcome = ToolResultEvent | RetryEvent | SecurityEvent;
 
 /** The node the model reasons in; the fallback owner of reasoning that arrives before a step. */
 const REASON_NODE = "reason";
+
+/** The transcript role of a question, as `agent.thread_messages` labels it. */
+const USER_ROLE = "user";
+
+/** What separates two things the assistant said inside one replayed turn. */
+const ANSWER_SEPARATOR = "\n\n";
 
 /** A graph step, holding the reasoning streamed while the agent was inside it. */
 export interface NodeItem {
@@ -56,8 +70,17 @@ export type TraceItem = NodeItem | CallItem | OrphanItem;
  * `streaming` until a `done` event lands. `cut_short` is a turn a per-turn bound stopped, which
  * may still carry the words the model got out before it. `failed` is a turn that never reached an
  * answer - the backend saying so in its terminal frame, or a stream this client could not read.
+ * `replayed` is a turn read back from the server: how it ended is not stored, so it claims
+ * nothing about it.
  */
-export type TurnPhase = "streaming" | "ok" | "blocked" | "gave_up" | "cut_short" | "failed";
+export type TurnPhase =
+  | "streaming"
+  | "ok"
+  | "blocked"
+  | "gave_up"
+  | "cut_short"
+  | "failed"
+  | "replayed";
 
 /** What the turn cost: the summed usage of its model calls and the seconds it ran. */
 export interface TurnUsage {
@@ -114,6 +137,35 @@ export function failTurn(turn: Turn, error: string): Turn {
 }
 
 /**
+ * A reopened thread as turns: each question opens one, the assistant text that follows is its
+ * answer, and the tool results the server stored for that turn become its trace items.
+ *
+ * The turn a stored result belongs to is the ordinal of the question that asked for it, which is
+ * why the questions are counted here rather than the array indexed - a transcript that somehow
+ * starts mid-turn then attaches its evidence to nothing instead of to the wrong answer. A stored
+ * result carries no arguments and no model-facing text, only the payload the server produced, so
+ * the step shows the SQL pair, the table or the chart and nothing it would have to invent.
+ */
+export function replayTurns(messages: Message[], results: ToolResultRecord[]): Turn[] {
+  const turns: Turn[] = [];
+  const numbers: number[] = [];
+  let asked = 0;
+  for (const message of messages) {
+    const question = message.role === USER_ROLE;
+    if (question) asked += 1;
+    if (question || turns.length === 0) {
+      turns.push({ ...startTurn(question ? message.content : ""), phase: "replayed" });
+      numbers.push(asked);
+    }
+    if (!question) {
+      const last = turns.length - 1;
+      turns[last] = { ...turns[last], answer: joinAnswer(turns[last].answer, message.content) };
+    }
+  }
+  return turns.map((turn, index) => ({ ...turn, items: replayItems(results, numbers[index]) }));
+}
+
+/**
  * The turn as its terminal frame leaves it. A `failed` status is the backend's own diagnosis
  * of a run that never answered, so it goes to `error` and whatever text streamed before it
  * stays the answer - the view states the diagnosis instead of guessing at one.
@@ -141,6 +193,27 @@ function done(turn: Turn, event: DoneEvent): Turn {
 export function tokensPerSecond(usage: TurnUsage | null): number | null {
   if (!usage || usage.outputTokens <= 0 || usage.durationS <= 0) return null;
   return usage.outputTokens / usage.durationS;
+}
+
+/** The stored results of one turn as call items, in the order the server replayed them. */
+function replayItems(results: ToolResultRecord[], turn: number): TraceItem[] {
+  return results
+    .filter((result) => result.turn === turn)
+    .map((result, index) => {
+      const id = `replay-${turn}-${index}`;
+      return {
+        kind: "call",
+        id,
+        tool: result.tool,
+        args: {},
+        outcome: { type: "tool_result", id, tool: result.tool, content: "", data: result.data },
+      };
+    });
+}
+
+/** Two things the assistant said in one turn read as two paragraphs, as they did while streaming. */
+function joinAnswer(answer: string, text: string): string {
+  return answer ? `${answer}${ANSWER_SEPARATOR}${text}` : text;
 }
 
 function callItem(event: ToolCallEvent): CallItem {

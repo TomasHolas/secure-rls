@@ -47,6 +47,15 @@ const REPLAY = [
   { role: "assistant", content: "Engineering leads at 91000." },
 ];
 
+const REPLAY_CHART = {
+  kind: "bar",
+  title: "avg salary by department",
+  x_label: "department",
+  y_label: "avg salary",
+  data: [{ x: "Engineering", y: 91000 }],
+};
+const REPLAY_RESULTS = [{ turn: 1, tool: "plot", data: { chart_spec: REPLAY_CHART } }];
+
 const TURN = [
   { type: "token", text: "There are 331 people." },
   { type: "done", status: "ok", answer: "There are 331 people.", model: MODEL },
@@ -106,7 +115,12 @@ beforeEach(() => {
   api.listModels.mockResolvedValue({ models: [MODEL], default: MODEL });
   api.listConversations.mockResolvedValue(ACME_THREADS);
   api.getConversation.mockImplementation((threadId: string) =>
-    Promise.resolve({ ...OLDEST, thread_id: threadId, messages: REPLAY }),
+    Promise.resolve({
+      ...OLDEST,
+      thread_id: threadId,
+      messages: REPLAY,
+      tool_results: REPLAY_RESULTS,
+    }),
   );
   api.createConversation.mockImplementation((title: string) => {
     registered = title;
@@ -159,7 +173,19 @@ describe("the conversation rail", () => {
     expect(api.getConversation).toHaveBeenCalledWith(OLDEST.thread_id);
     expect(activeTitle(view.container)).toBe(OLDEST.title);
     expect(screen.queryByText(/Ask a question to start/)).toBeNull();
-    expect(view.container.querySelector(".trace")).toBeNull();
+  });
+
+  it("shows the chart a reopened thread's turn drew, not prose where a plot used to be", async () => {
+    const { view } = await signIn();
+    await screen.findByText(OLDEST.title);
+
+    openThread(OLDEST.title);
+
+    await screen.findByText("Engineering leads at 91000.");
+    expect(view.container.querySelector("svg")?.getAttribute("aria-label")).toBe(
+      REPLAY_CHART.title,
+    );
+    expect(view.container.querySelectorAll("rect.chart-bar")).toHaveLength(1);
   });
 
   it("New chat clears the transcript and the next question registers and opens a thread", async () => {

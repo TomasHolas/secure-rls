@@ -1,9 +1,13 @@
-/** Turn state: scripted trace sequences folded into what the view renders. */
+/**
+ * Turn state: scripted trace sequences folded into what the view renders, and the same fold
+ * from the other side - what `GET /conversations/{id}` still remembers of a reopened thread.
+ */
 
 import { describe, expect, it } from "vitest";
 
-import { applyEvent, failTurn, startTurn, tokensPerSecond } from "./trace";
+import { applyEvent, failTurn, replayTurns, startTurn, tokensPerSecond } from "./trace";
 import type { CallItem, NodeItem, Turn } from "./trace";
+import type { ChartSpec } from "../components/charts";
 import type { DoneEvent, TraceEvent, TurnStatus } from "./sse";
 
 const GENERATED = "SELECT department, AVG(salary) FROM employees GROUP BY department";
@@ -378,5 +382,97 @@ describe("edge cases", () => {
 
     expect(before).toEqual(startTurn("q"));
     expect(after).not.toBe(before);
+  });
+});
+
+describe("a reopened thread", () => {
+  const CHART: ChartSpec = {
+    kind: "bar",
+    title: "headcount by department",
+    x_label: "department",
+    y_label: "headcount",
+    data: [{ x: "Engineering", y: 12 }],
+  };
+  const MESSAGES = [
+    { role: "user", content: "average salary per department?" },
+    { role: "assistant", content: "Engineering averages 91000." },
+    { role: "user", content: "plot headcount by department" },
+    { role: "assistant", content: "Engineering leads on headcount." },
+  ];
+  const RESULTS = [
+    {
+      turn: 1,
+      tool: "query_db",
+      data: {
+        generated_sql: GENERATED,
+        executed_sql: EXECUTED,
+        columns: ["department", "avg"],
+        rows: [["Engineering", 91000]],
+      },
+    },
+    { turn: 2, tool: "plot", data: { chart_spec: CHART } },
+  ];
+
+  it("folds the transcript into one turn per question", () => {
+    const turns = replayTurns(MESSAGES, []);
+
+    expect(turns.map((turn) => [turn.question, turn.answer])).toEqual([
+      ["average salary per department?", "Engineering averages 91000."],
+      ["plot headcount by department", "Engineering leads on headcount."],
+    ]);
+    expect(turns.every((turn) => turn.phase === "replayed")).toBe(true);
+  });
+
+  it("puts each stored payload back on the turn that asked for it", () => {
+    const turns = replayTurns(MESSAGES, RESULTS);
+
+    const first = calls(turns[0]);
+    const second = calls(turns[1]);
+    expect(first.map((item) => item.tool)).toEqual(["query_db"]);
+    expect(second.map((item) => item.tool)).toEqual(["plot"]);
+    expect(first[0].outcome).toMatchObject({
+      type: "tool_result",
+      data: { generated_sql: GENERATED, executed_sql: EXECUTED },
+    });
+    expect(second[0].outcome).toMatchObject({ data: { chart_spec: CHART } });
+  });
+
+  it("claims nothing a replayed turn cannot know: no thinking, no model, no cost", () => {
+    const turns = replayTurns(MESSAGES, RESULTS);
+
+    expect(nodes(turns[0])).toEqual([]);
+    expect(turns[0].model).toBeNull();
+    expect(turns[0].usage).toBeNull();
+    expect(turns[0].error).toBeNull();
+    expect(calls(turns[0])[0].args).toEqual({});
+  });
+
+  it("keeps both halves of a turn that spoke twice, as two paragraphs", () => {
+    const turns = replayTurns(
+      [
+        { role: "user", content: "and the outliers?" },
+        { role: "assistant", content: "Let me check the fences." },
+        { role: "assistant", content: "Three rows lie beyond them." },
+      ],
+      [],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].answer).toBe("Let me check the fences.\n\nThree rows lie beyond them.");
+  });
+
+  it("attaches no evidence at all to a transcript that starts without a question", () => {
+    const turns = replayTurns([{ role: "assistant", content: "orphaned answer" }], RESULTS);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].question).toBe("");
+    expect(turns[0].items).toEqual([]);
+  });
+
+  it("replays a thread that never ran a tool as turns with no trace items", () => {
+    const turns = replayTurns(MESSAGES.slice(0, 2), []);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].items).toEqual([]);
   });
 });

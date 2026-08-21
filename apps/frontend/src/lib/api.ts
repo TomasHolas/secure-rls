@@ -13,6 +13,7 @@
 
 import { clearSession, getSession, startSession } from "../auth";
 import { API_BASE_URL } from "../config";
+import type { ToolResultData } from "./sse";
 
 /** The header a sliding-session refresh arrives on (ADR 0009 as amended). */
 const REFRESHED_TOKEN_HEADER = "X-Refreshed-Token";
@@ -47,12 +48,25 @@ export interface Message {
 }
 
 /**
- * A thread as `GET /conversations/{id}` serves it: the registry row plus the replayed
- * exchanges. `messages` holds questions and answers only - the tool calls, SQL and
- * security events a turn streamed live are not replayable by design (ADR 0012).
+ * One stored tool result of a past turn: the tool that ran and the payload the server produced
+ * (ADR 0012 as amended). `turn` is the ordinal of the question that asked for it, counted from
+ * one, which is how the fold in `lib/trace.ts` puts it back above the answer it produced.
+ */
+export interface ToolResultRecord {
+  turn: number;
+  tool: string;
+  data: ToolResultData;
+}
+
+/**
+ * A thread as `GET /conversations/{id}` serves it: the registry row, the replayed exchanges,
+ * and the tool evidence those turns produced - their SQL pairs, tables and charts. What is not
+ * served is the thinking around them: the model's reasoning, the retries and the graph steps
+ * are the transport of the turn that streamed them and are session-only (ADR 0012 as amended).
  */
 export interface Conversation extends Thread {
   messages: Message[];
+  tool_results: ToolResultRecord[];
 }
 
 /** One `POST /chat` turn. No tenant field exists to send: the server takes it from the JWT. */
@@ -108,12 +122,16 @@ export async function listConversations(): Promise<Thread[]> {
   return Array.isArray(body) ? (body as Thread[]) : [];
 }
 
-/** GET /conversations/{id}: the thread row plus its replayed exchanges. */
+/** GET /conversations/{id}: the thread row, its replayed exchanges and their tool evidence. */
 export async function getConversation(threadId: string): Promise<Conversation> {
   const response = await apiFetch(`/conversations/${encodeURIComponent(threadId)}`);
   if (!response.ok) throw new ApiError(response.status, conversationFailure(response.status));
   const body = (await response.json()) as Conversation;
-  return { ...body, messages: Array.isArray(body.messages) ? body.messages : [] };
+  return {
+    ...body,
+    messages: Array.isArray(body.messages) ? body.messages : [],
+    tool_results: Array.isArray(body.tool_results) ? body.tool_results : [],
+  };
 }
 
 /**
