@@ -116,7 +116,7 @@ cd apps/frontend && npm install && npm run dev   # http://localhost:3002
 
 # Tests (M1+; network-free, key-free, no Ollama — mocked LLM only):
 cd apps/backend && uv run pytest -q
-cd apps/frontend && npm test      # vitest + jsdom, brick-level rendering tests
+cd apps/frontend && npm test      # vitest + jsdom: bricks, session, HTTP client
 
 # Eval harness (M5+; needs a live Ollama model):
 cd apps/backend && uv run python -m evals
@@ -143,6 +143,8 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Tests | `apps/backend/tests/` (pytest), `apps/frontend/src/**/*.test.tsx` (vitest) |
 | Tunable knob | `apps/backend/runtime.json` (typed view in `runtime.py`) — no magic values in code |
 | Frontend UI | `apps/frontend/src/` — compose the design bricks (catalogue: `src/components/README.md`); never hand-roll a table/pill/button |
+| Frontend session (token, display-only JWT claims, logout) | `apps/frontend/src/auth.ts` |
+| Frontend HTTP calls (Bearer header, 401 -> login) | `apps/frontend/src/lib/api.ts` — the only module that calls `fetch` |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
 | CI | `.github/workflows/ci.yml` |
 | A design decision | `docs/decisions/` — new ADR, linked from `docs/INDEX.md` |
