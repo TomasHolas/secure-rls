@@ -5,6 +5,11 @@ resumption guide; this folder holds the architecture and the accepted decisions.
 When design and code disagree, the code plus `CLAUDE.md` win, but update the
 docs in the same change.
 
+## Requirements
+
+- [requirements.md](requirements.md) — the assignment, distilled: hard
+  requirements, MVP features, deliverables, demo-call agenda.
+
 ## Architecture
 
 - [architecture.md](architecture.md) — system overview, the four RLS defense
@@ -18,3 +23,6 @@ docs in the same change.
 - [0004 — Testing and evaluation strategy: CI never needs a model](decisions/0004-testing-and-eval-strategy.md)
 - [0005 — Ollama as a configurable remote endpoint; model choice](decisions/0005-ollama-endpoint-and-model.md)
 - [0006 — Reuse of the knowledgebase design system](decisions/0006-kb-design-system.md)
+- [0007 — Result-size handling: cap, truncation signal, aggregation push-down](decisions/0007-result-size-handling.md)
+- [0008 — Dataset generation: seeded, calibrated to sourced distributions](decisions/0008-dataset-generation.md)
+- [0009 — Auth implementation: PBKDF2 hashing, pinned-algorithm JWT](decisions/0009-auth-implementation.md)

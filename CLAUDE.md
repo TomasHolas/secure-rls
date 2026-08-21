@@ -4,7 +4,7 @@ Authoritative resumption guide for this repo. Read this first; it tells you what
 the project is, how it is shaped, what is built vs. still to build, how to run it,
 where to make a given change, and the hard rules you must not break.
 
-This repo is a take-home case study for an AI Engineer position (TD SYNNEX),
+This repo is a take-home case study for an AI Engineer position,
 defended in a 60-minute live demo call. Every line must be simple enough to
 explain and every design decision has a written rationale in
 [`docs/decisions/`](docs/decisions/). The assignment itself is summarized in
@@ -35,11 +35,13 @@ Four ideas drive everything (each has an ADR in `docs/decisions/`):
 1. **React + FastAPI split** (ADR 0001). The SPA is a pure HTTP client of the
    REST API; all logic lives server-side. Ports follow the sibling scheme:
    backend `:8002`, frontend `:3002` (KB owns 8000/3000, modelbench 8001/3001).
-2. **Defense-in-depth RLS** (ADR 0002). Identity layer (JWT claim), SQL
-   validation layer (sqlglot allowlist), scoped-execution layer (query rewrite +
-   bound tenant parameter + read-only connection), egress layer (post-execution
-   row check). Prompt instructions exist but are UX guidance, not a security
-   boundary.
+2. **Defense-in-depth RLS** (ADR 0002 as amended). Identity layer (JWT claim),
+   SQL validation layer (sqlglot allowlist), engine authorizer (SQLite
+   `set_authorizer`), scoped-execution layer (query rewrite + bound tenant
+   parameter + read-only connection), egress layer (post-execution row check) —
+   plus query timeouts, a result-row cap with truncation signaling (ADR 0007),
+   and a persistent audit log. Prompt instructions exist but are UX guidance,
+   not a security boundary.
 3. **SQLite with emulated RLS** (ADR 0003). SQLite has no native RLS; we emulate
    it in the scoped executor in `db.py` — the only module allowed to open a
    database connection.
@@ -147,6 +149,10 @@ evals → the same service modules                   (no second code path)
   needs more, use a `"""` docstring (Python) or `/** */` JSDoc (TS).
 - **No magic values.** Every tunable lives in `runtime.json` (typed in
   `runtime.py`). Only structural-identity literals stay in code.
+- **Every design decision is grounded in published best practice, with sources
+  cited in its ADR** — OWASP, RFCs, vendor architecture guidance, official docs.
+  Nothing asserted from memory; when no authoritative source exists, the ADR
+  says so explicitly and labels the choice a modeling/engineering judgment.
 - **Commits are Conventional Commits, English**, imperative subject, no trailer.
 - **Docs travel with code.** Update `CLAUDE.md`, `docs/`, and ADRs in the same
   change that makes them stale.
