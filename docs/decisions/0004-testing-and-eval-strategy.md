@@ -1,6 +1,6 @@
 # ADR 0004 — Testing and evaluation strategy: CI never needs a model
 
-Status: accepted
+Status: accepted (amended 2026-08-21: suite sizes fixed)
 
 ## Context
 
@@ -30,6 +30,13 @@ Three tiers, split by what they need:
 
 CI runs tier 1 plus lint (ruff), the frontend build, and an eval-harness dry
 run in mocked mode (proves the harness itself executes).
+
+Suite sizes (amended): ~25 correctness questions spread across all five tools,
+floats matched at 1% relative tolerance; ~15 single-turn adversarial prompts
+(direct leakage, NL injection, SQL-in-NL); ~5 multi-turn scenarios (injection
+persisting in conversation memory); plus retrieval attacks on `search_notes`
+and the poisoned-notes cases from the dataset manifest (ADRs 0008, 0010). The
+scored report is committed as markdown, regenerated per model.
 
 ## Consequences
 
