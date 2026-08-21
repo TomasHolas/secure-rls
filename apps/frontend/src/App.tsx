@@ -4,7 +4,7 @@ import { useSyncExternalStore } from "react";
 
 import { getSession, subscribe } from "./auth";
 import { AppLayout } from "./components/layout";
-import { AnalystView } from "./views/AnalystView";
+import { ChatView } from "./views/ChatView";
 import { LoginView } from "./views/LoginView";
 import { SessionBadge } from "./views/SessionBadge";
 
@@ -21,7 +21,7 @@ export default function App() {
 
   return (
     <AppLayout tenantBadge={<SessionBadge session={session} />}>
-      <AnalystView />
+      <ChatView />
     </AppLayout>
   );
 }

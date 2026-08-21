@@ -145,6 +145,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Frontend UI | `apps/frontend/src/` — compose the design bricks (catalogue: `src/components/README.md`); never hand-roll a table/pill/button |
 | Frontend session (token, display-only JWT claims, logout) | `apps/frontend/src/auth.ts` |
 | Frontend HTTP calls (Bearer header, 401 -> login) | `apps/frontend/src/lib/api.ts` — the only module that calls `fetch` |
+| Frontend chat stream (SSE frames -> typed trace events -> one turn's state) | `apps/frontend/src/lib/sse.ts` + `lib/trace.ts`; rendered by `views/ChatView.tsx` over the `components/chat/` bricks |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
 | CI | `.github/workflows/ci.yml` |
 | A design decision | `docs/decisions/` — new ADR, linked from `docs/INDEX.md` |
