@@ -31,6 +31,9 @@ VALID = [
     "WHERE manager_id IS NULL UNION ALL SELECT e.id, e.manager_id FROM employees e "
     "JOIN chain c ON e.manager_id = c.id) SELECT * FROM chain",
     "SELECT * FROM (SELECT name FROM employees) AS sub",
+    "SELECT * FROM (SELECT name FROM employees UNION ALL SELECT name FROM employees) AS both",
+    "SELECT * FROM employees AS sqlite_master",
+    "SELECT * FROM employees WHERE id = 1 -- ' OR 1=1",
     "SELECT name, RANK() OVER (PARTITION BY department ORDER BY salary DESC) FROM employees",
     "SELECT CASE WHEN salary > (SELECT AVG(salary) FROM employees) THEN 'high' ELSE 'low' END "
     "AS band FROM employees",
@@ -87,7 +90,18 @@ FORBIDDEN_TABLES = [
     "SELECT * FROM main.employees",
     "SELECT * FROM other.employees",
     "SELECT * FROM temp.sqlite_master",
+    "SELECT * FROM main.employees AS employees",
     "SELECT * FROM pragma_table_info('employees')",
+    "SELECT * FROM employees JOIN sqlite_master ON 1 = 1",
+    "SELECT * FROM employees LEFT JOIN notes ON notes.id = employees.id",
+    "SELECT * FROM (SELECT * FROM employees UNION SELECT * FROM sqlite_master)",
+    "SELECT * FROM employees WHERE EXISTS (SELECT 1 FROM sqlite_master)",
+    "SELECT * FROM employees ORDER BY (SELECT 1 FROM sqlite_master)",
+    "SELECT * FROM employees GROUP BY department HAVING (SELECT 1 FROM notes) > 0",
+    "WITH t AS (SELECT * FROM employees) SELECT * FROM t, sqlite_master",
+    "SELECT * FROM `sqlite_master`",
+    "SELECT * FROM sqlite/**/_master",
+    "SELECT * INTO evil FROM employees",
 ]
 
 FORBIDDEN_FUNCTIONS = [
@@ -194,6 +208,7 @@ def test_cte_shadowing_the_employees_table_is_rejected(sql):
     with pytest.raises(QueryRejected) as caught:
         validate_sql(sql)
     assert caught.value.retryable is False
+    assert "shadow" in caught.value.reason
     assert "employees" in caught.value.reason
 
 
@@ -207,6 +222,24 @@ def test_sibling_scope_cte_does_not_whitelist_a_real_table():
         validate_sql(sql)
     assert caught.value.retryable is False
     assert "notes" in caught.value.reason
+
+
+def test_a_set_operation_is_allowed_inside_a_subquery():
+    """The SELECT-root rule is a contract with layer 3, not a limit on set operations."""
+    sql = "SELECT count(*) FROM (SELECT id FROM employees UNION SELECT manager_id FROM employees)"
+    assert isinstance(validate_sql(sql), exp.Select)
+
+
+def test_a_deeply_nested_query_is_refused_not_crashed():
+    depth = 500
+    sql = (
+        "SELECT * FROM employees"
+        + " WHERE id IN (SELECT id FROM employees" * depth
+        + ")" * depth
+    )
+    with pytest.raises(QueryRejected) as caught:
+        validate_sql(sql)
+    assert caught.value.retryable is False
 
 
 def test_rejection_reason_names_the_offending_table():
