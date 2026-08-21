@@ -1,12 +1,16 @@
 /**
- * The chat view: the demo's core screen. It owns the conversation state and the stream,
- * and composes the chat bricks for everything visible.
+ * The chat view: the demo's core screen. It owns one thread's turns and the stream, and
+ * composes the chat bricks for everything visible. Which thread is open is owned above it
+ * by `lib/conversations.ts`, so the sidebar and this view can never disagree about it.
  *
  * One turn: the question goes into the transcript, `POST /chat` opens, and every trace
  * event folds into that turn as it arrives (`lib/sse.ts` frames, `lib/trace.ts` folds).
- * The thread is created lazily - the first question titles a `POST /conversations`
- * thread, and its id stays in this view's state until the history sidebar (issue #27)
- * takes over ownership.
+ * A draft thread is registered lazily: the first question titles it through `onStart`.
+ *
+ * `replay` is what the server remembers of a reopened thread - the exchanges only. Those
+ * render as plain bubbles with no trace panel: the trace is the transport of the turn that
+ * produced it and is never re-served (ADR 0012), so only turns streamed in this session
+ * carry one. Switching threads (a new `chatKey`) drops the live turns with it.
  *
  * A stream that ends without a `done` event, or a request the API refuses, is shown as a
  * failed turn: the agent contract says a broken run is the caller's to render, and this
@@ -18,7 +22,8 @@ import { useEffect, useRef, useState } from "react";
 import { ChatMessage, Composer, ModelPicker, TracePanel } from "../components/chat";
 import { EmptyState, Page, PageHeader } from "../components/layout";
 import { Pill } from "../components/Pill";
-import { ApiError, createConversation, listModels, openChatStream } from "../lib/api";
+import { ApiError, listModels, openChatStream } from "../lib/api";
+import type { Message } from "../lib/api";
 import { readTraceEvents } from "../lib/sse";
 import { applyEvent, failTurn, startTurn } from "../lib/trace";
 import type { Turn } from "../lib/trace";
@@ -30,13 +35,23 @@ const PHASE_PILL = {
   blocked: { tone: "danger", label: "blocked by a security layer" },
 } as const;
 
-export function ChatView() {
+export function ChatView({
+  threadId,
+  replay,
+  chatKey,
+  onStart,
+}: {
+  threadId: string | null;
+  replay: Message[];
+  chatKey: number;
+  onStart: (title: string) => Promise<string>;
+}) {
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState("");
-  const [threadId, setThreadId] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
+  const openKey = useRef(chatKey);
 
   useEffect(() => {
     let live = true;
@@ -56,33 +71,43 @@ export function ChatView() {
   }, []);
 
   useEffect(() => {
+    openKey.current = chatKey;
+    setTurns([]);
+    setStreaming(false);
+  }, [chatKey]);
+
+  useEffect(() => {
     bottom.current?.scrollIntoView?.({ block: "end" });
-  }, [turns]);
+  }, [turns, replay]);
 
   async function send(message: string): Promise<void> {
+    const key = chatKey;
+    const mine = () => openKey.current === key;
     setTurns((previous) => [...previous, startTurn(message)]);
     setStreaming(true);
     try {
-      const thread = threadId ?? (await createConversation(message)).thread_id;
-      if (thread !== threadId) setThreadId(thread);
+      const thread = threadId ?? (await onStart(message));
       const response = await openChatStream({
         thread_id: thread,
         message,
         model: model || undefined,
       });
       for await (const event of readTraceEvents(response)) {
+        if (!mine()) return;
         setTurns((previous) => updateLast(previous, (turn) => applyEvent(turn, event)));
       }
+      if (!mine()) return;
       setTurns((previous) =>
         updateLast(previous, (turn) =>
           turn.phase === "streaming" ? failTurn(turn, STREAM_CUT) : turn,
         ),
       );
     } catch (error) {
+      if (!mine()) return;
       const reason = error instanceof ApiError ? error.message : GENERIC_FAILURE;
       setTurns((previous) => updateLast(previous, (turn) => failTurn(turn, reason)));
     } finally {
-      setStreaming(false);
+      if (mine()) setStreaming(false);
     }
   }
 
@@ -105,12 +130,25 @@ export function ChatView() {
       />
 
       <div className="chat-log">
-        {turns.length === 0 ? (
+        {turns.length === 0 && replay.length === 0 ? (
           <EmptyState icon="message-circle">
             Ask a question to start. Try an aggregate ("average salary per department"), a
             chart ("plot headcount by department"), or a note search.
           </EmptyState>
         ) : null}
+        {replay.length > 0 ? (
+          <p className="chat-replay-note">
+            Replayed from the conversation the server remembers. The live trace of a past turn
+            is not stored, so only turns asked in this session carry one.
+          </p>
+        ) : null}
+        {replay.map((message, index) => (
+          <ChatMessage
+            key={`replay-${index}`}
+            role={message.role === "user" ? "user" : "assistant"}
+            text={message.content}
+          />
+        ))}
         {turns.map((turn, index) => (
           <TurnView key={index} turn={turn} live={streaming && index === turns.length - 1} />
         ))}

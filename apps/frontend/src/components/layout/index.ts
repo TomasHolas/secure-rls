@@ -5,4 +5,5 @@ export { Header } from "./Header";
 export { Page } from "./Page";
 export { PageHeader } from "./PageHeader";
 export { Section } from "./Section";
+export { Sidebar } from "./Sidebar";
 export { EmptyState } from "./EmptyState";

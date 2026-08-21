@@ -31,6 +31,21 @@ export interface Thread {
   created: string;
 }
 
+/** One replayed exchange from a thread's transcript: who spoke and what they said. */
+export interface Message {
+  role: string;
+  content: string;
+}
+
+/**
+ * A thread as `GET /conversations/{id}` serves it: the registry row plus the replayed
+ * exchanges. `messages` holds questions and answers only - the tool calls, SQL and
+ * security events a turn streamed live are not replayable by design (ADR 0012).
+ */
+export interface Conversation extends Thread {
+  messages: Message[];
+}
+
 /** One `POST /chat` turn. No tenant field exists to send: the server takes it from the JWT. */
 export interface ChatRequest {
   thread_id: string;
@@ -74,6 +89,35 @@ export async function createConversation(title: string): Promise<Thread> {
   });
   if (!response.ok) throw new ApiError(response.status, "Could not start a conversation.");
   return (await response.json()) as Thread;
+}
+
+/** GET /conversations: the caller's own threads, newest first as the server ordered them. */
+export async function listConversations(): Promise<Thread[]> {
+  const response = await apiFetch("/conversations");
+  if (!response.ok) throw new ApiError(response.status, "Could not load your conversations.");
+  const body = (await response.json()) as unknown;
+  return Array.isArray(body) ? (body as Thread[]) : [];
+}
+
+/** GET /conversations/{id}: the thread row plus its replayed exchanges. */
+export async function getConversation(threadId: string): Promise<Conversation> {
+  const response = await apiFetch(`/conversations/${encodeURIComponent(threadId)}`);
+  if (!response.ok) throw new ApiError(response.status, conversationFailure(response.status));
+  const body = (await response.json()) as Conversation;
+  return { ...body, messages: Array.isArray(body.messages) ? body.messages : [] };
+}
+
+/** DELETE /conversations/{id}: drops the thread and its checkpointer state server-side. */
+export async function deleteConversation(threadId: string): Promise<void> {
+  const response = await apiFetch(`/conversations/${encodeURIComponent(threadId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) throw new ApiError(response.status, conversationFailure(response.status));
+}
+
+function conversationFailure(status: number): string {
+  if (status === 404) return "That conversation no longer exists.";
+  return "The conversation request failed. Try again.";
 }
 
 /**

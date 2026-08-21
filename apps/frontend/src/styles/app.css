@@ -9,7 +9,12 @@
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  /* The sticky header's own height: what the sticky rail below it has to clear. */
+  --header-h: 59px;
 }
+
+/* The rail and the main column sit side by side under the header. */
+.app-body { display: flex; flex: 1; align-items: stretch; min-height: 0; }
 
 /* ---------------- Header (persistent) ---------------- */
 .header {
@@ -40,7 +45,51 @@
 .header-actions { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
 
 /* ---------------- Main column ---------------- */
-.main { flex: 1; background: var(--bg-page); position: relative; }
+.main { flex: 1; min-width: 0; background: var(--bg-page); position: relative; }
+
+/* ---------------- Conversation rail (shell sidebar) ---------------- */
+/* KB's .wiki-sidebar rail, lifted into the shell: in KB every view owns its own rail and
+   none of them collapse, but the thread list outlives the page it sits next to. The column
+   is sticky with its own scroll, so a long history never scrolls the transcript. */
+.sidebar {
+  position: sticky; top: var(--header-h); align-self: flex-start;
+  box-sizing: border-box; flex: 0 0 272px; width: 272px;
+  max-height: calc(100vh - var(--header-h)); overflow-y: auto;
+  display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-5) var(--space-4);
+  border-right: 1px solid var(--border-subtle);
+}
+.sidebar-collapsed { flex-basis: auto; width: auto; padding: var(--space-5) var(--space-3); }
+.sidebar-head { display: flex; align-items: center; gap: var(--space-2); min-height: 28px; }
+.sidebar-title {
+  font-size: var(--text-2xs); font-weight: 600; letter-spacing: var(--tracking-caps);
+  text-transform: uppercase; color: var(--fg-4);
+}
+.sidebar-toggle { margin-left: auto; width: 28px; height: 28px; }
+.sidebar-actions { margin-top: var(--space-2); }
+.sidebar-body { display: flex; flex-direction: column; min-height: 0; }
+.sidebar-note { margin: var(--space-2) 0 0; color: var(--fg-4); font-size: var(--text-xs); line-height: var(--leading-normal); }
+.sidebar-list { list-style: none; display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; }
+/* KB's rail "Add record" button, in the actions slot. */
+.side-add { width: 100%; justify-content: center; }
+.side-add:hover { color: var(--fg-brand); background: color-mix(in srgb, var(--accent-500) 12%, transparent); border-color: color-mix(in srgb, var(--accent-500) 35%, var(--border-default)); }
+
+/* One thread row: KB's .wiki-sec-item with its trailing count chip replaced by a delete
+   control, and the label stacked over the created timestamp. */
+.rail-item { display: flex; align-items: center; gap: var(--space-1); border-radius: var(--radius-md); transition: background var(--dur-fast) var(--ease-out); }
+.rail-item:hover { background: var(--bg-hover); }
+.rail-item.active { background: var(--bg-surface); box-shadow: var(--shadow-sm); }
+.rail-item-open {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+  padding: var(--space-2) var(--space-3); background: none; border: none;
+  text-align: left; font-family: var(--font-body); cursor: pointer;
+}
+.rail-item-title { font-size: var(--text-sm); font-weight: 500; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-item.active .rail-item-title { color: var(--fg-1); }
+.rail-item-meta { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--fg-4); }
+/* The delete control stays out of the way until the row is hovered or focused. */
+.rail-item-delete { width: 28px; height: 28px; margin-right: var(--space-1); opacity: 0; }
+.rail-item:hover .rail-item-delete, .rail-item-delete:focus-visible { opacity: 1; }
 
 .page { padding: var(--space-8) var(--space-10); max-width: none; margin: 0; }
 .page-head { margin-bottom: var(--space-6); }
@@ -77,6 +126,19 @@
 .btn-block { width: 100%; padding-top: var(--space-3); padding-bottom: var(--space-3); }
 /* The smallest button register: an inline control inside a card header (code-block copy). */
 .btn-xs { padding: 2px var(--space-2); font-size: var(--text-2xs); text-transform: lowercase; }
+/* Ghost-style danger: red text and a subtle red border - the destructive signal without a
+   loud solid-red block (KB's .btn-danger). */
+.btn-danger { background: transparent; color: var(--critical-500); border-color: color-mix(in srgb, var(--critical-500) 38%, var(--border-default)); box-shadow: none; }
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--critical-500) 13%, transparent); color: var(--critical-500); border-color: color-mix(in srgb, var(--critical-500) 55%, transparent); }
+/* Icon-only control (KB's .btn-icon): a square hit area with no chrome until hovered. */
+.btn-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; padding: 0;
+  background: transparent; color: var(--fg-3);
+  border: 1px solid transparent; border-radius: var(--radius-md); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+.btn-icon:hover { background: var(--bg-hover); color: var(--fg-1); }
 
 /* ---------------- Identity pill (header) ---------------- */
 .tenant-pill {
@@ -236,6 +298,8 @@
 .chat { display: flex; flex-direction: column; gap: var(--space-6); max-width: 1100px; }
 .chat-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-4); }
 .chat-log { display: flex; flex-direction: column; gap: var(--space-8); }
+/* States what a reopened thread does and does not carry: exchanges yes, past traces no. */
+.chat-replay-note { margin: 0; color: var(--fg-4); font-size: var(--text-xs); line-height: var(--leading-normal); }
 .chat-turn { display: flex; flex-direction: column; gap: var(--space-3); }
 
 .msg { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4) var(--space-5); }
@@ -299,6 +363,43 @@
    (KB's two-column .usage-grid, collapsing on a narrow viewport). */
 .sql-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); align-items: start; }
 @media (max-width: 920px) { .sql-pair { grid-template-columns: 1fr; } }
+
+/* ---------------- Modal + confirm dialog ---------------- */
+/* KB's modal block. Its .modal-backdrop mixes an undefined --bg-base, which voids the whole
+   declaration and leaves the dim layer off; here it is the real token, --bg-page. */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: max(9vh, var(--space-8)) var(--space-4) var(--space-8);
+  background: color-mix(in srgb, var(--bg-page) 62%, transparent);
+  backdrop-filter: blur(4px); overflow-y: auto;
+  animation: modal-fade var(--dur-fast) var(--ease-out);
+}
+.modal-panel {
+  width: 100%; box-sizing: border-box;
+  background: var(--bg-surface); border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl); box-shadow: var(--shadow-lg);
+  padding: var(--space-6) var(--space-8) var(--space-8);
+  animation: modal-pop var(--dur-base) var(--ease-out);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+  margin-bottom: var(--space-5); padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.modal-title { font-family: var(--font-display); font-weight: 600; font-size: var(--text-lg); color: var(--fg-1); }
+.modal-close {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent;
+  color: var(--fg-4); font-size: 20px; line-height: 1; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.modal-close:hover { background: var(--bg-hover); color: var(--fg-1); }
+.confirm-body { color: var(--fg-2); font-size: var(--text-sm); line-height: var(--leading-normal); }
+.confirm-body strong { color: var(--fg-1); font-weight: 600; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-6); }
+@keyframes modal-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-pop { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
 
 /* ---------------- Retrieved notes ---------------- */
 .note-list { list-style: none; display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; }
