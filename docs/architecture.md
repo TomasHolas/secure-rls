@@ -70,7 +70,7 @@ and tenant context — which also feeds the UI trace and the eval leakage checks
 | `apps/backend/rag.py` | Note embedding (Ollama `/api/embed`) and tenant-partitioned vector search (ADR 0010); storage and queries go through `db.py`. |
 | `apps/backend/security.py` | The SQL validator brick (layer 2). Pure function: SQL text in, validated AST or a typed rejection out. |
 | `apps/backend/db.py` | CSV load, schema, the scoped executor (layers 3+4). The only module that opens a SQLite connection. |
-| `apps/backend/evals/` | Correctness + adversarial suites over the same bricks (ADR 0004). |
+| `apps/backend/evals/` | Correctness + adversarial suites over the same bricks, run per tenant, plus the M2 model gate; `harness.py` owns the plumbing they share and `report.md` is the committed scorecard (ADR 0004). |
 | `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, streaming chat with live reasoning/SQL trace (generated vs executed side by side), conversation history sidebar, tenant badge, charts, transparent security-refusal and truncation states (ADR 0012). |
 
 ## Data model

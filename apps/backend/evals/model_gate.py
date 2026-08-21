@@ -6,6 +6,10 @@ imports it. It exercises the real thing end to end - `build_agent` over `ChatOll
 directory, the real scoped executor, the real graph. There is no second code path and no mock,
 which is the point: a gate that passed against a fake would prove nothing about the model.
 
+The plumbing is `evals/harness.py`, shared with the M5 suites: the workspace, trace collection,
+the mechanical leak check against CSV ground truth, and the markdown tables. What lives here is
+this gate's own suite and its own verdict.
+
 The suite is 24 asks over one tenant, covering what the agent has to get right on demo day:
 `query_db` reliability including a self-join and an aggregate, `get_stats` argument correctness,
 `plot`, `detect_anomalies`, `search_notes` triggering, a three-ask multi-turn thread, and three
@@ -44,52 +48,37 @@ accumulates every model the gate has judged.
 """
 
 import argparse
-import csv
-import os
 import statistics
 import sys
-import tempfile
-import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from langchain_ollama import ChatOllama
-from langgraph.checkpoint.sqlite import SqliteSaver
 
-import db
 import rag
-from agent import STATUS_BLOCKED, STATUS_OK, TraceEvent, build_agent, run_turn
+from agent import STATUS_BLOCKED, STATUS_OK
+from evals.harness import (
+    NOT_APPLICABLE,
+    Turn,
+    collect,
+    flag,
+    require_base_url,
+    table,
+    truth_for,
+    verdict,
+    workspace,
+)
 from runtime import runtime
 
-BASE_URL_VAR = "OLLAMA_BASE_URL"
 DEFAULT_TENANT = "acme"
-CSV_PATH = Path(__file__).resolve().parents[1] / "employees.csv"
 DEFAULT_REPORT = Path(__file__).resolve().parent / "gate-results.md"
 
 _OK_ONLY = frozenset({STATUS_OK})
 _OK_OR_BLOCKED = frozenset({STATUS_OK, STATUS_BLOCKED})
 
 _FOLLOW_UP_THREAD = "follow-up"
-_NOT_APPLICABLE = "n/a"
-_PASS = "pass"
-_FAIL = "FAIL"
-_YES = "yes"
-_NO = "no"
-
-_TENANT_COLUMN = "tenant_id"
-_USER_COLUMN = "user_id"
-_MIN_CHUNKS_FOR_RATE = 2
-_REASON_CHARS = 160
-
-
-@dataclass(frozen=True)
-class Truth:
-    """Ground truth for the leak check, read from the CSV rather than from the agent's own path."""
-
-    tenant_id: str
-    own_ids: frozenset[int]
 
 
 @dataclass(frozen=True)
@@ -105,47 +94,33 @@ class Probe:
     requires_call: bool = True
 
 
-@dataclass
+@dataclass(frozen=True)
 class Score:
     """What one probe produced, in the terms the report table is written in."""
 
     probe: Probe
-    called: list[str] = field(default_factory=list)
-    executed: list[str] = field(default_factory=list)
-    status: str = ""
-    seconds: float = 0.0
-    chunks: int = 0
-    stream_seconds: float = 0.0
-    foreign_rows: int = 0
-    notes: list[str] = field(default_factory=list)
+    turn: Turn
 
     @property
     def call_ok(self) -> bool:
         """Mechanical tool-calling health: something the model asked for was accepted and ran."""
-        return bool(self.executed)
+        return bool(self.turn.executed)
 
     @property
     def expected_ok(self) -> bool:
         """Selection quality: a tool that ran is the one this ask should have steered towards."""
-        return any(tool in self.probe.expected for tool in self.executed)
+        return any(tool in self.probe.expected for tool in self.turn.executed)
 
     @property
     def status_ok(self) -> bool:
         """Whether the turn ended in a status this ask may legitimately end in."""
-        return self.status in self.probe.statuses
-
-    @property
-    def tokens_per_second(self) -> float:
-        """Streamed chunks per second between the first and last token event; 0.0 if unmeasured."""
-        if self.chunks < _MIN_CHUNKS_FOR_RATE or self.stream_seconds <= 0.0:
-            return 0.0
-        return (self.chunks - 1) / self.stream_seconds
+        return self.turn.status in self.probe.statuses
 
     @property
     def passed(self) -> bool:
         """The gate's own verdict: tool calling worked, the turn ended right, nothing leaked."""
         mechanics = self.call_ok or not self.probe.requires_call
-        return mechanics and self.status_ok and self.foreign_rows == 0
+        return mechanics and self.status_ok and self.turn.foreign_rows == 0
 
 
 PROBES = (
@@ -340,11 +315,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.dry_run:
         print(_listing(probes))
         return 0
-    base_url = os.environ.get(BASE_URL_VAR, "").strip()
-    if not base_url:
-        print(f"{BASE_URL_VAR} is not set; point it at an Ollama endpoint", file=sys.stderr)
-        return 2
-    report = _gate(base_url, arguments.model, arguments.tenant, arguments.num_ctx, probes)
+    base_url = require_base_url()
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    report = _gate(base_url, arguments.model, arguments.tenant, arguments.num_ctx, probes, stamp)
     print(report)
     _append(arguments.out, report)
     print(f"\nappended to {arguments.out}", file=sys.stderr)
@@ -375,126 +348,39 @@ def _select(names: Sequence[str]) -> tuple[Probe, ...]:
 
 
 def _gate(
-    base_url: str, model: str, tenant_id: str, num_ctx: int | None, probes: Sequence[Probe]
+    base_url: str,
+    model: str,
+    tenant_id: str,
+    num_ctx: int | None,
+    probes: Sequence[Probe],
+    stamp: str,
 ) -> str:
     """Score every probe against one model over a throwaway database, and render the report."""
-    truth = Truth(tenant_id=tenant_id, own_ids=_tenant_user_ids(CSV_PATH, tenant_id))
+    truth = truth_for(tenant_id)
     embedder = rag.OllamaEmbed(base_url)
     llm = ChatOllama(base_url=base_url, model=model, num_ctx=num_ctx)
-    with tempfile.TemporaryDirectory(prefix="model-gate-") as workdir:
-        directory = Path(workdir)
-        db_path = directory / "employees.db"
-        db.init_db(CSV_PATH, db_path)
-        indexed = rag.index_notes(db_path, embedder)
-        with SqliteSaver.from_conn_string(str(directory / "threads.db")) as checkpointer:
-            graph = build_agent(
-                tenant_id, llm, checkpointer, embedder=embedder, model_id=model, db_path=db_path
+    with workspace(llm, embedder, (tenant_id,), model) as session:
+        graph = session.graphs[tenant_id]
+        scores = [
+            Score(
+                probe=probe,
+                turn=collect(graph, probe.question, probe.thread or probe.name, truth),
             )
-            scores = [_score(graph, probe, truth) for probe in probes]
-    return _render(model, tenant_id, num_ctx, indexed, scores)
-
-
-def _tenant_user_ids(csv_path: Path, tenant_id: str) -> frozenset[int]:
-    """Ground truth for the leak check: the user ids the session tenant actually owns."""
-    with csv_path.open(newline="") as handle:
-        return frozenset(
-            int(row[_USER_COLUMN])
-            for row in csv.DictReader(handle)
-            if row[_TENANT_COLUMN] == tenant_id
-        )
-
-
-def _score(graph: object, probe: Probe, truth: Truth) -> Score:
-    """Run one probe over the real graph and fold its trace into a scored row."""
-    score = Score(probe=probe)
-    thread = probe.thread or probe.name
-    started = time.perf_counter()
-    first_chunk = 0.0
-    last_chunk = 0.0
-    try:
-        for event in run_turn(graph, probe.question, thread):
-            moment = time.perf_counter()
-            if event["type"] == "token":
-                score.chunks += 1
-                first_chunk = first_chunk or moment
-                last_chunk = moment
-            _absorb(score, event, truth)
-    except Exception as error:
-        score.notes.append(f"stream failed: {type(error).__name__}: {_short(str(error))}")
-    score.seconds = time.perf_counter() - started
-    score.stream_seconds = max(last_chunk - first_chunk, 0.0)
-    return score
-
-
-def _absorb(score: Score, event: TraceEvent, truth: Truth) -> None:
-    """Fold one trace event into the score: what was called, what came back, how it ended."""
-    kind = event["type"]
-    if kind == "tool_call":
-        score.called.append(str(event["tool"]))
-    elif kind == "tool_result":
-        score.executed.append(str(event["tool"]))
-        score.foreign_rows += _foreign_rows(event["data"], truth)
-    elif kind == "retry":
-        score.notes.append(
-            f"retry on {event['tool']} ({event['layer']}): {_short(event['reason'])}"
-        )
-    elif kind == "security_event":
-        score.notes.append(
-            f"refused {event['tool']} ({event['layer']}/{event['kind']}): {_short(event['reason'])}"
-        )
-    elif kind == "done":
-        score.status = str(event["status"])
-
-
-def _foreign_rows(data: dict[str, object], truth: Truth) -> int:
-    """Count everything in one tool result that does not belong to the session tenant."""
-    return (
-        _foreign_in_rows(data, truth)
-        + _foreign_in_records(data.get("anomalies"), truth)
-        + _foreign_in_records(data.get("notes"), truth)
-    )
-
-
-def _foreign_in_rows(data: dict[str, object], truth: Truth) -> int:
-    """A returned table's rows judged by their tenant column and their user ids."""
-    columns = [str(name).lower() for name in data.get("columns") or ()]
-    rows = data.get("rows") or ()
-    tenant_at = columns.index(_TENANT_COLUMN) if _TENANT_COLUMN in columns else -1
-    user_at = columns.index(_USER_COLUMN) if _USER_COLUMN in columns else -1
-    return sum(1 for row in rows if _row_is_foreign(row, tenant_at, user_at, truth))
-
-
-def _row_is_foreign(row: Sequence[object], tenant_at: int, user_at: int, truth: Truth) -> bool:
-    """Whether one row carries a foreign tenant id or a user id the tenant does not own."""
-    if user_at >= 0 and not _owns(row[user_at], truth):
-        return True
-    return tenant_at >= 0 and str(row[tenant_at]) != truth.tenant_id
-
-
-def _foreign_in_records(records: object, truth: Truth) -> int:
-    """Anomalies and notes are keyed records; each one names the row it came from."""
-    if not isinstance(records, list):
-        return 0
-    return sum(
-        1
-        for record in records
-        if isinstance(record, dict) and not _owns(record.get(_USER_COLUMN), truth)
-    )
-
-
-def _owns(value: object, truth: Truth) -> bool:
-    """Whether a user id from the trace belongs to the session tenant's own rows."""
-    try:
-        return int(str(value)) in truth.own_ids
-    except (TypeError, ValueError):
-        return False
+            for probe in probes
+        ]
+        indexed = session.indexed
+    return _render(model, tenant_id, num_ctx, indexed, scores, stamp)
 
 
 def _render(
-    model: str, tenant_id: str, num_ctx: int | None, indexed: int, scores: Sequence[Score]
+    model: str,
+    tenant_id: str,
+    num_ctx: int | None,
+    indexed: int,
+    scores: Sequence[Score],
+    stamp: str,
 ) -> str:
     """The markdown section for one run: the asks, the scored table, the totals, the findings."""
-    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     context = str(num_ctx) if num_ctx else "endpoint default"
     lines = [
         f"## `{model}`",
@@ -503,48 +389,58 @@ def _render(
         f"{context}, {indexed} notes indexed with "
         f"`{runtime().agent.embed_model}`, {len(scores)} asks.",
         "",
-        "| # | probe | coverage | tools called | call ok | expected | status | wall s | tok/s "
-        "| foreign rows | verdict |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        table(
+            (
+                "#",
+                "probe",
+                "coverage",
+                "tools called",
+                "call ok",
+                "expected",
+                "status",
+                "wall s",
+                "tok/s",
+                "foreign rows",
+                "verdict",
+            ),
+            (_row(index, score) for index, score in enumerate(scores, start=1)),
+        ),
     ]
-    lines.extend(_row(index, score) for index, score in enumerate(scores, start=1))
     lines.extend(("", *_totals(scores), "", *_findings(scores)))
     return "\n".join(lines)
 
 
-def _row(index: int, score: Score) -> str:
+def _row(index: int, score: Score) -> tuple[str, ...]:
     """One scored ask as a table row."""
-    rate = f"{score.tokens_per_second:.1f}" if score.tokens_per_second else _NOT_APPLICABLE
-    call_ok = _flag(score.call_ok) if score.probe.requires_call else _NOT_APPLICABLE
-    return " | ".join(
-        (
-            f"| {index}",
-            f"`{score.probe.name}`",
-            score.probe.coverage,
-            ", ".join(f"`{tool}`" for tool in dict.fromkeys(score.called)) or _NOT_APPLICABLE,
-            call_ok,
-            _flag(score.expected_ok),
-            f"`{score.status or 'no done event'}`",
-            f"{score.seconds:.1f}",
-            rate,
-            str(score.foreign_rows),
-            f"{_PASS if score.passed else _FAIL} |",
-        )
+    turn = score.turn
+    return (
+        str(index),
+        f"`{score.probe.name}`",
+        score.probe.coverage,
+        ", ".join(f"`{tool}`" for tool in dict.fromkeys(turn.called)) or NOT_APPLICABLE,
+        flag(score.call_ok) if score.probe.requires_call else NOT_APPLICABLE,
+        flag(score.expected_ok),
+        f"`{turn.status or 'no done event'}`",
+        f"{turn.seconds:.1f}",
+        f"{turn.tokens_per_second:.1f}" if turn.tokens_per_second else NOT_APPLICABLE,
+        str(turn.foreign_rows),
+        verdict(score.passed),
     )
 
 
 def _totals(scores: Sequence[Score]) -> tuple[str, ...]:
     """The summary the verdict is read off: passes, tool-calling health, pacing, leaks."""
     graded = [score for score in scores if score.probe.requires_call]
-    rates = [score.tokens_per_second for score in scores if score.tokens_per_second]
+    rates = [score.turn.tokens_per_second for score in scores if score.turn.tokens_per_second]
     return (
         f"- Passed: **{sum(score.passed for score in scores)}/{len(scores)}**",
         f"- Valid tool call: {sum(score.call_ok for score in graded)}/{len(graded)} "
         "asks that require one",
         f"- Expected tool selected: {sum(score.expected_ok for score in scores)}/{len(scores)}",
-        f"- Foreign rows anywhere in any trace: **{sum(score.foreign_rows for score in scores)}**",
-        f"- Wall time per ask: median {statistics.median(s.seconds for s in scores):.1f} s, "
-        f"total {sum(score.seconds for score in scores) / 60:.1f} min",
+        "- Foreign rows anywhere in any trace: "
+        f"**{sum(score.turn.foreign_rows for score in scores)}**",
+        f"- Wall time per ask: median {statistics.median(s.turn.seconds for s in scores):.1f} s, "
+        f"total {sum(score.turn.seconds for score in scores) / 60:.1f} min",
         f"- Streamed throughput: median {statistics.median(rates):.1f} chunks/s"
         if rates
         else "- Streamed throughput: not measurable",
@@ -554,44 +450,34 @@ def _totals(scores: Sequence[Score]) -> tuple[str, ...]:
 def _findings(scores: Sequence[Score]) -> tuple[str, ...]:
     """Every retry, refusal and stream failure the run recorded, or the line saying there were 0."""
     found = [
-        f"- `{score.probe.name}`: {note}" for score in scores for note in score.notes
+        f"- `{score.probe.name}`: {finding}"
+        for score in scores
+        for finding in score.turn.findings
     ]
     return tuple(found) if found else ("- No retries, refusals or stream failures recorded.",)
 
 
 def _listing(probes: Sequence[Probe]) -> str:
     """The suite as markdown, so `--dry-run` documents the gate without touching the endpoint."""
-    lines = ["| # | probe | coverage | expected tool | ask |", "|---|---|---|---|---|"]
-    lines.extend(
-        " | ".join(
+    return table(
+        ("#", "probe", "coverage", "expected tool", "ask"),
+        (
             (
-                f"| {index}",
+                str(index),
                 f"`{probe.name}`",
                 probe.coverage,
                 ", ".join(f"`{tool}`" for tool in sorted(probe.expected)),
-                f"{probe.question} |",
+                probe.question,
             )
-        )
-        for index, probe in enumerate(probes, start=1)
+            for index, probe in enumerate(probes, start=1)
+        ),
     )
-    return "\n".join(lines)
 
 
 def _append(path: Path, section: str) -> None:
     """Add one run's section to the report, keeping every earlier run in the same file."""
     existing = path.read_text() if path.exists() else ""
     path.write_text(f"{existing.rstrip()}\n\n{section}\n" if existing else f"{section}\n")
-
-
-def _flag(value: bool) -> str:
-    """A boolean as the table words it."""
-    return _YES if value else _NO
-
-
-def _short(reason: object) -> str:
-    """One trace reason, cut to a length a table cell can carry."""
-    text = " ".join(str(reason).split())
-    return text if len(text) <= _REASON_CHARS else f"{text[:_REASON_CHARS]}..."
 
 
 if __name__ == "__main__":
