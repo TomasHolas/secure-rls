@@ -18,7 +18,6 @@ whole KB library.
 components/
   Button.tsx       the one button brick — variants primary/ghost
   Icon.tsx         <Icon name="..." /> — Google Material Symbols only
-  Logo.tsx         the anteater brand mark (currentColor SVG)
   layout/          AppLayout, Header, Page, PageHeader, Section, EmptyState (+ index barrel)
 ```
 
@@ -56,7 +55,6 @@ bundler, so reusing the filename makes browsers serve the stale font and new gly
 render as literal text. A name whose ligature is not in the subset renders as literal
 text, so keep the map and the subset in sync.
 
-### Logo
 
 The anteater brand mark as a `currentColor` SVG, sized by `size` (height in px).
 `public/anteater.png` is the same mark as a raster (used as the touch icon);
