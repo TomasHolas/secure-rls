@@ -267,7 +267,7 @@ describe("the chat view", () => {
 
     expect(await screen.findByText(/showing 200 of 543 rows/)).toBeTruthy();
     expect(screen.getByText("Engineering")).toBeTruthy();
-    expect(screen.getByText("91000")).toBeTruthy();
+    expect(screen.getByText("91,000")).toBeTruthy();
   });
 
   it("renders the graph steps and the calling tool in the trace", async () => {

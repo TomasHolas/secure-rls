@@ -6,7 +6,12 @@
  * trace stays readable while a broad result is on screen, and the footer says how many
  * of the returned rows are hidden. The truncation chip next to the table is what reports
  * the server's cap.
+ *
+ * Numeric cells print through `lib/format.ts`, the same formatter the chart axes use, so a
+ * salary reads the same whether the trace shows it as a row or as a bar.
  */
+
+import { formatNumber } from "../lib/format";
 
 const DEFAULT_MAX_ROWS = 8;
 const NULL_CELL = "-";
@@ -59,6 +64,7 @@ export function DataTable({
 
 function format(value: unknown): string {
   if (value === null || value === undefined) return NULL_CELL;
+  if (typeof value === "number") return formatNumber(value);
   return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
