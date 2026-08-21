@@ -19,6 +19,12 @@ the only module that opens a connection; this module owns embedding and orchestr
 
 The endpoint address stays out of here: `OllamaEmbed` takes `base_url` from the caller, so the
 app wiring is the single place that reads `OLLAMA_BASE_URL` (ADR 0005).
+
+Availability (ADR 0010 as amended). The index is built at startup by `ensure_index`, which is
+idempotent: a store that already holds notes is left alone, so a restart costs no embeddings. An
+index that was never built is an operator condition, not a model error - `search_notes_scoped`
+raises `RetrievalUnavailable` for it, which the tool layer turns into a plain statement that
+retrieval is offline instead of an error the model would retry three times.
 """
 
 from pathlib import Path
@@ -30,6 +36,11 @@ import db
 from runtime import runtime
 
 _EMBED_PATH = "/api/embed"
+_UNAVAILABLE = "the note index has not been built on this server"
+
+
+class RetrievalUnavailable(Exception):
+    """Raised when no note index exists, so retrieval cannot serve any tenant at all."""
 
 
 class EmbedClient(Protocol):
@@ -68,14 +79,23 @@ def index_notes(db_path: Path, embedder: EmbedClient) -> int:
     return len(notes)
 
 
+def ensure_index(db_path: Path, embedder: EmbedClient) -> int:
+    """Index the notes unless the store already holds some; returns how many it holds."""
+    held = db.vector_store_rows(db_path)
+    return held or index_notes(db_path, embedder)
+
+
 def search_notes_scoped(
     db_path: Path, embedder: EmbedClient, query: str, tenant_id: str, k: int | None = None
 ) -> list[dict[str, object]]:
     """The notes closest to query inside tenant_id's partition; an empty list when none match."""
     (vector,) = embedder.embed([query])
-    matches = db.search_vectors(
-        db_path, vector, tenant_id, runtime().rag.top_k if k is None else k
-    )
+    try:
+        matches = db.search_vectors(
+            db_path, vector, tenant_id, runtime().rag.top_k if k is None else k
+        )
+    except FileNotFoundError as missing:
+        raise RetrievalUnavailable(_UNAVAILABLE) from missing
     _verify_tenant(matches, tenant_id)
     return [
         {"user_id": match.user_id, "name": match.name, "note": match.note,
