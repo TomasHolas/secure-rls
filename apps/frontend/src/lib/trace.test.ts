@@ -2,13 +2,19 @@
 
 import { describe, expect, it } from "vitest";
 
-import { applyEvent, failTurn, startTurn } from "./trace";
-import type { CallItem, Turn } from "./trace";
-import type { TraceEvent } from "./sse";
+import { applyEvent, failTurn, startTurn, tokensPerSecond } from "./trace";
+import type { CallItem, NodeItem, Turn } from "./trace";
+import type { DoneEvent, TraceEvent, TurnStatus } from "./sse";
 
 const GENERATED = "SELECT department, AVG(salary) FROM employees GROUP BY department";
 const EXECUTED =
   "SELECT department, AVG(salary) FROM (SELECT * FROM employees WHERE tenant_id = ?) GROUP BY department";
+const COST = { input_tokens: 250, output_tokens: 28, duration_s: 2 };
+
+/** A terminal frame as the backend sends it: how the turn ended, plus what it cost. */
+function done(status: TurnStatus, answer: string, model = "m"): DoneEvent {
+  return { type: "done", status, answer, model, ...COST };
+}
 
 function fold(events: TraceEvent[], question = "average salary per department"): Turn {
   return events.reduce(applyEvent, startTurn(question));
@@ -16,6 +22,10 @@ function fold(events: TraceEvent[], question = "average salary per department"):
 
 function calls(turn: Turn): CallItem[] {
   return turn.items.filter((item): item is CallItem => item.kind === "call");
+}
+
+function nodes(turn: Turn): NodeItem[] {
+  return turn.items.filter((item): item is NodeItem => item.kind === "node");
 }
 
 describe("a turn that answers", () => {
@@ -44,7 +54,7 @@ describe("a turn that answers", () => {
     { type: "token", text: "Engineering " },
     { type: "token", text: "averages 91000." },
     { type: "node_start", node: "respond" },
-    { type: "done", status: "ok", answer: "Engineering averages 91000.", model: "qwen3:8b" },
+    done("ok", "Engineering averages 91000.", "qwen3:8b"),
   ]);
 
   it("streams the answer from the token events", () => {
@@ -58,14 +68,18 @@ describe("a turn that answers", () => {
   });
 
   it("collapses consecutive entries into the same node but keeps a later re-entry", () => {
-    const nodes = turn.items.filter((item) => item.kind === "node");
-    expect(nodes).toEqual([
-      { kind: "node", node: "reason" },
-      { kind: "node", node: "validate" },
-      { kind: "node", node: "execute_tool" },
-      { kind: "node", node: "reason" },
-      { kind: "node", node: "respond" },
+    expect(nodes(turn).map((item) => item.node)).toEqual([
+      "reason",
+      "validate",
+      "execute_tool",
+      "reason",
+      "respond",
     ]);
+  });
+
+  it("reports what the turn cost from its terminal frame", () => {
+    expect(turn.usage).toEqual({ inputTokens: 250, outputTokens: 28, durationS: 2 });
+    expect(tokensPerSecond(turn.usage)).toBe(14);
   });
 
   it("pairs the result with its call, carrying both statements", () => {
@@ -90,7 +104,7 @@ describe("a capped result", () => {
         content: "showing 200 of 543 rows",
         data: { columns: ["name"], rows: [["Ada"]], total_count: 543, returned_count: 200, truncated: true },
       },
-      { type: "done", status: "ok", answer: "a", model: "m" },
+      done("ok", "a"),
     ]);
 
     expect(calls(turn)[0].outcome).toMatchObject({
@@ -120,7 +134,7 @@ describe("a retried call", () => {
       content: "name",
       data: { columns: ["name"], rows: [["Ada"]], total_count: 1, returned_count: 1, truncated: false },
     },
-    { type: "done", status: "ok", answer: "Ada.", model: "m" },
+    done("ok", "Ada."),
   ]);
 
   it("attaches the retry to the call that failed, with its counter and reason", () => {
@@ -155,7 +169,7 @@ describe("a refused call", () => {
       reason: "table sqlite_master is not allowlisted",
     },
     { type: "token", text: "I cannot run that query." },
-    { type: "done", status: "blocked", answer: "I cannot run that query.", model: "m" },
+    done("blocked", "I cannot run that query."),
   ]);
 
   it("marks the turn blocked and keeps the layer, kind and reason", () => {
@@ -170,6 +184,67 @@ describe("a refused call", () => {
 
   it("shows the refusal the graph composed as the answer", () => {
     expect(turn.answer).toBe("I cannot run that query.");
+  });
+});
+
+describe("streamed reasoning", () => {
+  const turn = fold([
+    { type: "node_start", node: "reason" },
+    { type: "reasoning", text: "the question asks for " },
+    { type: "reasoning", text: "an average per group" },
+    { type: "token", text: "Engineering averages 91000." },
+    { type: "node_start", node: "respond" },
+    done("ok", "Engineering averages 91000."),
+  ]);
+
+  it("accumulates on the step the model was in, not on the answer", () => {
+    expect(nodes(turn)[0]).toEqual({
+      kind: "node",
+      node: "reason",
+      reasoning: "the question asks for an average per group",
+    });
+    expect(turn.answer).toBe("Engineering averages 91000.");
+  });
+
+  it("leaves a later step of the same turn with no reasoning of its own", () => {
+    expect(nodes(turn)[1]).toEqual({ kind: "node", node: "respond", reasoning: "" });
+  });
+
+  it("keeps reasoning of a second visit to a node on that visit's step", () => {
+    const twice = fold([
+      { type: "node_start", node: "reason" },
+      { type: "reasoning", text: "first thought" },
+      { type: "node_start", node: "audit" },
+      { type: "node_start", node: "reason" },
+      { type: "reasoning", text: "second thought" },
+    ]);
+
+    expect(nodes(twice).map((item) => item.reasoning)).toEqual([
+      "first thought",
+      "",
+      "second thought",
+    ]);
+  });
+
+  it("opens a step for reasoning that arrives before one was announced", () => {
+    const early = fold([{ type: "reasoning", text: "thinking already" }]);
+
+    expect(early.items).toEqual([{ kind: "node", node: "reason", reasoning: "thinking already" }]);
+    expect(early.answer).toBe("");
+  });
+});
+
+describe("what a turn cost", () => {
+  it("has no rate to state for a turn that generated nothing", () => {
+    const turn = fold([{ type: "done", status: "blocked", answer: "no", model: "m", input_tokens: 40, output_tokens: 0, duration_s: 0.5 }]);
+
+    expect(turn.usage).toEqual({ inputTokens: 40, outputTokens: 0, durationS: 0.5 });
+    expect(tokensPerSecond(turn.usage)).toBeNull();
+  });
+
+  it("has no rate to state before the terminal frame or without a measured duration", () => {
+    expect(tokensPerSecond(null)).toBeNull();
+    expect(tokensPerSecond({ inputTokens: 10, outputTokens: 20, durationS: 0 })).toBeNull();
   });
 });
 
@@ -241,7 +316,7 @@ describe("edge cases", () => {
   });
 
   it("falls back to the done answer when no token carried text", () => {
-    const turn = fold([{ type: "done", status: "gave_up", answer: "I gave up.", model: "m" }]);
+    const turn = fold([done("gave_up", "I gave up.")]);
 
     expect(turn).toMatchObject({ phase: "gave_up", answer: "I gave up." });
   });
@@ -251,7 +326,7 @@ describe("edge cases", () => {
     const turn = fold([
       { type: "node_start", node: "reason" },
       { type: "token", text: "Engineering " },
-      { type: "done", status: "failed", answer: diagnosis, model: "qwen3:8b" },
+      done("failed", diagnosis, "qwen3:8b"),
     ]);
 
     expect(turn).toMatchObject({
@@ -263,7 +338,7 @@ describe("edge cases", () => {
   });
 
   it("does not turn a failed frame's reason into the answer of the turn", () => {
-    const turn = fold([{ type: "done", status: "failed", answer: "it broke", model: "m" }]);
+    const turn = fold([done("failed", "it broke")]);
 
     expect(turn.answer).toBe("");
     expect(turn.error).toBe("it broke");

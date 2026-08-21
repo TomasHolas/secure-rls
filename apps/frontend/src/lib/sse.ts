@@ -29,6 +29,15 @@ export interface TokenEvent {
   text: string;
 }
 
+/**
+ * One chunk of the model's own thinking, streamed as it arrives. It belongs to the trace and
+ * never to the answer: the backend splits it out of the text before a token is ever emitted.
+ */
+export interface ReasoningEvent {
+  type: "reasoning";
+  text: string;
+}
+
 export interface ToolCallEvent {
   type: "tool_call";
   id: string;
@@ -92,16 +101,24 @@ export interface RetryEvent {
  */
 export type TurnStatus = "ok" | "blocked" | "gave_up" | "failed";
 
+/**
+ * How a turn ended and what it cost: the summed usage of its model calls and the wall-clock
+ * seconds it ran. A `failed` frame reports the seconds it managed and no tokens.
+ */
 export interface DoneEvent {
   type: "done";
   status: TurnStatus;
   answer: string;
   model: string;
+  input_tokens: number;
+  output_tokens: number;
+  duration_s: number;
 }
 
 export type TraceEvent =
   | NodeStartEvent
   | TokenEvent
+  | ReasoningEvent
   | ToolCallEvent
   | ToolResultEvent
   | SecurityEvent

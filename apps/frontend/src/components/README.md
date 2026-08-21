@@ -319,13 +319,21 @@ either. Fixtures for every kind live in `charts/Chart.test.tsx` (`npm test`).
 
 ```tsx
 <ChatMessage role="user" text={turn.question} />
-<ChatMessage role="assistant" text={turn.answer} footer={<Pill tone="ok">…</Pill>}>
-  <TracePanel items={turn.items} streaming={live} />
+<ChatMessage
+  role="assistant"
+  text={turn.answer}
+  lead={<TracePanel items={turn.items} streaming={live} />}
+  footer={<Pill tone="ok">…</Pill>}
+>
+  {turn.error ? <p className="form-error">{turn.error}</p> : null}
 </ChatMessage>
 ```
 
 One turn's bubble: an icon + caps role header over the text, `user` a compact tinted
-bubble and `assistant` the full-width card the trace and the status pills hang under.
+bubble and `assistant` the full-width card that holds three slots in reading order —
+`lead` above the text, `children` under it, `footer` last. The trace goes in the **lead**
+(ADR 0012 as amended): the steps that produced an answer are read before the answer, not
+found underneath it.
 The **assistant** body goes through the `Markdown` brick (answers arrive in markdown, so
 `**bold**` must not show literally); the **user** body stays plain text with
 `white-space: pre-wrap` — it is what the person typed, never interpreted as markup. Those
@@ -364,17 +372,23 @@ The live trace of one turn, folded by `lib/trace.ts` from the `lib/sse.ts` event
 graph steps, each tool call with its arguments, and the **one** outcome that closes it —
 a result, a `retry` with its attempt counter and fed-back reason, or a `security_event`
 as a red blocked state naming the layer, kind and reason (ADR 0012). Collapsible,
-expanded while the turn streams. An outcome whose call was never announced still renders,
-so nothing the backend said is dropped.
+expanded while the turn streams. A graph step that streamed reasoning shows the model's
+own thinking as that step's disclosure, closed to start with. An outcome whose call was
+never announced still renders, so nothing the backend said is dropped.
 
 ### chat/TraceStep
 
 ```tsx
 <TraceStep icon="database" title="query_db" meta={<Pill tone="ok">3 rows</Pill>} tone="blocked">
+<TraceStep icon="sparkles" title="Reasoning" tone="muted" open={false}>
 ```
 
 One entry on the trace rail: icon, title, right-aligned chips, body. `tone` is `default |
-muted | warn | blocked`, carrying the state in a second channel next to the icon.
+muted | warn | blocked`, carrying the state in a second channel next to the icon. A step
+with a body is its **own disclosure** — the head becomes a button with `aria-expanded` and
+the panel's chevron — so no reader is stuck with every SQL statement, table and chart open
+at once; `open` is the state it starts in (`false` for reasoning) and the reader's click
+wins from then on. A step with nothing to show stays a plain row with no control.
 
 ### chat/ToolResultView
 

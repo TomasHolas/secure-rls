@@ -14,11 +14,46 @@ node/tool/token events.
 ### Transport: SSE with typed events
 
 `POST /chat` returns a Server-Sent Events stream. Event types mirror the audit
-log: `token`, `node_start`, `tool_call` (generated SQL / tool args),
+log: `token`, `reasoning`, `node_start`, `tool_call` (generated SQL / tool args),
 `tool_result` (executed SQL, rows, truncation info), `security_event`,
 `retry` (attempt n of max), `done`. The SPA consumes the stream via `fetch` +
 ReadableStream (browser `EventSource` cannot POST). Each event is rendered as
 it arrives — the live trace IS the transport, not a replay.
+
+**Reasoning is content, not a label (amended after issue #67).** The live pass
+showed the trace naming a step "Reasoning" while the model's actual reasoning
+went nowhere: a thinking model's `<think>` text landed in the answer body as
+ordinary `token` text, so the reader got the thinking and the answer as one
+undifferentiated block and the label above it was a frontend invention.
+
+- **`reasoning` with `{text}` is a binding event.** It carries the model's own
+  thinking as it arrives, appended to the current trace step, streamed live,
+  and never part of the answer body. It is trace content in the same sense a
+  tool call is: shown once, never written to the graph's history and never
+  replayed (a reopened thread shows what was said, not what was thought).
+- **One splitter, two channels.** The endpoint's thinking output is enabled per
+  model (`langchain_ollama`'s `reasoning=True`, which sets Ollama's `think` and
+  streams the text under `reasoning_content` beside the answer), and a smaller
+  model that writes `<think>` into its text is handled by the same streaming
+  markup filter issue #66 added. Both paths emit the same event, so there is
+  one place where reasoning can leak into prose and it is covered by tests.
+- **Asking is per model, not per process.** Ollama refuses a `think` request
+  outright for a model that does not declare the `thinking` capability, so the
+  same `/api/show` declaration the model filter reads decides whether a turn
+  asks for reasoning. `agent.thinking` in `runtime.json` turns the whole
+  channel off; a model that cannot think simply answers without it.
+
+**`done` reports what the turn cost (amended after issue #67).** The frame
+carries `input_tokens`, `output_tokens` and `duration_s` next to `status`,
+`answer` and `model`, and the SPA renders In / Out / tokens-per-second beside
+the model pill. `stream_mode="custom"` means LangGraph never surfaces the raw
+chunks, so usage is read off the `AIMessage` the reason node accumulated and
+summed over the turn's model calls (a turn with tool rounds calls the model
+more than once); the duration is `perf_counter` measured across the turn, at
+`agent.duration_decimals` precision. A `failed` frame reports the seconds it
+managed and no tokens — a run that never reached an answer never got a usage
+report to pass on. Honest zeros, never an invented number: a model endpoint
+that reports no usage yields zeros and the footer states nothing.
 
 **Two termination invariants (amended after issue #66).** The live pass showed
 what their absence costs: one tool raising an unexpected exception killed the
@@ -167,6 +202,19 @@ place that attaches the bearer token.
 - Generated vs executed SQL are displayed side by side in the trace — the
   layer-3 rewrite made visible.
 
+### Reading order and per-step disclosure (added with issue #67)
+
+- **The trace precedes the answer.** A turn reads top down in the order it
+  happened: the steps, then the answer they produced, then what the turn cost.
+  Rendering the conclusion first and the reasoning under it invites the reader
+  to trust the answer without the evidence, which is the opposite of what an
+  auditable analyst tool is for.
+- **Every step with a body is its own disclosure**, a chevron with
+  `aria-expanded` on the step head. Once the panel was open, every step's SQL,
+  table and chart was expanded permanently, which buried the one step a reader
+  was looking for. Reasoning starts collapsed (it is the longest and the least
+  load-bearing); an outcome starts open.
+
 ## Consequences
 
 - M3 grows the conversation endpoints; M4 grows the sidebar; both covered by
@@ -187,8 +235,19 @@ place that attaches the bearer token.
 
 - Ollama API (streaming chat) — https://docs.ollama.com/api
 - Ollama API, Show Model Information — the `capabilities` list the model filter
-  reads (`"capabilities": ["completion", "vision"]`) —
+  and the thinking decision read (`"capabilities": ["completion", "thinking"]`) —
   https://github.com/ollama/ollama/blob/main/docs/api.md#show-model-information
+- Ollama thinking (`think`, and the `thinking` field it returns beside
+  `content`) — https://docs.ollama.com/capabilities/thinking
+- `langchain-ollama`'s `ChatOllama.reasoning`, which sets that `think` and
+  streams the text under `additional_kwargs["reasoning_content"]` — verified
+  empirically against the installed 1.1.0 —
+  https://reference.langchain.com/python/integrations/langchain_ollama/chat_models/
+- LangChain `usage_metadata` on an `AIMessage` (`input_tokens`,
+  `output_tokens`), the only place usage surfaces under a custom stream mode —
+  https://docs.langchain.com/oss/python/langchain/models
+- WAI-ARIA `aria-expanded` on a disclosure button —
+  https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/
 - LangGraph streaming (`astream_events`) and persistence (checkpointers) —
   https://docs.langchain.com/oss/python/langgraph/overview
 - WHATWG HTML: Server-Sent Events — https://html.spec.whatwg.org/multipage/server-sent-events.html

@@ -6,6 +6,7 @@ import { readTraceEvents } from "./sse";
 import type { TraceEvent } from "./sse";
 
 const encoder = new TextEncoder();
+const COST = { input_tokens: 250, output_tokens: 28, duration_s: 2 };
 
 function frame(payload: unknown): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
@@ -35,21 +36,37 @@ describe("readTraceEvents", () => {
   it("yields every frame of a chunk in order", async () => {
     const response = responseOf(
       frame({ type: "node_start", node: "reason" }) +
+        frame({ type: "reasoning", text: "an average per group" }) +
         frame({ type: "token", text: "Average " }) +
         frame({ type: "token", text: "salary." }) +
-        frame({ type: "done", status: "ok", answer: "Average salary.", model: "qwen3:8b" }),
+        frame({ type: "done", status: "ok", answer: "Average salary.", model: "qwen3:8b", ...COST }),
     );
 
     const events = await collect(response);
 
-    expect(events.map((event) => event.type)).toEqual(["node_start", "token", "token", "done"]);
-    expect(events[3]).toMatchObject({ status: "ok", model: "qwen3:8b" });
+    expect(events.map((event) => event.type)).toEqual([
+      "node_start",
+      "reasoning",
+      "token",
+      "token",
+      "done",
+    ]);
+    expect(events[1]).toEqual({ type: "reasoning", text: "an average per group" });
+    expect(events[4]).toMatchObject({ status: "ok", model: "qwen3:8b", ...COST });
   });
 
   it("carries a terminal failed frame like any other done event", async () => {
     const response = responseOf(
       frame({ type: "node_start", node: "reason" }) +
-        frame({ type: "done", status: "failed", answer: "the run broke", model: "qwen3:8b" }),
+        frame({
+          type: "done",
+          status: "failed",
+          answer: "the run broke",
+          model: "qwen3:8b",
+          input_tokens: 0,
+          output_tokens: 0,
+          duration_s: 0.4,
+        }),
     );
 
     const events = await collect(response);
@@ -59,6 +76,9 @@ describe("readTraceEvents", () => {
       status: "failed",
       answer: "the run broke",
       model: "qwen3:8b",
+      input_tokens: 0,
+      output_tokens: 0,
+      duration_s: 0.4,
     });
   });
 
@@ -118,11 +138,10 @@ describe("readTraceEvents", () => {
   });
 
   it("flushes a final frame that never got its blank line", async () => {
-    const response = responseOf('data: {"type": "done", "status": "ok", "answer": "", "model": "m"}');
+    const payload = { type: "done", status: "ok", answer: "", model: "m", ...COST };
+    const response = responseOf(`data: ${JSON.stringify(payload)}`);
 
-    await expect(collect(response)).resolves.toEqual([
-      { type: "done", status: "ok", answer: "", model: "m" },
-    ]);
+    await expect(collect(response)).resolves.toEqual([payload]);
   });
 
   it("cancels the body when the consumer stops early", async () => {

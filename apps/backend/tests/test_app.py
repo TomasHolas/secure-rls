@@ -33,14 +33,21 @@ transcript is read and before the model is called, and the response carries the 
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 import jwt
 import pytest
 from fastapi.testclient import TestClient
 
+import app
 from agent import STATUS_FAILED, Message
-from app import REFRESHED_TOKEN_HEADER, ModelEndpointError, create_app
+from app import (
+    REFRESHED_TOKEN_HEADER,
+    ModelEndpointError,
+    cached_capabilities,
+    create_app,
+    thinking_checker,
+)
 from auth import SECRET_ENV_VAR, AuthError
 from conversations import ConversationRegistry
 from runtime import runtime
@@ -71,10 +78,13 @@ TRANSCRIPT = (
     Message(role="user", content="and how many of them in sales?"),
     Message(role="assistant", content="one of them is in sales"),
 )
+THOUGHT = "counting the rows this tenant can see"
+USAGE = {"input_tokens": 250, "output_tokens": 28, "duration_s": 1.75}
 EVENTS = (
     {"type": "node_start", "node": "reason"},
+    {"type": "reasoning", "text": THOUGHT},
     {"type": "token", "text": ANSWER},
-    {"type": "done", "status": "ok", "answer": ANSWER},
+    {"type": "done", "status": "ok", "answer": ANSWER, **USAGE},
 )
 STARTED = ({"type": "node_start", "node": "reason"}, {"type": "token", "text": "acme has"})
 # What a failing run must not put on the wire, whatever the exception carrying it says.
@@ -352,6 +362,38 @@ def test_models_asks_the_endpoint_about_each_model_once(wiring):
     assert wiring.capabilities.asked == SERVED_MODELS
 
 
+def test_only_a_model_that_declares_thinking_is_asked_to_think():
+    """Ollama refuses `think` for a model without the capability, so the declaration decides."""
+    capabilities = FakeCapabilities(
+        declared={CHAT_MODELS[0]: ["completion", "thinking"], CHAT_MODELS[1]: ["completion"]}
+    )
+    thinks = thinking_checker(capabilities)
+
+    assert thinks(CHAT_MODELS[0]) is True
+    assert thinks(CHAT_MODELS[1]) is False
+
+
+def test_no_model_is_asked_to_think_when_the_configuration_turns_it_off(monkeypatch):
+    """The reasoning channel is a runtime knob, not a hardcoded behavior of the runner."""
+    config = runtime()
+    monkeypatch.setattr(
+        app, "runtime", lambda: replace(config, agent=replace(config.agent, thinking=False))
+    )
+    thinks = thinking_checker(FakeCapabilities(declared={CHAT_MODELS[0]: ["thinking"]}))
+
+    assert thinks(CHAT_MODELS[0]) is False
+
+
+def test_the_endpoint_is_asked_about_a_model_once_for_every_reader():
+    """One cache serves the model list and the thinking decision; `/api/show` is asked once."""
+    capabilities = FakeCapabilities()
+    cached = cached_capabilities(capabilities)
+
+    assert cached(CHAT_MODELS[0]) == CAPABILITIES[CHAT_MODELS[0]]
+    assert thinking_checker(cached)(CHAT_MODELS[0]) is False
+    assert capabilities.asked == [CHAT_MODELS[0]]
+
+
 def test_models_answers_502_generically_when_the_endpoint_is_down(tmp_path):
     def unreachable() -> list[str]:
         raise ModelEndpointError("connect timeout to http://host.example:11434")
@@ -392,6 +434,38 @@ def test_chat_closes_a_broken_stream_with_a_terminal_failed_frame(tmp_path):
     assert events[-1]["answer"]
     assert events[-1]["model"] == runtime().agent.model
     assert SECRET_HOST not in response.text
+
+
+def test_a_terminal_failed_frame_reports_the_seconds_it_ran_and_no_tokens(tmp_path):
+    """A run that never reached an answer has no usage to report, but it does have a duration."""
+    client = _client(tmp_path, chat_runner=BreakingRunner(STARTED))
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers)
+
+    response = client.post(
+        "/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers
+    )
+
+    done = _sse_events(response.text)[-1]
+    assert (done["input_tokens"], done["output_tokens"]) == (0, 0)
+    assert done["duration_s"] >= 0
+
+
+def test_chat_streams_the_reasoning_and_the_turn_cost_verbatim(wiring):
+    """The edge serializes what the agent said: the thinking as its own frame, usage on `done`."""
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers)
+
+    response = wiring.client.post(
+        "/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers
+    )
+
+    events = _sse_events(response.text)
+    assert [event for event in events if event["type"] == "reasoning"] == [
+        {"type": "reasoning", "text": THOUGHT}
+    ]
+    assert {key: events[-1][key] for key in USAGE} == USAGE
+    assert THOUGHT not in events[-1]["answer"]
 
 
 def test_a_stream_that_breaks_after_its_done_frame_is_not_closed_twice(tmp_path):

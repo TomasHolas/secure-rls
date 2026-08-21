@@ -89,6 +89,8 @@ _DIM = 32
 _CALL_ID = "call-1"
 _THREAD = "thread-1"
 _OUTCOMES = ("tool_result", "retry", "security_event")
+# The key langchain_ollama streams a thinking model's reasoning under, next to the answer text.
+_REASONING_KEY = "reasoning_content"
 # What a tool raising by surprise would leak if the reason it produced were not composed here.
 _LEAK = "/Users/demo/state/vectors.db line 372"
 
@@ -132,6 +134,35 @@ class SplitLLM(ScriptedLLM):
             yield ChatGenerationChunk(message=AIMessageChunk(content=piece))
 
 
+class ThinkingLLM(ScriptedLLM):
+    """Streams the way a thinking endpoint does: reasoning on its own channel, then the answer.
+
+    langchain_ollama puts a thinking model's reasoning under `reasoning_content` in the
+    `additional_kwargs` of every chunk it streams, beside the answer content rather than inside
+    it (verified against langchain-ollama 1.1.0). This reproduces that shape without a model,
+    in small pieces, because the reasoning has to reach the trace live.
+    """
+
+    thoughts: list[str] = Field(default_factory=list)
+    size: int = 4
+
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        """Yield this turn's reasoning in small chunks, then its scripted answer."""
+        self.seen.append(list(messages))
+        index = len(self.seen) - 1
+        if index >= len(self.script):
+            raise AssertionError(f"the model was called {len(self.seen)} times, past its script")
+        thought = self.thoughts[index] if index < len(self.thoughts) else ""
+        for start in range(0, len(thought), self.size):
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    additional_kwargs={_REASONING_KEY: thought[start : start + self.size]},
+                )
+            )
+        yield ChatGenerationChunk(message=AIMessageChunk(content=self.script[index].text))
+
+
 class FakeEmbed:
     """A hashed bag of words: close means shares words, reproducible without a model."""
 
@@ -167,6 +198,19 @@ def _tool_calls(*specs: tuple[str, dict]) -> AIMessage:
     )
 
 
+def _spent(message: AIMessage, prompt: int, completion: int) -> AIMessage:
+    """The same assistant message carrying the usage an endpoint would report for it."""
+    return AIMessage(
+        content=message.content,
+        tool_calls=message.tool_calls,
+        usage_metadata={
+            "input_tokens": prompt,
+            "output_tokens": completion,
+            "total_tokens": prompt + completion,
+        },
+    )
+
+
 def _raise(*args: object, **kwargs: object) -> None:
     """Stand in for a tool that breaks in a way nothing in the graph anticipated."""
     raise RuntimeError(f"no such file: {_LEAK}")
@@ -192,6 +236,11 @@ def _closed(events: list[dict]) -> None:
 def _text(events: list[dict]) -> str:
     """Everything the stream presented to the reader, in order."""
     return "".join(event["text"] for event in _of_type(events, "token"))
+
+
+def _reasoning(events: list[dict]) -> str:
+    """Everything the stream showed as the model's own thinking, in order."""
+    return "".join(event["text"] for event in _of_type(events, "reasoning"))
 
 
 def _one(events: list[dict], kind: str) -> dict:
@@ -230,8 +279,13 @@ def checkpointer(tmp_path):
 def build(db_path):
     """Compile an agent over the fixture database for a script of assistant messages."""
 
-    def make(*script, tenant=ACME, checkpointer=None, model_id=None, chunked=False):
-        llm = (SplitLLM if chunked else ScriptedLLM)(script=list(script))
+    def make(
+        *script, tenant=ACME, checkpointer=None, model_id=None, chunked=False, thoughts=None
+    ):
+        if thoughts is not None:
+            llm = ThinkingLLM(script=list(script), thoughts=list(thoughts))
+        else:
+            llm = (SplitLLM if chunked else ScriptedLLM)(script=list(script))
         graph = build_agent(
             tenant,
             llm,
@@ -263,6 +317,17 @@ def tuned(monkeypatch):
         )
         monkeypatch.setattr(agent, "runtime", lambda: patched)
         monkeypatch.setattr(db, "runtime", lambda: patched)
+
+    return apply
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Hand the agent a scripted `perf_counter`, so a reported duration is exact, not flaky."""
+
+    def apply(*readings):
+        ticks = iter(readings)
+        monkeypatch.setattr(agent, "perf_counter", lambda: next(ticks))
 
     return apply
 
@@ -666,17 +731,106 @@ def test_a_turn_that_calls_two_tools_answers_both_calls(build):
     assert sum(1 for message in llm.seen[-1] if message.type == "tool") == 2
 
 
-def test_thinking_markup_never_becomes_the_answer(build):
-    """A model that thinks out loud in <think> tags has that text held back, split or not."""
+def test_thinking_markup_becomes_reasoning_and_never_the_answer(build):
+    """A model that thinks out loud in <think> tags has that text routed out of the answer."""
     graph, _ = build(
         AIMessage(content=f"<think>the user wants a count</think>acme has {_ACME_ROWS} employees"),
         chunked=True,
     )
     events = list(run_turn(graph, "how many employees?", _THREAD))
 
+    assert _reasoning(events) == "the user wants a count"
     assert _text(events) == f"acme has {_ACME_ROWS} employees"
     assert _one(events, "done")["answer"] == f"acme has {_ACME_ROWS} employees"
-    assert "think" not in json.dumps(events)
+    assert "<think>" not in json.dumps(events)
+
+
+def test_a_thinking_region_the_model_never_closes_is_still_reasoning(build):
+    """Text held inside an unclosed <think> is shown as thinking, not dropped and not answered."""
+    graph, _ = build(AIMessage(content="<think>still weighing the options"), chunked=True)
+    events = list(run_turn(graph, "how many employees?", _THREAD))
+
+    assert _reasoning(events) == "still weighing the options"
+    assert _text(events) == "I could not produce an answer to that."
+
+
+def test_the_reasoning_channel_streams_as_its_own_event(build):
+    """An endpoint that reasons beside its answer has that reasoning streamed, never spoken."""
+    graph, _ = build(
+        AIMessage(content=f"acme has {_ACME_ROWS} employees"),
+        thoughts=["counting the rows the tenant can see"],
+    )
+    events = list(run_turn(graph, "how many employees?", _THREAD))
+
+    kinds = [event["type"] for event in events]
+    assert kinds.index("reasoning") < kinds.index("token")
+    assert len(_of_type(events, "reasoning")) > 1
+    assert _reasoning(events) == "counting the rows the tenant can see"
+    assert _text(events) == f"acme has {_ACME_ROWS} employees"
+    assert _one(events, "done")["answer"] == f"acme has {_ACME_ROWS} employees"
+
+
+def test_reasoning_is_never_written_to_the_transcript(build, checkpointer):
+    """The trace owns the thinking: the stored turn is the words, so a replay cannot show it."""
+    graph, llm = build(
+        AIMessage(content="acme has six employees"),
+        AIMessage(content="the same six, yes"),
+        thoughts=["a private note to myself", "and another"],
+        checkpointer=checkpointer,
+    )
+    list(run_turn(graph, "how many employees?", _THREAD))
+    list(run_turn(graph, "are you sure?", _THREAD))
+
+    replayed = thread_messages(checkpointer, _THREAD)
+    assert "a private note to myself" not in " ".join(message.content for message in replayed)
+    assert "a private note to myself" not in "".join(
+        message.text for message in llm.seen[-1] if message.text
+    )
+
+
+def test_the_done_event_sums_what_every_model_call_of_the_turn_cost(build):
+    """Usage comes off each accumulated message, so a turn with tool rounds reports the total."""
+    graph, _ = build(
+        _spent(_tool_call("query_db", sql="SELECT COUNT(*) AS n FROM employees"), 100, 20),
+        _spent(AIMessage(content=f"acme has {_ACME_ROWS} employees"), 150, 8),
+    )
+    events = list(run_turn(graph, "how many employees?", _THREAD))
+
+    done = _one(events, "done")
+    assert done["input_tokens"] == 250
+    assert done["output_tokens"] == 28
+
+
+def test_an_endpoint_that_reports_no_usage_is_reported_as_no_tokens(build):
+    """A model that says nothing about its usage costs the turn a zero, never a failure."""
+    graph, _ = build(AIMessage(content="acme has six employees"))
+    events = list(run_turn(graph, "how many employees?", _THREAD))
+
+    done = _one(events, "done")
+    assert (done["input_tokens"], done["output_tokens"]) == (0, 0)
+
+
+def test_the_turn_cost_belongs_to_the_turn_that_spent_it(build, checkpointer):
+    """Usage is reported per turn, never accumulated over the thread the checkpointer keeps."""
+    graph, _ = build(
+        _spent(AIMessage(content="six"), 100, 10),
+        _spent(AIMessage(content="still six"), 120, 12),
+        checkpointer=checkpointer,
+    )
+    first = _one(list(run_turn(graph, "one", _THREAD)), "done")
+    second = _one(list(run_turn(graph, "two", _THREAD)), "done")
+
+    assert (first["input_tokens"], first["output_tokens"]) == (100, 10)
+    assert (second["input_tokens"], second["output_tokens"]) == (120, 12)
+
+
+def test_the_done_event_reports_how_long_the_turn_took(build, clock):
+    """The turn is timed from where it starts to the frame that closes it."""
+    clock(10.0, 12.5)
+    graph, _ = build(AIMessage(content="acme has six employees"))
+    events = list(run_turn(graph, "how many employees?", _THREAD))
+
+    assert _one(events, "done")["duration_s"] == 2.5
 
 
 def test_a_tool_call_written_as_plain_text_is_parsed_instead_of_answered(build):

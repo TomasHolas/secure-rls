@@ -31,8 +31,12 @@ const MODEL = "qwen3:8b";
 const VIEWPORT = 400;
 const CONTENT = 2000;
 
+const THOUGHT = "the question asks for an average per department";
+const COST = { input_tokens: 250, output_tokens: 28, duration_s: 2 };
+
 const ANSWERING = [
   { type: "node_start", node: "reason" },
+  { type: "reasoning", text: THOUGHT },
   { type: "node_start", node: "validate" },
   { type: "tool_call", id: "c1", tool: "query_db", args: { sql: GENERATED } },
   {
@@ -51,7 +55,7 @@ const ANSWERING = [
     },
   },
   { type: "token", text: "Engineering leads at 91000." },
-  { type: "done", status: "ok", answer: "Engineering leads at 91000.", model: MODEL },
+  { type: "done", status: "ok", answer: "Engineering leads at 91000.", model: MODEL, ...COST },
 ];
 
 const BLOCKED = [
@@ -65,7 +69,15 @@ const BLOCKED = [
     reason: "table sqlite_master is not allowlisted",
   },
   { type: "token", text: "That query is not allowed." },
-  { type: "done", status: "blocked", answer: "That query is not allowed.", model: MODEL },
+  {
+    type: "done",
+    status: "blocked",
+    answer: "That query is not allowed.",
+    model: MODEL,
+    input_tokens: 190,
+    output_tokens: 0,
+    duration_s: 1.1,
+  },
 ];
 
 const DIAGNOSIS =
@@ -73,7 +85,15 @@ const DIAGNOSIS =
 const FAILED = [
   { type: "node_start", node: "reason" },
   { type: "tool_call", id: "c1", tool: "search_notes", args: { query: "leadership" } },
-  { type: "done", status: "failed", answer: DIAGNOSIS, model: MODEL },
+  {
+    type: "done",
+    status: "failed",
+    answer: DIAGNOSIS,
+    model: MODEL,
+    input_tokens: 0,
+    output_tokens: 0,
+    duration_s: 0.4,
+  },
 ];
 
 function sseResponse(events: unknown[]): Response {
@@ -277,6 +297,74 @@ describe("the chat view", () => {
     expect(await screen.findByText("Reasoning")).toBeTruthy();
     expect(screen.getByText("Validating the tool call")).toBeTruthy();
     expect(screen.getByText("query_db")).toBeTruthy();
+  });
+
+  it("puts the trace above the answer it produced", async () => {
+    const { view } = await renderReady();
+    ask();
+    await screen.findByText("Engineering leads at 91000.");
+
+    const answer = view.container.querySelector(".msg-assistant .msg-text") as HTMLElement;
+    const trace = view.container.querySelector(".msg-assistant .trace") as HTMLElement;
+    expect(trace).toBeTruthy();
+    expect(trace.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps the streamed reasoning out of the answer and behind a closed step", async () => {
+    const { view } = await renderReady();
+    ask();
+    await screen.findByText("Engineering leads at 91000.");
+
+    const step = screen.getByRole("button", { name: /Reasoning/ });
+    expect(step.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText(THOUGHT)).toBeNull();
+    expect(view.container.querySelector(".msg-text")?.textContent).not.toContain(THOUGHT);
+  });
+
+  it("shows the model's own thinking when the reader opens that step", async () => {
+    await renderReady();
+    ask();
+    await screen.findByText("Engineering leads at 91000.");
+
+    fireEvent.click(screen.getByRole("button", { name: /Reasoning/ }));
+
+    expect(screen.getByText(THOUGHT)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Reasoning/ }).getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+  });
+
+  it("folds a step the reader closes, leaving its own body hidden", async () => {
+    await renderReady();
+    ask();
+    await screen.findByText(GENERATED);
+
+    const step = screen.getByRole("button", { name: /query_db/ });
+    expect(step.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(step);
+
+    expect(screen.queryByText(GENERATED)).toBeNull();
+    expect(step.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("states what the turn cost beside the model that answered it", async () => {
+    await renderReady();
+    ask();
+    await screen.findByText("Engineering leads at 91000.");
+
+    expect(screen.getByText("In 250")).toBeTruthy();
+    expect(screen.getByText("Out 28")).toBeTruthy();
+    expect(screen.getByText("14.0 T/S")).toBeTruthy();
+  });
+
+  it("states no token counts for a turn that never generated any", async () => {
+    api.openChatStream.mockImplementation(() => Promise.resolve(sseResponse(FAILED)));
+    await renderReady();
+    ask("who shows leadership?");
+
+    await screen.findByText(DIAGNOSIS);
+    expect(screen.queryByText(/T\/S/)).toBeNull();
+    expect(screen.queryByText(/^In /)).toBeNull();
   });
 
   it("names the model that answered the turn", async () => {
