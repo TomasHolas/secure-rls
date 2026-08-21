@@ -1,6 +1,6 @@
 # ADR 0002 — Defense-in-depth RLS: four independent layers
 
-Status: accepted
+Status: accepted (amended 2026-08-21: engine authorizer, DoS controls, audit log — sourced hardening)
 
 ## Context
 
@@ -31,8 +31,33 @@ all four to fail simultaneously.
    match the session tenant, else the executor raises and the response is
    refused. Fail closed: this catches a hypothetical bug in layers 1-3.
 
+Additionally, between layers 2 and 3, an **engine-level authorizer** (layer 2.5):
+SQLite's `Connection.set_authorizer` enforces the table/operation allowlist inside
+the engine that actually executes the query. This closes the parser-differential
+gap — sqlglot's parse of a statement could in principle differ from SQLite's own;
+the authorizer is on sqlite.org's checklist for running untrusted SQL, which
+model-generated SQL is.
+
 Prompt-level instructions ("only discuss your tenant") exist for answer quality
-and are explicitly not counted as a layer.
+and are explicitly not counted as a layer. This stance is directly supported by
+OWASP: prompt-level measures "should complement — not replace — deterministic
+controls" (LLM Prompt Injection Prevention Cheat Sheet, citing an 89% attack
+success rate on GPT-4o for persistent attackers), and by Microsoft: "Don't rely
+on the language model to propagate tenant information."
+
+## Hardening (amended per sourced review)
+
+- **DoS controls**: a hostile-but-valid SELECT (e.g. giant cross joins) passes
+  the allowlist; per sqlite.org/security.html the executor sets a progress-handler
+  query timeout and `sqlite3_limit` caps. Timeout and limits are `runtime.json`
+  tunables.
+- **Audit log**: every generated SQL, validation verdict, rewritten SQL, and
+  tenant context is persisted (Microsoft secure multitenant RAG guidance) —
+  also the data source for the UI trace and the eval leakage checks.
+- **query_only caveat, documented**: `PRAGMA query_only` is reversible by SQL
+  ("not truly read-only" — sqlite.org), so the load-bearing read-only control is
+  `mode=ro` at file open; layer 2's PRAGMA block is what makes `query_only`
+  meaningful as a second belt.
 
 ## Consequences
 
@@ -52,3 +77,26 @@ and are explicitly not counted as a layer.
 - **Per-tenant database files** — strongest isolation, but hides the interesting
   engineering and scales poorly to real multi-tenant systems; noted as a demo
   talking point.
+
+## References
+
+- OWASP Top 10 for LLM Applications 2025: LLM01 Prompt Injection, LLM02
+  Sensitive Information Disclosure, LLM06 Excessive Agency —
+  https://genai.owasp.org/ (texts: github.com/OWASP/www-project-top-10-for-large-language-model-applications)
+- OWASP LLM Prompt Injection Prevention Cheat Sheet —
+  https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html
+- OWASP SQL Injection Prevention Cheat Sheet (parameterization, allowlists,
+  least privilege) —
+  https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html
+- Microsoft, multitenant Azure OpenAI / secure multitenant RAG ("Don't rely on
+  the language model to propagate tenant information"; audit logging) —
+  https://learn.microsoft.com/en-us/azure/architecture/guide/multitenant/service/openai,
+  https://learn.microsoft.com/en-us/azure/architecture/ai-ml/guide/secure-multitenant-rag
+- AWS, multi-tenant agents on Bedrock AgentCore (JWT tenant identity, row-level
+  filtering, result sanitization) —
+  https://aws.amazon.com/blogs/machine-learning/building-multi-tenant-agents-with-amazon-bedrock-agentcore/
+- LangChain security policy (layered security, read-only credentials) —
+  https://docs.langchain.com/oss/python/security-policy
+- sqlite.org: security checklist (`set_authorizer`, limits, interrupt), URI
+  `mode=ro`, `PRAGMA query_only` — https://www.sqlite.org/security.html,
+  https://www.sqlite.org/uri.html, https://www.sqlite.org/pragma.html

@@ -46,12 +46,19 @@ Each layer is independently sufficient; a breach requires all four to fail.
 | # | Layer | Module | Mechanism | Survives |
 |---|---|---|---|---|
 | 1 | Identity | `auth.py` / `agent.py` | `tenant_id` read from the verified JWT server-side; tools receive it by closure — it is never an LLM-fillable argument and never accepted in a request body. | Prompt injection, malicious NL, a lying client |
-| 2 | Validation | `security.py` | sqlglot parse; allowlist: single SELECT statement, `employees` table only; rejects ATTACH, PRAGMA, mutation, multi-statement, table functions. | Malicious or malformed generated SQL |
-| 3 | Scoped execution | `db.py` | Every `employees` reference in the validated AST is rewritten to `(SELECT * FROM employees WHERE tenant_id = ?)` with the tenant bound as a parameter; runs on a read-only connection (`PRAGMA query_only`). | A validator bypass — the query still only sees the caller's rows |
+| 2 | Validation | `security.py` | sqlglot parse; allowlist: single SELECT statement, `employees` table only; rejects ATTACH, PRAGMA, mutation, multi-statement, table functions. CTEs and JOINs are allowed — every table reference is scoped by layer 3 regardless of query shape. | Malicious or malformed generated SQL |
+| 2.5 | Engine authorizer | `db.py` | SQLite `set_authorizer` enforces the table/operation allowlist inside the engine itself. | A parser differential — sqlglot reading a statement differently than SQLite executes it |
+| 3 | Scoped execution | `db.py` | Every `employees` reference in the validated AST is rewritten to `(SELECT * FROM employees WHERE tenant_id = ?)` with the tenant bound as a parameter; runs on a read-only connection (`mode=ro` at open — the load-bearing control — plus `PRAGMA query_only`). | A validator bypass — the query still only sees the caller's rows |
 | 4 | Egress check | `db.py` | Result rows carry `tenant_id`; any row not matching the session tenant raises and the response is refused. Fail closed. | A rewrite bug — wrong data is caught before it reaches the LLM or the user |
 
 Prompt-level instructions ("only discuss your tenant's data") exist for answer
 quality, and are explicitly NOT counted as a security layer.
+
+Hardening around the layers (ADR 0002 as amended): a progress-handler query
+timeout and `sqlite3_limit` caps (DoS control), a hard result-row cap with an
+explicit truncation signal and aggregation push-down (ADR 0007), and a
+persistent audit log of every generated SQL, validation verdict, rewritten SQL,
+and tenant context — which also feeds the UI trace and the eval leakage checks.
 
 ## Components
 
@@ -75,14 +82,18 @@ employees(user_id, tenant_id, name, department, salary,
           performance_score, hire_date, notes)
 ```
 
-~1000 rows across tenants `acme`, `beta`, `gamma` (uneven split), realistic
-departments/salaries/notes so aggregate questions have interesting answers.
+~1000 rows across tenants `acme` (~45%), `beta` (~35%), `gamma` (~20%); five
+departments (Engineering, Sales, Marketing, HR, Finance) with distributions
+calibrated to cited sources — BLS salary medians, documented rating-inflation
+shape, BLS tenure (ADR 0008). About 1-2% of rows are deliberate second-order
+prompt-injection payloads in `notes`, openly listed in `poisoned_manifest.json`
+— red-team data for the eval suite and the live demo.
 
 ## Agent tool set
 
 | Tool | Description | RLS enforcement |
 |---|---|---|
-| `query_db` | LLM-generated SQL, validated then executed. | Layers 2+3+4; SQL shown in the UI trace |
+| `query_db` | LLM-generated SQL, validated then executed. Results hard-capped with an explicit truncation signal (ADR 0007). | Layers 2+2.5+3+4; SQL shown in the UI trace |
 | `get_stats` | Named aggregates (avg/count/min/max by group). | Built on the scoped executor |
 | `plot` | Returns chart data + spec; rendered by the SPA. | Data comes from `get_stats`/`query_db` paths only |
 | `detect_anomalies` | Salary/performance outliers (bonus). | Built on the scoped executor |
