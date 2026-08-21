@@ -15,6 +15,7 @@ class DatasetConfig:
     seed: int
     rows: int
     tenant_split: dict[str, float]
+    poisoned_fraction: float
 
 
 @dataclass(frozen=True)
