@@ -7,7 +7,12 @@
   },
   "db": {
     "max_result_rows": 200,
-    "query_timeout_ms": 2000
+    "query_timeout_ms": 2000,
+    "max_sql_length": 50000,
+    "max_expr_depth": 100,
+    "max_compound_select": 20,
+    "max_vdbe_ops": 25000,
+    "max_like_pattern_length": 1000
   },
   "agent": {
     "model": "",

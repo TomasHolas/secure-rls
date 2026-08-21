@@ -20,10 +20,15 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class DbConfig:
-    """Scoped-executor knobs (ADRs 0002, 0007)."""
+    """Scoped-executor knobs, including the engine caps for untrusted SQL (ADRs 0002, 0007)."""
 
     max_result_rows: int
     query_timeout_ms: int
+    max_sql_length: int
+    max_expr_depth: int
+    max_compound_select: int
+    max_vdbe_ops: int
+    max_like_pattern_length: int
 
 
 @dataclass(frozen=True)
