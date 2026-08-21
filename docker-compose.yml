@@ -1,0 +1,32 @@
+# The deployment unit (ADR 0013): `docker compose up` serves the whole app on the sibling port
+# scheme of ADR 0001 - backend 8002, frontend 3002. Compose reads the repo-root `.env`, which is
+# never committed; both variables below are required and have no defaults, so a missing one fails
+# the command instead of booting a misconfigured stack.
+name: secure-rls
+
+services:
+  backend:
+    build: ./apps/backend
+    image: ghcr.io/tomasholas/secure-rls-backend:latest
+    environment:
+      # The model endpoint is config, never containerized here (ADR 0005): point this at whatever
+      # host serves Ollama - http://host.docker.internal:11434 for one on the Docker host, or a
+      # tailnet address for a remote box. Nothing in this file starts a model.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:?set OLLAMA_BASE_URL in .env - the Ollama endpoint URL}
+      # Signing key, environment-only: no default exists and none is baked into the image (ADR 0009).
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env - generate with openssl rand -hex 32}
+    ports:
+      - "8002:8002"
+
+  frontend:
+    build:
+      context: ./apps/frontend
+      args:
+        # Baked into the bundle at build time; the browser, not the container, resolves it.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8002}
+    image: ghcr.io/tomasholas/secure-rls-frontend:latest
+    ports:
+      - "3002:3002"
+    depends_on:
+      backend:
+        condition: service_healthy
