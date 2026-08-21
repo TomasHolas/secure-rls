@@ -18,7 +18,9 @@ log: `token`, `reasoning`, `node_start`, `tool_call` (generated SQL / tool args)
 `tool_result` (executed SQL, rows, truncation info), `security_event`,
 `retry` (attempt n of max), `done`. The SPA consumes the stream via `fetch` +
 ReadableStream (browser `EventSource` cannot POST). Each event is rendered as
-it arrives — the live trace IS the transport, not a replay.
+it arrives — the live trace IS the transport, not a replay. ("Each event" was
+too broad for `node_start`, which is transport and audit only — see **What the
+trace renders** below, which is binding.)
 
 **Reasoning is content, not a label (amended after issue #67).** The live pass
 showed the trace naming a step "Reasoning" while the model's actual reasoning
@@ -299,6 +301,46 @@ place that attaches the bearer token.
   table and chart was expanded permanently, which buried the one step a reader
   was looking for. Reasoning starts collapsed (it is the longest and the least
   load-bearing); an outcome starts open.
+
+### What the trace renders: node events are transport, not rows (amended after issue #87)
+
+The original decision above listed `node_start` beside `token` and `tool_call`
+as an event type "rendered as it arrives", and the SPA took that literally: one
+row per LangGraph node, its name mapped to invented prose. The live pass showed
+what that reads like — "Validating the tool call" *above* the calls, "Running
+the tool" *below* them, then "Auditing the outcome" and "Composing the answer".
+The order was faithful to the graph (the calls are announced in `validate` and
+settled in `audit`, with `execute_tool` between them contributing only its own
+`node_start`) and meaningless to a reader, who was being shown our internal
+mechanics instead of the analysis.
+
+- **`node_start` stays in the SSE contract, and stays out of the UI.** It is
+  cheap, it mirrors the audit log, and it is what tells the frontend which model
+  round the reasoning and the calls that follow belong to. It produces no row,
+  no label and no chrome of its own, and the label map that turned node names
+  into user-facing prose is deleted. Transport and audit, not presentation.
+- **The rendered trace is reader-meaningful entries only**: reasoning steps with
+  the model's streamed thinking, tool cards (name, arguments, generated versus
+  executed SQL, the result table or chart, the truncation chip) each carrying
+  its **own** pending → settled/retried/refused state, retry entries and
+  security events. A reader of a data-analyst trace wants what the model
+  thought, what it called, what ran, what came back, and what was retried or
+  refused; the graph's shape is an implementation detail of that.
+- **Reasoning is grouped per model round.** A turn calls the model once per tool
+  round, so consecutive `reasoning` chunks inside one round are one step however
+  many frames they arrived in, and the round *after* the tool results is its own
+  step — legitimate and worth seeing, and chipped with its round number so which
+  is which is stated rather than inferred. The round counter is the count of
+  `reason` entries the fold has seen; no new event field was needed, because the
+  event that marks a new model call already exists.
+- **No empty chrome.** A step with no content does not exist: a round that
+  streamed no thinking is not an empty "Reasoning" row, and a turn whose only
+  events were node transitions renders no panel at all.
+- Everything the previous amendments established is unchanged by this one: the
+  trace still precedes the answer, each step is still its own `aria-expanded`
+  disclosure with reasoning collapsed by default, the terminal frame still
+  reports what the turn cost, and a replayed turn still renders its stored
+  evidence through these same bricks (one renderer, not two).
 
 ## Consequences
 

@@ -9,9 +9,14 @@
  * holds one nullable outcome rather than three lists. An outcome whose id was never
  * announced still becomes its own item: nothing the backend said is dropped.
  *
- * Two things a turn carries besides its items: the reasoning streamed inside a step, which
- * accumulates on that step and never on the answer, and what the turn cost, which arrives
- * with the terminal frame (ADR 0012 as amended).
+ * Only what a reader of a trace cares about becomes an item: the model's thinking, the calls and
+ * their evidence, the retries and the refusals. A `node_start` is transport and audit, never a row
+ * (ADR 0012 as amended after issue #87) - it says which model round the turn is in, which is what
+ * groups reasoning, and produces nothing on its own.
+ *
+ * Two things a turn carries besides its items: the round it is in, so however many reasoning
+ * chunks stream inside one model call become one step and the round after the tool results becomes
+ * its own, and what the turn cost, which arrives with the terminal frame (ADR 0012 as amended).
  *
  * `replayTurns` folds the other source of the same shape: what `GET /conversations/{id}` still
  * remembers of a reopened thread. It produces the very same `Turn` objects a stream produces,
@@ -34,8 +39,11 @@ import type {
 /** The one event that closes a call: its result, the retry it triggered, or its refusal. */
 export type CallOutcome = ToolResultEvent | RetryEvent | SecurityEvent;
 
-/** The node the model reasons in; the fallback owner of reasoning that arrives before a step. */
+/** The node the model reasons in: entering it is what opens the turn's next model round. */
 const REASON_NODE = "reason";
+
+/** The round of the first model call, and the round reasoning that arrives before one belongs to. */
+export const FIRST_ROUND = 1;
 
 /** The transcript role of a question, as `agent.thread_messages` labels it. */
 const USER_ROLE = "user";
@@ -43,11 +51,11 @@ const USER_ROLE = "user";
 /** What separates two things the assistant said inside one replayed turn. */
 const ANSWER_SEPARATOR = "\n\n";
 
-/** A graph step, holding the reasoning streamed while the agent was inside it. */
-export interface NodeItem {
-  kind: "node";
-  node: string;
-  reasoning: string;
+/** The model's own thinking from one model round, whatever number of chunks it streamed in. */
+export interface ReasoningItem {
+  kind: "reasoning";
+  round: number;
+  text: string;
 }
 
 export interface CallItem {
@@ -64,7 +72,7 @@ export interface OrphanItem {
   outcome: CallOutcome;
 }
 
-export type TraceItem = NodeItem | CallItem | OrphanItem;
+export type TraceItem = ReasoningItem | CallItem | OrphanItem;
 
 /**
  * `streaming` until a `done` event lands. `cut_short` is a turn a per-turn bound stopped, which
@@ -93,6 +101,7 @@ export interface Turn {
   question: string;
   answer: string;
   items: TraceItem[];
+  round: number;
   phase: TurnPhase;
   model: string | null;
   usage: TurnUsage | null;
@@ -104,6 +113,7 @@ export function startTurn(question: string): Turn {
     question,
     answer: "",
     items: [],
+    round: 0,
     phase: "streaming",
     model: null,
     usage: null,
@@ -115,11 +125,13 @@ export function startTurn(question: string): Turn {
 export function applyEvent(turn: Turn, event: TraceEvent): Turn {
   switch (event.type) {
     case "node_start":
-      return { ...turn, items: appendNode(turn.items, event.node) };
+      return event.node === REASON_NODE ? { ...turn, round: turn.round + 1 } : turn;
     case "token":
       return { ...turn, answer: turn.answer + event.text };
-    case "reasoning":
-      return { ...turn, items: appendReasoning(turn.items, event.text) };
+    case "reasoning": {
+      const round = Math.max(turn.round, FIRST_ROUND);
+      return { ...turn, round, items: appendReasoning(turn.items, event.text, round) };
+    }
     case "tool_call":
       return { ...turn, items: [...turn.items, callItem(event)] };
     case "tool_result":
@@ -220,25 +232,20 @@ function callItem(event: ToolCallEvent): CallItem {
   return { kind: "call", id: event.id, tool: event.tool, args: event.args, outcome: null };
 }
 
-/** Consecutive entries into the same node are one step; the graph re-enters `reason` often. */
-function appendNode(items: TraceItem[], node: string): TraceItem[] {
-  const last = items[items.length - 1];
-  if (last && last.kind === "node" && last.node === node) return items;
-  return [...items, { kind: "node", node, reasoning: "" }];
-}
-
 /**
- * Reasoning belongs to the step the agent was in when it thought it, so it accumulates on the
- * trailing node item. The backend announces the node before it streams a word, so the tail is
- * that step; reasoning that somehow arrives first opens the step it can only have come from.
+ * Reasoning is one step per model round: however many chunks stream inside one call to the model
+ * they accumulate on that round's step, and the round the agent enters after tool results opens a
+ * step of its own, so a reader can tell the thinking before the tools from the thinking about what
+ * they returned. A step exists only once there is thinking in it - a round that showed none is no
+ * row at all.
  */
-function appendReasoning(items: TraceItem[], text: string): TraceItem[] {
+function appendReasoning(items: TraceItem[], text: string, round: number): TraceItem[] {
   const last = items[items.length - 1];
-  if (!last || last.kind !== "node") {
-    return [...items, { kind: "node", node: REASON_NODE, reasoning: text }];
+  if (!last || last.kind !== "reasoning" || last.round !== round) {
+    return [...items, { kind: "reasoning", round, text }];
   }
   const next = [...items];
-  next[next.length - 1] = { ...last, reasoning: last.reasoning + text };
+  next[next.length - 1] = { ...last, text: last.text + text };
   return next;
 }
 
