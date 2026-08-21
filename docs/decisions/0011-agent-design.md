@@ -54,6 +54,19 @@ sample rows"); aggregation push-down and column-selection instructions
 (ADR 0007); the tenant-scope instruction retained as UX guidance, explicitly
 not a security layer (ADR 0002).
 
+Three further rules, each one line, all of them UX and answer-quality guidance
+rather than enforcement — nothing in the prompt is a boundary (ADR 0002), and
+none of these three restates what the four RLS layers already stop. The
+data-borne-instruction rule generalizes the existing note rule to every channel
+that carries untrusted text (the user's turn, note text, tool output) and asks
+for a plain refusal rather than a negotiation, so an "ignore your instructions"
+turn produces a clean, demonstrable answer instead of a wobbly one; the layers
+would refuse the resulting query either way, this only shapes what the user
+reads. The no-emoji rule mirrors the repo-wide convention the model had never
+been told. The markdown rule (blank line between blocks, no bold run glued to
+the following sentence) keeps answers legible with no post-processing in the
+renderer.
+
 ## Consequences
 
 - The graph nodes give natural places for the audit log, the retry counter,
