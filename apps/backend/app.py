@@ -11,7 +11,7 @@ Endpoints:
 
 - `GET  /health`            open; liveness plus the API version.
 - `POST /login`             credentials for a token, or 401.
-- `GET  /models`            the endpoint's live `/api/tags` list plus the configured default.
+- `GET  /models`            the endpoint's live chat-capable models plus the configured default.
 - `POST /chat`              one turn as an SSE stream of ADR 0012 trace events.
 - `GET  /conversations`     the caller's threads, newest first.
 - `POST /conversations`     a new thread; the title is the first user message, truncated.
@@ -35,15 +35,25 @@ proxies the endpoint's `/api/tags`, and a client-chosen `model` on `/chat` is ho
 it is in that live list at request time - an allowlist over untrusted input. Absent, the
 `runtime.json` `agent.model` default applies.
 
+The list is filtered to models that can actually hold a conversation: an endpoint also serves
+embedding-only models (`nomic-embed-text`, which this app itself uses for RAG), and picking one
+breaks the turn. `chat_capable_lister` asks `/api/show` per model id and keeps the ones whose
+`capabilities` include `completion`, caching each answer for the process - the tag list is
+short and rarely changes, so one lookup per id is enough. An endpoint too old to report
+capabilities falls back to excluding the configured `agent.embed_model` by prefix. Filtering
+happens in the lister, not the handler, so the `/chat` allowlist is the same list the picker
+was offered.
+
 Startup fails fast when `JWT_SECRET` is unset or too weak (ADR 0009): `create_app` calls
 `auth.jwt_secret()` before it builds anything, so a misconfigured process refuses to boot
 rather than serving unsigned-in-practice tokens. Importing this module is side-effect free -
 the production app is built on first access to the module attribute `app`, which is what
 `uvicorn app:app` resolves.
 
-Seams. `create_app` takes the turn runner, the model lister, the registry and the two
-checkpointer accesses - transcript replay and cleanup - as arguments, defaulting to the
-production wiring. Tests pass fakes and never touch Ollama or the filesystem outside tmp_path.
+Seams. `create_app` takes the turn runner, the model lister, the capability checker, the
+registry and the two checkpointer accesses - transcript replay and cleanup - as arguments,
+defaulting to the production wiring. Tests pass fakes and never touch Ollama or the filesystem
+outside tmp_path.
 
 Paths. All state files are resolved here, once: the employee database (`db.DEFAULT_DB_PATH`,
 beside which `db.py` derives its own `audit.db` and `vectors.db`), the registry's `state.db`
@@ -82,6 +92,8 @@ STATE_DB_PATH = DB_PATH.with_name("state.db")
 CHECKPOINT_DB_PATH = DB_PATH.with_name("checkpoints.db")
 
 _TAGS_PATH = "/api/tags"
+_SHOW_PATH = "/api/show"
+_COMPLETION_CAPABILITY = "completion"
 _INVALID_CREDENTIALS = "invalid credentials"
 _INVALID_TOKEN = "invalid or expired token"
 _UNKNOWN_MODEL = "unknown model"
@@ -109,6 +121,14 @@ class ModelLister(Protocol):
 
     def __call__(self) -> list[str]:
         """List the live model ids, raising ModelEndpointError when the endpoint is unusable."""
+        ...
+
+
+class CapabilityChecker(Protocol):
+    """Reports what one model id can do, or None when the endpoint does not say."""
+
+    def __call__(self, model_id: str) -> list[str] | None:
+        """The model's capabilities, or None if the endpoint reports none for it."""
         ...
 
 
@@ -183,6 +203,48 @@ def ollama_model_lister(base_url: str) -> ModelLister:
     return list_models
 
 
+def ollama_capability_checker(base_url: str) -> CapabilityChecker:
+    """The production capability checker: the endpoint's `/api/show`, on the same short timeout."""
+
+    def capabilities(model_id: str) -> list[str] | None:
+        """Return the model's declared capabilities, or None when the endpoint reports none."""
+        try:
+            with httpx.Client(
+                base_url=base_url, timeout=runtime().api.models_timeout_s
+            ) as client:
+                response = client.post(_SHOW_PATH, json={"model": model_id})
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPError as exc:
+            raise ModelEndpointError(str(exc)) from exc
+        declared = payload.get("capabilities")
+        return list(declared) if isinstance(declared, list) else None
+
+    return capabilities
+
+
+def chat_capable_lister(
+    list_models: ModelLister, capabilities: CapabilityChecker
+) -> ModelLister:
+    """Wrap a lister so only chat-capable ids survive; each id's capabilities are cached here."""
+    cached: dict[str, list[str] | None] = {}
+
+    def chat_capable(model_id: str) -> bool:
+        """Keep a model that declares `completion`; without a declaration, exclude the embedder."""
+        if model_id not in cached:
+            cached[model_id] = capabilities(model_id)
+        declared = cached[model_id]
+        if declared is None:
+            return not model_id.startswith(runtime().agent.embed_model)
+        return _COMPLETION_CAPABILITY in declared
+
+    def list_chat_models() -> list[str]:
+        """The live list minus everything that cannot answer a turn."""
+        return [model_id for model_id in list_models() if chat_capable(model_id)]
+
+    return list_chat_models
+
+
 def read_transcript(thread_id: str) -> list[Message]:
     """Replay a thread's exchanges from the LangGraph checkpointer file; the agent owns the how."""
     with SqliteSaver.from_conn_string(str(CHECKPOINT_DB_PATH)) as checkpointer:
@@ -199,6 +261,7 @@ def create_app(
     *,
     chat_runner: ChatRunner | None = None,
     model_lister: ModelLister | None = None,
+    capability_checker: CapabilityChecker | None = None,
     registry: ConversationRegistry | None = None,
     transcript: Callable[[str], list[Message]] | None = None,
     cleanup: Callable[[str], None] | None = None,
@@ -207,7 +270,10 @@ def create_app(
     jwt_secret()
     base_url = os.environ.get(OLLAMA_ENV_VAR, DEFAULT_OLLAMA_BASE_URL)
     run_chat = chat_runner or ollama_chat_runner(base_url)
-    list_models = model_lister or ollama_model_lister(base_url)
+    list_models = chat_capable_lister(
+        model_lister or ollama_model_lister(base_url),
+        capability_checker or ollama_capability_checker(base_url),
+    )
     threads = registry or ConversationRegistry(STATE_DB_PATH)
     replay = transcript or read_transcript
     drop_checkpoints = cleanup or delete_checkpoints
@@ -237,7 +303,7 @@ def create_app(
 
     @app.get("/models", dependencies=[Depends(_identity)])
     def models() -> dict[str, object]:
-        """The endpoint's live model list plus the configured default (ADR 0005 as amended)."""
+        """The endpoint's live chat-capable models plus the configured default (ADR 0005)."""
         return {"models": list_models(), "default": runtime().agent.model}
 
     @app.post("/chat")
@@ -314,7 +380,7 @@ def _identity(
 
 
 def _resolve_model(requested: str | None, list_models: ModelLister) -> str:
-    """Honor a client model id only if the endpoint serves it right now; else the configured one."""
+    """Honor a client model id only if the endpoint serves it for chat now; else the configured."""
     if requested is None:
         return runtime().agent.model
     if requested not in list_models():
