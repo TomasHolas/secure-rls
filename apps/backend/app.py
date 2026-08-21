@@ -59,10 +59,21 @@ rather than serving unsigned-in-practice tokens. Importing this module is side-e
 the production app is built on first access to the module attribute `app`, which is what
 `uvicorn app:app` resolves.
 
+Stream termination (ADR 0012 as amended). `POST /chat` always ends in one `done` frame. The
+agent composes `ok`, `blocked` and `gave_up`; a run that breaks before it can - an unreachable
+model endpoint, a recursion limit - is closed here with `status: "failed"` and the reason in
+`answer`, instead of a body that simply stops and leaves the reader waiting. The reason is
+generic on purpose: the exception is logged server-side, never streamed.
+
+Startup indexing (ADR 0010 as amended). `create_app` builds the note vector store before it
+serves anything, idempotently - a store that already holds notes is left alone, so only an empty
+or missing one costs embeddings. It needs the embedding endpoint, so a failure to reach it is
+logged and boot continues; `search_notes` then reports retrieval as offline rather than raising.
+
 Seams. `create_app` takes the turn runner, the model lister, the capability checker, the
-registry and the two checkpointer accesses - transcript replay and cleanup - as arguments,
-defaulting to the production wiring. Tests pass fakes and never touch Ollama or the filesystem
-outside tmp_path.
+registry, the note indexer and the two checkpointer accesses - transcript replay and cleanup -
+as arguments, defaulting to the production wiring. Tests pass fakes and never touch Ollama or
+the filesystem outside tmp_path.
 
 Paths. All state files are resolved here, once: the employee database (`db.DEFAULT_DB_PATH`,
 beside which `db.py` derives its own `audit.db` and `vectors.db`), the registry's `state.db`
@@ -70,6 +81,7 @@ and the LangGraph checkpointer's `checkpoints.db`.
 """
 
 import json
+import logging
 import os
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
@@ -84,7 +96,16 @@ from langchain_ollama import ChatOllama
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
-from agent import Message, TraceEvent, build_agent, run_turn, thread_messages
+from agent import (
+    EVENT_DONE,
+    STATUS_FAILED,
+    DoneEvent,
+    Message,
+    TraceEvent,
+    build_agent,
+    run_turn,
+    thread_messages,
+)
 from auth import (
     AuthError,
     Identity,
@@ -96,7 +117,7 @@ from auth import (
 )
 from conversations import ConversationRegistry, NotFound, Thread
 from db import DEFAULT_DB_PATH
-from rag import OllamaEmbed
+from rag import OllamaEmbed, ensure_index
 from runtime import runtime
 
 API_VERSION = "0.1.0"
@@ -116,7 +137,14 @@ _INVALID_CREDENTIALS = "invalid credentials"
 _INVALID_TOKEN = "invalid or expired token"
 _UNKNOWN_MODEL = "unknown model"
 _ENDPOINT_UNAVAILABLE = "the model endpoint is unavailable"
+_TURN_FAILED = (
+    "The turn ended in a server-side failure before an answer was composed. Nothing is left "
+    "running, the failure is in the server log, and the conversation is unaffected - ask again."
+)
+_INDEX_FAILED = "the note index could not be built at startup; search_notes will say it is offline"
+_INDEX_READY = "the note index holds %d notes"
 
+_LOG = logging.getLogger(__name__)
 _bearer = HTTPBearer(auto_error=False)
 
 
@@ -263,6 +291,11 @@ def chat_capable_lister(
     return list_chat_models
 
 
+def build_note_index(base_url: str) -> None:
+    """The production indexer: embed the notes unless the store already holds them (ADR 0010)."""
+    _LOG.info(_INDEX_READY, ensure_index(DB_PATH, OllamaEmbed(base_url)))
+
+
 def read_transcript(thread_id: str) -> list[Message]:
     """Replay a thread's exchanges from the LangGraph checkpointer file; the agent owns the how."""
     with SqliteSaver.from_conn_string(str(CHECKPOINT_DB_PATH)) as checkpointer:
@@ -283,10 +316,17 @@ def create_app(
     registry: ConversationRegistry | None = None,
     transcript: Callable[[str], list[Message]] | None = None,
     cleanup: Callable[[str], None] | None = None,
+    note_index: Callable[[], None] | None = None,
 ) -> FastAPI:
-    """Build the API, refusing to start without a usable signing secret (ADR 0009)."""
+    """Build the API, refusing to start without a usable signing secret (ADR 0009).
+
+    The note index is built here, before anything is served (ADR 0010 as amended), and its
+    failure is not fatal: an unreachable embedding endpoint must not stop the API from booting,
+    so it is logged and `search_notes` reports retrieval as offline for as long as it is.
+    """
     jwt_secret()
     base_url = os.environ.get(OLLAMA_ENV_VAR, DEFAULT_OLLAMA_BASE_URL)
+    index_notes = note_index or (lambda: build_note_index(base_url))
     run_chat = chat_runner or ollama_chat_runner(base_url)
     list_models = chat_capable_lister(
         model_lister or ollama_model_lister(base_url),
@@ -295,6 +335,10 @@ def create_app(
     threads = registry or ConversationRegistry(STATE_DB_PATH)
     replay = transcript or read_transcript
     drop_checkpoints = cleanup or delete_checkpoints
+    try:
+        index_notes()
+    except Exception:
+        _LOG.warning(_INDEX_FAILED, exc_info=True)
 
     app = FastAPI(title="secure-rls API", version=API_VERSION)
     app.add_middleware(
@@ -333,13 +377,14 @@ def create_app(
     ) -> StreamingResponse:
         """Stream one turn as SSE; the thread must belong to the token's identity."""
         threads.get_thread(identity, body.thread_id)
+        model = _resolve_model(body.model, list_models)
         events = run_chat(
             tenant_id=identity.tenant_id,
             thread_id=body.thread_id,
             message=body.message,
-            model=_resolve_model(body.model, list_models),
+            model=model,
         )
-        stream = StreamingResponse(_sse(events), media_type="text/event-stream")
+        stream = StreamingResponse(_sse(events, model), media_type="text/event-stream")
         refreshed = response.headers.get(REFRESHED_TOKEN_HEADER)
         if refreshed is not None:
             stream.headers[REFRESHED_TOKEN_HEADER] = refreshed
@@ -418,10 +463,33 @@ def _resolve_model(requested: str | None, list_models: ModelLister) -> str:
     return requested
 
 
-def _sse(events: Iterator[TraceEvent]) -> Iterator[str]:
-    """Frame each trace event as one SSE `data:` record; the events are JSON-able as they come."""
-    for event in events:
-        yield f"data: {json.dumps(event)}\n\n"
+def _sse(events: Iterator[TraceEvent], model: str) -> Iterator[str]:
+    """Frame each trace event as one SSE `data:` record, and never end the stream on silence.
+
+    A run that breaks before `done` - an unreachable model endpoint, a recursion limit, anything
+    the agent did not turn into a retry - would otherwise close the body mid-flight and leave the
+    reader with a turn stuck at "streaming". It closes here instead with the terminal `done` frame
+    ADR 0012 defines, status `failed`, so the client always learns how the turn ended. The reason
+    is deliberately generic; the exception is logged, where its detail belongs.
+    """
+    closed = False
+    try:
+        for event in events:
+            closed = event["type"] == EVENT_DONE
+            yield _frame(event)
+    except Exception:
+        _LOG.exception("the chat stream failed")
+        if not closed:
+            yield _frame(
+                DoneEvent(
+                    type=EVENT_DONE, status=STATUS_FAILED, answer=_TURN_FAILED, model=model
+                )
+            )
+
+
+def _frame(event: TraceEvent) -> str:
+    """One SSE `data:` record; the trace events are JSON-able exactly as the agent yields them."""
+    return f"data: {json.dumps(event)}\n\n"
 
 
 async def _not_found(request: Request, exc: Exception) -> JSONResponse:

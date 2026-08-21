@@ -1,11 +1,12 @@
 """Suite for the REST edge (issue #23, ADR 0012).
 
 Network-free by construction: the app factory takes the turn runner, the model lister, the
-capability checker, the registry and the checkpointer cleanup as arguments, so no test reaches
-Ollama, the employee database or the real state files. `FakeRunner` records the keyword
-arguments it was called with - which is how the tenant-in-body tests prove the agent was built
-for the token's tenant and not the body's - and replays a fixed ADR 0012 event sequence so the
-SSE framing assertions are exact.
+capability checker, the registry, the note indexer and the checkpointer cleanup as arguments, so
+no test reaches Ollama, the employee database or the real state files. `FakeRunner` records the
+keyword arguments it was called with - which is how the tenant-in-body tests prove the agent was
+built for the token's tenant and not the body's - and replays a fixed ADR 0012 event sequence so
+the SSE framing assertions are exact. `BreakingRunner` is its opposite number: it yields part of
+a turn and then raises, which is what the stream-termination contract exists for.
 
 The model list the endpoint reports includes the embedding model this app itself uses for RAG,
 because that is the live situation the filter exists for; `FakeCapabilities` answers `/api/show`
@@ -32,7 +33,7 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
-from agent import Message
+from agent import STATUS_FAILED, Message
 from app import REFRESHED_TOKEN_HEADER, ModelEndpointError, create_app
 from auth import SECRET_ENV_VAR, AuthError
 from conversations import ConversationRegistry
@@ -69,6 +70,10 @@ EVENTS = (
     {"type": "token", "text": ANSWER},
     {"type": "done", "status": "ok", "answer": ANSWER},
 )
+STARTED = ({"type": "node_start", "node": "reason"}, {"type": "token", "text": "acme has"})
+# What a failing run must not put on the wire, whatever the exception carrying it says.
+SECRET_HOST = "http://ollama.internal:11434"
+INDEXED = "note index built"
 
 PROTECTED_ROUTES = [
     ("GET", "/models"),
@@ -148,6 +153,19 @@ class FakeCapabilities:
 
 
 @dataclass
+class BreakingRunner:
+    """Yields a prefix of a turn and then raises, the way a broken run reaches the SSE layer."""
+
+    prefix: tuple[dict, ...]
+
+    def __call__(self, *, tenant_id, thread_id, message, model):
+        """Replay the prefix, then fail the way an unreachable endpoint would."""
+        for event in self.prefix:
+            yield dict(event)
+        raise RuntimeError(f"connect timeout to {SECRET_HOST}")
+
+
+@dataclass
 class Wiring:
     """A wired app plus the fakes the tests inspect."""
 
@@ -156,6 +174,7 @@ class Wiring:
     transcripts: FakeTranscripts
     capabilities: FakeCapabilities
     deleted: list[str]
+    indexed: list[str]
 
 
 @pytest.fixture(autouse=True)
@@ -171,6 +190,7 @@ def wiring(tmp_path) -> Wiring:
     transcripts = FakeTranscripts()
     capabilities = FakeCapabilities()
     deleted: list[str] = []
+    indexed: list[str] = []
     app = create_app(
         chat_runner=runner,
         model_lister=lambda: list(SERVED_MODELS),
@@ -178,6 +198,7 @@ def wiring(tmp_path) -> Wiring:
         registry=ConversationRegistry(tmp_path / "state.db"),
         transcript=transcripts,
         cleanup=deleted.append,
+        note_index=lambda: indexed.append(INDEXED),
     )
     return Wiring(
         client=TestClient(app),
@@ -185,18 +206,22 @@ def wiring(tmp_path) -> Wiring:
         transcripts=transcripts,
         capabilities=capabilities,
         deleted=deleted,
+        indexed=indexed,
     )
 
 
-def _client(tmp_path, *, model_lister=None, capability_checker=None) -> TestClient:
-    """A client wired like the fixture but with the model seams a single test wants to vary."""
+def _client(
+    tmp_path, *, model_lister=None, capability_checker=None, chat_runner=None, note_index=None
+) -> TestClient:
+    """A client wired like the fixture but with the seams a single test wants to vary."""
     return TestClient(
         create_app(
-            chat_runner=FakeRunner(),
+            chat_runner=chat_runner or FakeRunner(),
             model_lister=model_lister or (lambda: list(SERVED_MODELS)),
             capability_checker=capability_checker or FakeCapabilities(),
             registry=ConversationRegistry(tmp_path / "state.db"),
             cleanup=lambda thread_id: None,
+            note_index=note_index or (lambda: None),
         )
     )
 
@@ -311,6 +336,62 @@ def test_chat_streams_the_trace_events_as_sse(wiring):
     events = _sse_events(response.text)
     assert [event["type"] for event in events] == [event["type"] for event in EVENTS]
     assert events[-1]["answer"] == ANSWER
+
+
+def test_chat_closes_a_broken_stream_with_a_terminal_failed_frame(tmp_path):
+    """A run that dies mid-flight still ends in one `done` frame, so no turn is left streaming."""
+    client = _client(tmp_path, chat_runner=BreakingRunner(STARTED))
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers)
+
+    response = client.post(
+        "/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert [event["type"] for event in events] == ["node_start", "token", "done"]
+    assert events[-1]["status"] == STATUS_FAILED
+    assert events[-1]["answer"]
+    assert events[-1]["model"] == runtime().agent.model
+    assert SECRET_HOST not in response.text
+
+
+def test_a_stream_that_breaks_after_its_done_frame_is_not_closed_twice(tmp_path):
+    """The turn already said how it ended; a failure on the way out must not contradict it."""
+    client = _client(tmp_path, chat_runner=BreakingRunner(EVENTS))
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers)
+
+    response = client.post(
+        "/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers
+    )
+
+    events = _sse_events(response.text)
+    assert [event["type"] for event in events] == [event["type"] for event in EVENTS]
+    assert events[-1]["status"] == "ok"
+
+
+def test_the_app_builds_the_note_index_before_it_serves_anything(wiring):
+    """Indexing is a startup step, not a first-request surprise (ADR 0010 as amended)."""
+    assert wiring.indexed == [INDEXED]
+
+
+def test_a_note_index_that_cannot_be_built_does_not_stop_the_app_from_booting(tmp_path):
+    """An unreachable embedding endpoint costs retrieval, never the API."""
+
+    def unreachable() -> None:
+        raise RuntimeError(f"connect timeout to {SECRET_HOST}")
+
+    client = _client(tmp_path, note_index=unreachable)
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers)
+
+    assert client.get("/health").status_code == 200
+    chat = client.post(
+        "/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers
+    )
+    assert chat.status_code == 200
 
 
 def test_chat_defaults_to_the_configured_model(wiring):
@@ -555,6 +636,7 @@ def test_a_turn_in_flight_is_not_killed_by_the_token_expiring(tmp_path):
             capability_checker=FakeCapabilities(),
             registry=ConversationRegistry(tmp_path / "state.db"),
             cleanup=lambda thread_id: None,
+            note_index=lambda: None,
         )
     )
     headers = {"Authorization": f"Bearer {_token_expiring_at(expires_at)}"}
