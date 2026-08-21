@@ -15,6 +15,12 @@ docs in the same change.
 - [architecture.md](architecture.md) — system overview, the four RLS defense
   layers, request flow, data model, agent tool set, assignment compliance map.
 
+## Demo
+
+- [demo-runbook.md](demo-runbook.md) — the 60-minute call: pre-call health
+  check, the demo script step by step, the code-walkthrough order, and the
+  mid-call failure posture per ADR 0005.
+
 ## Reviews
 
 - [ui-pattern-review.md](ui-pattern-review.md) — beautifului.dev's AI-interface
