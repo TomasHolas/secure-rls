@@ -82,7 +82,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 # Built at runtime so this file's own text cannot satisfy the grep it performs.
 _SQLITE_MODULE = "sqlite" + "3"
 _CONNECT_CALL = f"{_SQLITE_MODULE}.connect"
-_CONNECTION_OWNERS = frozenset({"db.py", "conversations.py"})
+_CONNECTION_OWNERS = frozenset({"db.py", "conversations.py", "test_conversations.py"})
 
 
 def _frozen_clock() -> datetime:
@@ -502,8 +502,9 @@ def _python_sources():
 
 
 def test_only_the_owning_modules_open_a_database_connection():
-    """CLAUDE.md hard rule: db.py owns data access, with conversations.py's state.db the one
-    documented exception. Anything else opening a connection is a second path to the data."""
+    """CLAUDE.md hard rule: db.py owns data access. The one documented exception is
+    conversations.py's own app-state store, state.db, which holds no tenant rows - so it and
+    its test may connect. Anything else doing so would be a second path to the data."""
     scanned = list(_python_sources())
     assert Path(db.__file__) in scanned, "the sweep must reach the module it is guarding"
     for path in scanned:

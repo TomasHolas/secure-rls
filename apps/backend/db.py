@@ -322,72 +322,6 @@ def _count_sql(scoped: exp.Expression) -> str:
     return wrapper.sql(dialect=_DIALECT)
 
 
-def _run(db_path: Path, sql: str, count_sql: str, params: tuple[str, ...]) -> QueryResult:
-    """Execute the scoped query behind the engine's own controls, naming any engine failure."""
-    config = runtime().db
-    guard = _EngineGuard(config)
-    try:
-        with closing(_connect(db_path, guard, config)) as conn:
-            return _fetch(conn, sql, count_sql, params, config.max_result_rows)
-    except sqlite3.Error as error:
-        raise guard.explain(error) from error
-
-
-def _connect(db_path: Path, guard: "_EngineGuard", config: DbConfig) -> sqlite3.Connection:
-    """Open the data file read-only with every engine-level control installed (layer 2.5)."""
-    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
-    conn.execute(_QUERY_ONLY)
-    for category, value in _limit_caps(config):
-        conn.setlimit(category, value)
-    conn.set_authorizer(guard.authorize)
-    conn.set_progress_handler(guard.interrupt, _PROGRESS_INSTRUCTIONS)
-    return conn
-
-
-def _limit_caps(config: DbConfig) -> tuple[tuple[int, int], ...]:
-    """The sqlite3_limit caps for running untrusted SQL (ADR 0002 hardening)."""
-    return (
-        (sqlite3.SQLITE_LIMIT_SQL_LENGTH, config.max_sql_length),
-        (sqlite3.SQLITE_LIMIT_EXPR_DEPTH, config.max_expr_depth),
-        (sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, config.max_compound_select),
-        (sqlite3.SQLITE_LIMIT_VDBE_OP, config.max_vdbe_ops),
-        (sqlite3.SQLITE_LIMIT_LIKE_PATTERN_LENGTH, config.max_like_pattern_length),
-        (sqlite3.SQLITE_LIMIT_ATTACHED, _NO_ATTACHED_DATABASES),
-    )
-
-
-def _fetch(
-    conn: sqlite3.Connection, sql: str, count_sql: str, params: tuple[str, ...], cap: int
-) -> QueryResult:
-    """Run the scoped query, cap the rows, and count the total only when the cap trips."""
-    cursor = conn.execute(sql, params)
-    columns = tuple(column[0] for column in cursor.description)
-    rows = cursor.fetchmany(cap)
-    total = len(rows) if len(rows) < cap else conn.execute(count_sql, params).fetchone()[0]
-    return QueryResult(
-        columns=columns,
-        rows=rows,
-        total_count=total,
-        returned_count=len(rows),
-        truncated=total > len(rows),
-        executed_sql=sql,
-    )
-
-
-def _verify_rows(result: QueryResult, tenant_id: str) -> None:
-    """Refuse a result whose own tenant_id columns disagree with the session tenant (layer 4b)."""
-    indexes = [
-        index for index, name in enumerate(result.columns) if name.lower() == TENANT_COLUMN
-    ]
-    for row in result.rows:
-        for index in indexes:
-            if row[index] != tenant_id:
-                raise SecurityViolation(
-                    f"a result row carries tenant {row[index]!r}, not {tenant_id!r}",
-                    kind="egress_row_mismatch",
-                )
-
-
 class _EngineGuard:
     """Layer 2.5 inside the engine: the authorizer allowlist and the query deadline."""
 
@@ -440,6 +374,72 @@ class _EngineGuard:
         """Record the first denial, so a refusal can be reported as the security event it is."""
         self.denied = self.denied or description
         return sqlite3.SQLITE_DENY
+
+
+def _run(db_path: Path, sql: str, count_sql: str, params: tuple[str, ...]) -> QueryResult:
+    """Execute the scoped query behind the engine's own controls, naming any engine failure."""
+    config = runtime().db
+    guard = _EngineGuard(config)
+    try:
+        with closing(_connect(db_path, guard, config)) as conn:
+            return _fetch(conn, sql, count_sql, params, config.max_result_rows)
+    except sqlite3.Error as error:
+        raise guard.explain(error) from error
+
+
+def _connect(db_path: Path, guard: _EngineGuard, config: DbConfig) -> sqlite3.Connection:
+    """Open the data file read-only with every engine-level control installed (layer 2.5)."""
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    conn.execute(_QUERY_ONLY)
+    for category, value in _limit_caps(config):
+        conn.setlimit(category, value)
+    conn.set_authorizer(guard.authorize)
+    conn.set_progress_handler(guard.interrupt, _PROGRESS_INSTRUCTIONS)
+    return conn
+
+
+def _limit_caps(config: DbConfig) -> tuple[tuple[int, int], ...]:
+    """The sqlite3_limit caps for running untrusted SQL (ADR 0002 hardening)."""
+    return (
+        (sqlite3.SQLITE_LIMIT_SQL_LENGTH, config.max_sql_length),
+        (sqlite3.SQLITE_LIMIT_EXPR_DEPTH, config.max_expr_depth),
+        (sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, config.max_compound_select),
+        (sqlite3.SQLITE_LIMIT_VDBE_OP, config.max_vdbe_ops),
+        (sqlite3.SQLITE_LIMIT_LIKE_PATTERN_LENGTH, config.max_like_pattern_length),
+        (sqlite3.SQLITE_LIMIT_ATTACHED, _NO_ATTACHED_DATABASES),
+    )
+
+
+def _fetch(
+    conn: sqlite3.Connection, sql: str, count_sql: str, params: tuple[str, ...], cap: int
+) -> QueryResult:
+    """Run the scoped query, cap the rows, and count the total only when the cap trips."""
+    cursor = conn.execute(sql, params)
+    columns = tuple(column[0] for column in cursor.description)
+    rows = cursor.fetchmany(cap)
+    total = len(rows) if len(rows) < cap else conn.execute(count_sql, params).fetchone()[0]
+    return QueryResult(
+        columns=columns,
+        rows=rows,
+        total_count=total,
+        returned_count=len(rows),
+        truncated=total > len(rows),
+        executed_sql=sql,
+    )
+
+
+def _verify_rows(result: QueryResult, tenant_id: str) -> None:
+    """Refuse a result whose own tenant_id columns disagree with the session tenant (layer 4b)."""
+    indexes = [
+        index for index, name in enumerate(result.columns) if name.lower() == TENANT_COLUMN
+    ]
+    for row in result.rows:
+        for index in indexes:
+            if row[index] != tenant_id:
+                raise SecurityViolation(
+                    f"a result row carries tenant {row[index]!r}, not {tenant_id!r}",
+                    kind="egress_row_mismatch",
+                )
 
 
 def _audit_path(db_path: Path) -> Path:
