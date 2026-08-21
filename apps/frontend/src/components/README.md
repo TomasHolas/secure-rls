@@ -22,17 +22,21 @@ components/
   CodeBlock.tsx    labelled monospace block with a copy control (SQL lives here)
   DataTable.tsx    backend rows as a compact, visually capped table
   TenantPill.tsx   the identity chip (tenant + user) in the header slot
+  Modal.tsx        the one dialog brick — portal, backdrop, Escape/backdrop/× dismissal
+  ConfirmDialog.tsx  the confirm step in front of a delete, on Modal + Button
   forms/           FormCard, TextField (+ index barrel)
-  layout/          AppLayout, Header, Page, PageHeader, Section, EmptyState (+ index barrel)
+  layout/          AppLayout, Header, Sidebar, Page, PageHeader, Section, EmptyState
+                   (+ index barrel)
   charts/          Chart — renders a backend ChartSpec (+ index barrel)
   chat/            ChatMessage, Composer, ModelPicker, TracePanel, TraceStep,
                    ToolResultView (+ index barrel)
 ```
 
-Views live beside them in `src/views/` (`LoginView`, `SessionBadge`, `ChatView`); the
-non-visual bricks they compose are `src/auth.ts` (the session), `src/lib/api.ts` (the
-one HTTP client), `src/lib/sse.ts` (the SSE stream to typed trace events) and
-`src/lib/trace.ts` (those events folded into one turn's state).
+Views live beside them in `src/views/` (`LoginView`, `SessionBadge`, `ChatView`,
+`ConversationsSidebar`); the non-visual bricks they compose are `src/auth.ts` (the
+session), `src/lib/api.ts` (the one HTTP client), `src/lib/sse.ts` (the SSE stream to
+typed trace events), `src/lib/trace.ts` (those events folded into one turn's state) and
+`src/lib/conversations.ts` (which thread is open, and the thread list around it).
 
 CSS for every brick lives in `styles/app.css`; colors, spacing, radii, motion and
 fonts come from `styles/tokens.css`.
@@ -119,6 +123,32 @@ The identity chip in the header slot: tenant id (mono) plus the signed-in user. 
 values come from `auth.ts`, which reads them out of the JWT payload **for display
 only** — the server derives the real tenant from the verified token.
 
+### Modal
+
+The one dialog brick: a dimmed backdrop over the page, a centered panel with a title and a
+close control, and every expected dismissal — Escape, backdrop click, the ×. Body scroll is
+locked while open and the panel renders through a portal, so no view has to host it.
+
+```tsx
+<Modal open={open} onClose={close} title="Delete conversation?" width={420}>{body}</Modal>
+```
+
+### ConfirmDialog
+
+```tsx
+<ConfirmDialog
+  open={pendingDelete !== null}
+  title="Delete conversation?"
+  message={<>This permanently removes <strong>{pendingDelete?.title}</strong>…</>}
+  onCancel={() => setPendingDelete(null)}
+  onConfirm={remove}
+/>
+```
+
+The confirm step in front of an irreversible action, composed from `Modal` + `Button`.
+**Every delete in the app goes through it** — no view fires a destructive call straight from
+a click. `confirmLabel` defaults to "Delete" and renders in the `.btn-danger` register.
+
 ### forms/FormCard
 
 The card a standalone form sits in: title, optional subtitle, the fields as children
@@ -144,13 +174,34 @@ inline in its views; here it is a brick, so no view re-styles an input.
 
 ### layout/AppLayout
 
-The app shell: the sticky `Header` plus the scrolling `main` region.
-`tenantBadge` is the header slot the identity badge fills once logged in — it is
-passed straight through to `Header`, and stays empty on the login screen.
+The app shell: the sticky `Header` over a body row of the optional left rail plus the
+scrolling `main` region. `tenantBadge` is the header slot the identity badge fills once
+logged in — it is passed straight through to `Header`, and stays empty on the login screen.
+`sidebar` is the rail slot; empty on the login screen too, so the shell has one shape.
 
 ```tsx
-<AppLayout tenantBadge={<SessionBadge session={session} />}>{page}</AppLayout>
+<AppLayout
+  tenantBadge={<SessionBadge session={session} />}
+  sidebar={<ConversationsSidebar store={conversations} />}
+>
+  {page}
+</AppLayout>
 ```
+
+### layout/Sidebar
+
+```tsx
+<Sidebar title="Conversations" actions={<Button className="side-add">New chat</Button>}>
+  <ul className="sidebar-list">{rows}</ul>
+</Sidebar>
+```
+
+The shell's left rail: a caps title, an actions slot and the list itself, sticky under the
+header with its own scroll so a long list never scrolls the page beside it. It owns its
+collapse state the way KB's `Collapsible` owns its open flag — collapsed, the rail keeps
+only the reopen control and gives the width back to the main region — so no view threads
+that state through. The rows are `.rail-item` (+ `.active`): a `.rail-item-open` label over
+its meta line, with an optional trailing control.
 
 ### layout/Header
 
@@ -299,8 +350,18 @@ back to the text the model itself read, so no result ever renders as nothing.
   verbatim; the components are new so this app has one owner per form shape.
 - `TenantPill` is new (KB has no tenants); its visual is KB's `.category-pill` shape
   with the accent color instead of the per-category one.
-- KB bricks not ported because nothing composes them yet (Modal, ConfirmDialog,
-  atoms, ...). Port from KB when a view needs one — never hand-roll an equivalent.
+- KB bricks not ported because nothing composes them yet (atoms, `Badge`, ...). Port from
+  KB when a view needs one — never hand-roll an equivalent.
+- `Modal` is KB's verbatim, with one bug fixed: KB's `.modal-backdrop` mixes an undefined
+  `--bg-base`, which voids the whole declaration and leaves it with no dim layer at all.
+  Here it is `--bg-page`, the token that exists.
+- `ConfirmDialog` drops KB's `busy` prop: the delete here closes the dialog and lets the row
+  disappear when the call resolves, so there is no pending state to label.
+- `layout/Sidebar` is new as a brick. KB has no shell sidebar — each of its views hand-rolls
+  the same `.wiki-sidebar` rail markup — and none of them collapse. The visual is that rail
+  (`.wiki-sec-item` renamed `.rail-item`, since nothing here is a wiki, and its trailing
+  count chip replaced by the row's delete control); lifting it into `AppLayout` is what keeps
+  the thread list alive across the chat instead of belonging to one page.
 - **KB has no chat UI at all** (no bubbles, no streaming text, no composer beyond its
   one-shot Ask box), so the `chat/` bricks are new. Their visuals still come from KB:
   the bubble is its `.ask-answer` card plus the icon + caps role header it puts above an

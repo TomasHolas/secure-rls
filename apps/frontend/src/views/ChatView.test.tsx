@@ -1,15 +1,19 @@
 /** The chat view rendered against a scripted SSE stream: answer, trace, SQL pair, states. */
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatView } from "./ChatView";
 
+type ChatViewProps = ComponentProps<typeof ChatView>;
+
 const api = vi.hoisted(() => ({
   listModels: vi.fn(),
-  createConversation: vi.fn(),
   openChatStream: vi.fn(),
 }));
+
+const onStart = vi.fn();
 
 vi.mock("../lib/api", () => ({
   ApiError: class ApiError extends Error {
@@ -71,16 +75,29 @@ function ask(question = QUESTION): void {
   fireEvent.keyDown(box, { key: "Enter" });
 }
 
-async function renderReady(): Promise<void> {
-  render(<ChatView />);
+function renderChat(props: Partial<ChatViewProps> = {}) {
+  const merged: ChatViewProps = {
+    threadId: null,
+    replay: [],
+    chatKey: 0,
+    onStart,
+    ...props,
+  };
+  const view = render(<ChatView {...merged} />);
+  return { view, props: merged };
+}
+
+async function renderReady(props: Partial<ChatViewProps> = {}) {
+  const rendered = renderChat(props);
   await waitFor(() =>
     expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe(MODEL),
   );
+  return rendered;
 }
 
 beforeEach(() => {
   api.listModels.mockResolvedValue({ models: ["llama3.1:8b", MODEL], default: MODEL });
-  api.createConversation.mockResolvedValue({ thread_id: "t1", title: QUESTION, created: "now" });
+  onStart.mockResolvedValue("t1");
   api.openChatStream.mockImplementation(() => Promise.resolve(sseResponse(ANSWERING)));
 });
 
@@ -97,18 +114,60 @@ describe("the chat view", () => {
     expect(screen.getByText(/Ask a question to start/)).toBeTruthy();
   });
 
-  it("creates a thread on the first question and streams the answer", async () => {
+  it("has the owner register a thread for the first question of a draft", async () => {
     await renderReady();
     ask();
 
     expect(await screen.findByText("Engineering leads at 91000.")).toBeTruthy();
     expect(screen.getByText(QUESTION)).toBeTruthy();
-    expect(api.createConversation).toHaveBeenCalledWith(QUESTION);
+    expect(onStart).toHaveBeenCalledWith(QUESTION);
     expect(api.openChatStream).toHaveBeenCalledWith({
       thread_id: "t1",
       message: QUESTION,
       model: MODEL,
     });
+  });
+
+  it("asks on the thread it was handed without registering another", async () => {
+    await renderReady({ threadId: "t7" });
+    ask();
+
+    await waitFor(() =>
+      expect(api.openChatStream).toHaveBeenCalledWith({
+        thread_id: "t7",
+        message: QUESTION,
+        model: MODEL,
+      }),
+    );
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
+  it("replays the exchanges of a reopened thread without a trace panel", async () => {
+    const { view } = await renderReady({
+      threadId: "t7",
+      replay: [
+        { role: "user", content: "how many people are there?" },
+        { role: "assistant", content: "There are 331." },
+      ],
+    });
+
+    expect(screen.getByText("how many people are there?")).toBeTruthy();
+    expect(screen.getByText("There are 331.")).toBeTruthy();
+    expect(screen.getByText(/live trace of a past turn is not stored/)).toBeTruthy();
+    expect(view.container.querySelector(".trace")).toBeNull();
+    expect(screen.queryByText(/Ask a question to start/)).toBeNull();
+  });
+
+  it("drops the live turns when the open thread changes", async () => {
+    const { view, props } = await renderReady({ threadId: "t7" });
+    ask();
+    await screen.findByText("Engineering leads at 91000.");
+
+    view.rerender(<ChatView {...props} threadId="t8" chatKey={props.chatKey + 1} />);
+
+    expect(screen.queryByText("Engineering leads at 91000.")).toBeNull();
+    expect(screen.queryByText(QUESTION)).toBeNull();
+    expect(screen.getByText(/Ask a question to start/)).toBeTruthy();
   });
 
   it("shows the generated and the executed SQL side by side", async () => {
@@ -147,15 +206,15 @@ describe("the chat view", () => {
     expect(screen.getAllByText(MODEL).length).toBeGreaterThan(1);
   });
 
-  it("reuses the thread for the second question", async () => {
-    await renderReady();
+  it("keeps both turns of a thread in the transcript", async () => {
+    await renderReady({ threadId: "t1" });
     ask();
     await screen.findByText("Engineering leads at 91000.");
 
     ask("and the median?");
     await waitFor(() => expect(api.openChatStream).toHaveBeenCalledTimes(2));
 
-    expect(api.createConversation).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("and the median?")).toBeTruthy();
     expect(api.openChatStream).toHaveBeenLastCalledWith({
       thread_id: "t1",
       message: "and the median?",
@@ -209,7 +268,7 @@ describe("the chat view", () => {
 
   it("says so when the model list cannot be fetched", async () => {
     api.listModels.mockRejectedValue(new Error("502"));
-    render(<ChatView />);
+    renderChat();
 
     expect(await screen.findByText("model list unavailable")).toBeTruthy();
   });
