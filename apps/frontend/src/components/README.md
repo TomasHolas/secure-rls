@@ -19,6 +19,7 @@ components/
   Button.tsx       the one button brick — variants primary/ghost
   Icon.tsx         <Icon name="..." /> — Google Material Symbols only
   layout/          AppLayout, Header, Page, PageHeader, Section, EmptyState (+ index barrel)
+  charts/          Chart — renders a backend ChartSpec (+ index barrel)
 ```
 
 CSS for every brick lives in `styles/app.css`; colors, spacing, radii, motion and
@@ -111,6 +112,31 @@ Centered empty/placeholder state with a leading icon.
 <EmptyState icon="message-circle">No conversations yet.</EmptyState>
 ```
 
+### charts/Chart
+
+The one chart brick. It takes the backend's **ChartSpec verbatim** — the contract
+documented in `apps/backend/analytics.py`'s module docstring, which the `plot` tool
+returns through the chat trace — and dispatches on `kind`:
+
+```tsx
+<Chart spec={toolResult.chart_spec} />          // height defaults to 260
+```
+
+```ts
+{ kind: "bar" | "line" | "histogram", title, x_label, y_label, data: [{ x: string, y: number }] }
+```
+
+`bar` and `histogram` render bars (bins sit nearly flush, categories breathe and cap at
+KB's 38px column width); `line` renders a polyline with a filled area underneath and a dot
+per point. `x` is always a category label, so all three kinds share one band scale — the
+x axis carries the point labels (thinned to at most 8 so they never collide), the y axis
+three gridded ticks in compact notation, plus `x_label`/`y_label` as axis titles. Bars and
+dots carry a `<title>` tooltip with the exact value. An empty `data` array renders the
+`EmptyState` brick under the title instead of an axis-less plot.
+
+Charts are **hand-rolled SVG, no chart library** — matching the KB, which has none
+either. Fixtures for all three kinds live in `charts/Chart.test.tsx` (`npm test`).
+
 ## Deviations from the KB originals
 
 - `Button` drops KB's `to` (react-router `<Link>`) variant — this app has no router
@@ -118,8 +144,14 @@ Centered empty/placeholder state with a leading icon.
 - CSS renames for clarity outside KB's view names: `.api-inline` -> `.mono-inline`,
   `.settings` (the section stack) -> `.section-stack`.
 - KB bricks not ported because nothing composes them yet (Modal, ConfirmDialog,
-  tables, charts, atoms, ...). Port from KB when a view needs one — never hand-roll
+  tables, atoms, ...). Port from KB when a view needs one — never hand-roll
   an equivalent.
+- `charts/Chart` is one brick where KB has four (`AreaTrend`, `BarTimeline`,
+  `RankedBars`, `MonthDrill`), because a single backend contract feeds it: it keeps
+  AreaTrend's measured-width SVG scaffolding and `.chart-grid`/`.chart-axis` chrome
+  and BarTimeline's bar register, and drops KB's per-series legend, click-to-drill
+  and multi-color palette — a ChartSpec is one unnamed series, so there is nothing
+  to legend, drill into, or color by.
 - Toolchain: Vite 7 + `@vitejs/plugin-react` 5 rather than KB's Vite 5 line, which
   still carries dev-server advisories (`npm audit` reports one high, one moderate on
   Vite 5). The design-system port itself is version-independent.
