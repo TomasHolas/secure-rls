@@ -43,6 +43,13 @@ class AuthConfig:
 
 
 @dataclass(frozen=True)
+class ConversationsConfig:
+    """Conversation registry knobs (ADR 0012)."""
+
+    title_max_chars: int
+
+
+@dataclass(frozen=True)
 class Runtime:
     """The full typed runtime configuration."""
 
@@ -50,6 +57,7 @@ class Runtime:
     db: DbConfig
     agent: AgentConfig
     auth: AuthConfig
+    conversations: ConversationsConfig
 
 
 @lru_cache(maxsize=1)
@@ -61,4 +69,5 @@ def runtime() -> Runtime:
         db=DbConfig(**raw["db"]),
         agent=AgentConfig(**raw["agent"]),
         auth=AuthConfig(**raw["auth"]),
+        conversations=ConversationsConfig(**raw["conversations"]),
     )
