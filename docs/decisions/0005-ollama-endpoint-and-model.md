@@ -1,7 +1,8 @@
 # ADR 0005 — Ollama as a configurable remote endpoint; model choice
 
-Status: accepted (amended 2026-08-21: demo model q8_0; live model picker; gate
-validates rather than picks)
+Status: accepted (amended 2026-08-21: live model picker; demo model locked to
+huihui_ai/qwen3-abliterated:30b-a3b after a measured shootout; gate validates
+rather than picks)
 
 ## Context
 
@@ -25,12 +26,29 @@ unreachable. LangGraph tool calling requires a model with reliable tool support.
 - **M2 empirical gate**: before the pick is final, run the tool-calling smoke
   suite (does the model reliably call `query_db` with well-formed SQL across
   ~20 prompts?) against the candidates and record results in this ADR.
-- **Demo default (owner decision, 2026-08-21)**: the host serves two builds of
-  the chosen model — `Qwen3.8-27B-Uncensored:f16` (full precision, ~9.1 tok/s)
-  and `orcarouter/Qwen3.8-27B-Uncensored:q8_0` (~2x faster). The demo default
-  is **q8_0** for pacing; `runtime.json` `agent.model` carries it. The M2 gate
-  (issue #20) validates tool-call quality on both and records the table here —
-  it can veto q8_0 only on demonstrated tool-calling failures.
+- **Demo default (owner decision, 2026-08-21, superseding the earlier q8_0
+  pick)**: `runtime.json` `agent.model` = **`huihui_ai/qwen3-abliterated:30b-a3b`**.
+  Measured shootout on the host over the tailnet (identical `query_db`
+  tool-call test):
+
+  | Model | Size | tok/s | Tool call |
+  |---|---|---|---|
+  | huihui_ai/qwen3-abliterated:30b-a3b | 18 GB | 120.9 | clean, valid SQL |
+  | orcarouter/Qwen3.8-27B-Uncensored:q4_K_M | 17 GB | 28.2 | clean, valid SQL |
+  | orcarouter/Qwen3.8-27B-Uncensored:q8_0 | 29 GB | 18.1 | clean |
+  | Qwen3.8-27B-Uncensored:f16 | 54 GB | 9.1 | clean |
+
+  The winner's speed is architectural (MoE, ~3B active parameters). Backup:
+  `orcarouter/Qwen3.8-27B-Uncensored:q4_K_M`. `f16` stays as the M5
+  eval-harness model, where quality is scored and speed is irrelevant. All
+  four remain installed on the host. Considered and excluded for cause:
+  gpt-oss 20b/120b despite top raw speed — open ChatOllama tool-calling bugs
+  (langchain-ai/langchain#32428, ollama/ollama#11704) in exactly this
+  project's stack; qwen3-next:80b-a3b — documented llama.cpp MoE inefficiency
+  (ggml-org/llama.cpp#19480) with no verified Apple Silicon benchmark.
+  The M2 gate (issue #20) runs the ~20-prompt suite against 30b-a3b (primary)
+  and q4_K_M (backup) as validation and records results here — it can veto
+  the pick only on demonstrated tool-calling failures.
 - **The model is user-selectable at runtime**: the UI offers a model picker
   populated live from the endpoint's `/api/tags` — never a hardcoded list —
   proxied through the backend (`GET /models`, ADR 0012 as amended) so the
