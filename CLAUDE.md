@@ -146,6 +146,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Frontend session (token, display-only JWT claims, logout) | `apps/frontend/src/auth.ts` |
 | Frontend HTTP calls (Bearer header, 401 -> login) | `apps/frontend/src/lib/api.ts` — the only module that calls `fetch` |
 | Frontend chat stream (SSE frames -> typed trace events -> one turn's state) | `apps/frontend/src/lib/sse.ts` + `lib/trace.ts`; rendered by `views/ChatView.tsx` over the `components/chat/` bricks |
+| Frontend conversation state (thread list, which thread is open, its replay) | `apps/frontend/src/lib/conversations.ts` — the one owner the rail (`views/ConversationsSidebar.tsx`) and the chat view share |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
 | CI | `.github/workflows/ci.yml` |
 | A design decision | `docs/decisions/` — new ADR, linked from `docs/INDEX.md` |
