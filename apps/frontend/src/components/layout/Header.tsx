@@ -2,14 +2,12 @@
 
 import type { ReactNode } from "react";
 
-import { Logo } from "../Logo";
-
 export function Header({ tenantBadge }: { tenantBadge?: ReactNode }) {
   return (
     <header className="header">
       <div className="brand">
         <span className="mark">
-          <Logo size={26} />
+          <img src="/anteater.png" alt="" style={{ height: 26, width: "auto", display: "block" }} />
         </span>
         <span className="name">
           secure<span className="accent">-rls</span>
