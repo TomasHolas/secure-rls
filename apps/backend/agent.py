@@ -55,19 +55,31 @@ stands, and `app.py` serializes them onto the SSE stream verbatim:
 
     {"type": "node_start", "node": "reason|validate|execute_tool|audit|respond"}
     {"type": "token", "text": str}
+    {"type": "reasoning", "text": str}
     {"type": "tool_call", "id": str, "tool": str, "args": {...}}
     {"type": "tool_result", "id": str, "tool": str, "content": str, "data": {...}}
     {"type": "security_event", "id": str, "tool": str, "layer": str, "kind": str,
      "reason": str}
     {"type": "retry", "id": str, "tool": str, "layer": str, "kind": str, "attempt": int,
      "max_attempts": int, "reason": str}
-    {"type": "done", "status": "ok|blocked|gave_up|failed", "answer": str, "model": str}
+    {"type": "done", "status": "ok|blocked|gave_up|failed", "answer": str, "model": str,
+     "input_tokens": int, "output_tokens": int, "duration_s": float}
 
 `token` carries user-visible text exactly once: the model's own output as it streams out of
 `reason`, or the deterministic refusal composed by `respond` when no model produced it. Control
-markup a model writes as plain text is not output: `<think>` and `<tool_call>` regions are
-stripped from the stream, so they can never be presented as prose, and a tool call written as
-`<tool_call>{"name": ..., "arguments": {...}}</tool_call>` is parsed into a real call instead.
+markup a model writes as plain text is never output as prose: a `<tool_call>` region is parsed
+into a real call instead of shown, and a `<think>` region is reasoning, which leaves on its own
+event (ADR 0012 as amended).
+
+`reasoning` carries the model's own thinking as it arrives, from whichever channel the endpoint
+uses for it - the `reasoning_content` a thinking-capable model streams beside its answer, or a
+`<think>` region a smaller model writes into the text. Both are split out by the same filter, so
+reasoning is never part of the answer, never written to the history, and never replayed: it
+belongs to the live trace exactly like a tool call does.
+
+`done` closes the turn with what it cost: the accumulated `usage_metadata` of every model call
+this turn made (`stream_mode="custom"` means the raw chunks never leave this module, so usage is
+read off the message `reason` accumulated) and the wall-clock seconds `run_turn` measured.
 
 Of the four `done` statuses this graph composes three - `ok`, `blocked`, `gave_up`. `failed` is
 the API layer's terminal frame for a run that broke before `respond` (ADR 0012 as amended); it
@@ -106,6 +118,7 @@ import re
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated, Literal, TypedDict
 from uuid import uuid4
 
@@ -176,7 +189,10 @@ _MARKUP_TAGS = ("think", "tool_call")
 _MARKUP = re.compile(rf"<(/?)({'|'.join(_MARKUP_TAGS)})\s*>", re.IGNORECASE)
 # A trailing tag that is still arriving is held back until the chunk that completes it.
 _PARTIAL_TAG = re.compile(r"</?[a-z_]*\Z", re.IGNORECASE)
+_THINK_TAG = _MARKUP_TAGS[0]
 _TOOL_CALL_TAG = _MARKUP_TAGS[1]
+# The key langchain_ollama puts a thinking model's reasoning under, next to the answer text.
+_REASONING_KEY = "reasoning_content"
 _PARSED_CALL_PREFIX = "parsed-"
 _CALL_NAME = "name"
 _CALL_ARGS = ("arguments", "args")
@@ -262,6 +278,13 @@ class TokenEvent(TypedDict):
     text: str
 
 
+class ReasoningEvent(TypedDict):
+    """One chunk of the model's own reasoning; shown in the trace, never part of the answer."""
+
+    type: Literal["reasoning"]
+    text: str
+
+
 class ToolCallEvent(TypedDict):
     """A tool call as the model wrote it, before anything ran."""
 
@@ -321,17 +344,21 @@ class RetryEvent(TypedDict):
 
 
 class DoneEvent(TypedDict):
-    """The turn is over, carrying the final answer and how the turn ended."""
+    """The turn is over: the final answer, how it ended, and what it cost to get there."""
 
     type: Literal["done"]
     status: str
     answer: str
     model: str
+    input_tokens: int
+    output_tokens: int
+    duration_s: float
 
 
 TraceEvent = (
     NodeStartEvent
     | TokenEvent
+    | ReasoningEvent
     | ToolCallEvent
     | ToolResultEvent
     | SecurityEvent
@@ -380,6 +407,9 @@ class AgentState(TypedDict):
     halt_layer: str
     pending: list[_PendingCall]
     outcomes: list[_CallOutcome]
+    started: float
+    input_tokens: int
+    output_tokens: int
 
 
 @dataclass(frozen=True)
@@ -487,7 +517,11 @@ def build_agent(
 
 
 def run_turn(graph: CompiledStateGraph, question: str, thread_id: str) -> Iterator[TraceEvent]:
-    """Run one turn on thread_id, yielding the trace events in the order they happen."""
+    """Run one turn on thread_id, yielding the trace events in the order they happen.
+
+    The turn's clock starts here, in the state: this is the only place that knows where one turn
+    begins, and `respond` reads it back to report the duration on the terminal `done` event.
+    """
     state = AgentState(
         messages=[HumanMessage(content=question)],
         attempts=0,
@@ -496,6 +530,9 @@ def run_turn(graph: CompiledStateGraph, question: str, thread_id: str) -> Iterat
         halt_layer="",
         pending=[],
         outcomes=[],
+        started=perf_counter(),
+        input_tokens=0,
+        output_tokens=0,
     )
     yield from graph.stream(state, _thread_config(thread_id), stream_mode="custom")
 
@@ -534,10 +571,11 @@ def visible_text(text: str) -> str:
     The streaming path strips the same markup chunk by chunk (`_Markup`); this is the one-shot
     door onto it, for a caller that holds a whole model turn at once - `titles.py` asking for a
     conversation label. One module owns what counts as prose, so a `<think>` block can never be
-    presented as content on one path and stripped on the other.
+    presented as content on one path and stripped on the other. Only the prose is returned: a
+    caller holding a finished answer has no live trace to show the reasoning on.
     """
     markup = _Markup()
-    return markup.feed(text) + markup.flush()
+    return markup.feed(text).prose + markup.flush().prose
 
 
 def _thread_config(thread_id: str) -> dict[str, dict[str, str]]:
@@ -564,10 +602,20 @@ class _Nodes:
     model: str
 
     def reason(self, state: AgentState) -> dict[str, object]:
-        """Ask the model what to do next, streaming its text out as it arrives."""
+        """Ask the model what to do next, streaming its reasoning and its text as they arrive.
+
+        A turn can enter this node several times - once per tool round - so what the calls cost
+        is summed in the state rather than read off the last one.
+        """
         writer = get_stream_writer()
         writer(NodeStartEvent(type="node_start", node=REASON))
-        return {"messages": [self._call_model(state["messages"], writer)]}
+        message = self._call_model(state["messages"], writer)
+        spent_in, spent_out = _tokens(message)
+        return {
+            "messages": [message],
+            "input_tokens": state["input_tokens"] + spent_in,
+            "output_tokens": state["output_tokens"] + spent_out,
+        }
 
     def validate(self, state: AgentState) -> dict[str, object]:
         """Announce every tool call the model wrote and judge its arguments before anything runs."""
@@ -629,17 +677,33 @@ class _Nodes:
         if not spoken:
             writer(TokenEvent(type="token", text=answer))
             messages = [AIMessage(content=answer)]
-        writer(DoneEvent(type="done", status=status, answer=answer, model=self.model))
+        writer(
+            DoneEvent(
+                type="done",
+                status=status,
+                answer=answer,
+                model=self.model,
+                input_tokens=state["input_tokens"],
+                output_tokens=state["output_tokens"],
+                duration_s=_elapsed(state["started"]),
+            )
+        )
         return {"messages": messages}
 
     def _call_model(
         self, history: Sequence[AnyMessage], writer: Callable[[object], None]
     ) -> BaseMessage:
-        """Stream one model response as prose, holding back the control markup it may contain."""
+        """Stream one model response, split into the reasoning it shows and the prose it says.
+
+        Both channels a model can reason on end up in the same split: the `reasoning_content` a
+        thinking-capable endpoint streams beside the answer, and a `<think>` region a smaller
+        model writes into the text. Only prose is accumulated as the answer.
+        """
         markup = _Markup()
         accumulated: BaseMessage | None = None
         prose = ""
         for chunk in self.llm.stream([self.system, *history]):
+            _emit(_thought(chunk), writer)
             if chunk.text:
                 prose += _emit(markup.feed(chunk.text), writer)
             accumulated = chunk if accumulated is None else accumulated + chunk
@@ -792,23 +856,33 @@ def _describe(error: ValidationError) -> str:
     )
 
 
+@dataclass(frozen=True)
+class _Split:
+    """One piece of a streaming model turn, routed: the prose it says, the reasoning it shows."""
+
+    prose: str
+    reasoning: str
+
+
 class _Markup:
     """Splits a streaming model turn into prose and the control markup some models write as text.
 
     Small models emit `<think>` reasoning and, when tool calling is not honored natively, a
     literal `<tool_call>{...}</tool_call>` block. Neither is an answer. This holds back both
     across chunk boundaries - a tag split over two chunks is still a tag - so prose is all the
-    stream carries, and it keeps every `<tool_call>` payload for `_parsed_calls` to read.
+    answer carries, it hands the thinking back as reasoning for the trace to show, and it keeps
+    every `<tool_call>` payload for `_parsed_calls` to read.
     """
 
     def __init__(self) -> None:
         self._buffer = ""
         self._tag = ""
         self._payload = ""
+        self._thought = ""
         self.calls: list[str] = []
 
-    def feed(self, chunk: str) -> str:
-        """The prose in this chunk; markup, thinking and tool-call payloads stay behind."""
+    def feed(self, chunk: str) -> _Split:
+        """This chunk split by region; a tool-call payload and a partial tag stay behind."""
         self._buffer += chunk
         prose = ""
         while (match := _MARKUP.search(self._buffer)) is not None:
@@ -819,20 +893,27 @@ class _Markup:
         cut = held.start() if held else len(self._buffer)
         prose += self._take(self._buffer[:cut])
         self._buffer = self._buffer[cut:]
-        return prose
+        return self._split(prose)
 
-    def flush(self) -> str:
-        """What is left when the stream ends; text inside an unclosed region stays held back."""
+    def flush(self) -> _Split:
+        """What is left when the stream ends, including an unclosed thinking region's text."""
         rest = self._take(self._buffer)
         self._buffer = ""
-        return rest
+        return self._split(rest)
+
+    def _split(self, prose: str) -> _Split:
+        """Hand over what this piece routed; the reasoning buffer empties as it is handed on."""
+        thought, self._thought = self._thought, ""
+        return _Split(prose=prose, reasoning=thought)
 
     def _take(self, text: str) -> str:
-        """Route text by the region it fell in: prose out, thinking dropped, payloads kept."""
+        """Route text by the region it fell in: prose out, thinking and payloads held."""
         if not self._tag:
             return text
         if self._tag == _TOOL_CALL_TAG:
             self._payload += text
+        elif self._tag == _THINK_TAG:
+            self._thought += text
         return ""
 
     def _switch(self, closing: bool, tag: str) -> None:
@@ -846,17 +927,47 @@ class _Markup:
         self._tag = ""
 
 
-def _emit(text: str, writer: Callable[[object], None]) -> str:
-    """Stream one piece of prose as a token event, returning it so the caller can accumulate it."""
-    if text:
-        writer(TokenEvent(type="token", text=text))
-    return text
+def _emit(split: _Split, writer: Callable[[object], None]) -> str:
+    """Stream one split piece - reasoning on its own event, prose as a token - and return the prose.
+
+    This is the single seam both reasoning channels pass through, so wherever the thinking came
+    from it reaches the trace the same way and never reaches the answer.
+    """
+    if split.reasoning:
+        writer(ReasoningEvent(type="reasoning", text=split.reasoning))
+    if split.prose:
+        writer(TokenEvent(type="token", text=split.prose))
+    return split.prose
+
+
+def _thought(chunk: BaseMessage) -> _Split:
+    """The reasoning a thinking endpoint streams on its own channel, as a split with no prose."""
+    return _Split(prose="", reasoning=str(chunk.additional_kwargs.get(_REASONING_KEY) or ""))
+
+
+def _tokens(message: BaseMessage) -> tuple[int, int]:
+    """What one model call cost, read off the accumulated message; zeros if it reported none."""
+    usage = getattr(message, "usage_metadata", None) or {}
+    return int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0))
+
+
+def _elapsed(started: float) -> float:
+    """How long the turn has taken, at the precision the trace reports it."""
+    return round(perf_counter() - started, runtime().agent.duration_decimals)
 
 
 def _assistant(streamed: BaseMessage | None, prose: str, payloads: Sequence[str]) -> AIMessage:
-    """The model turn as the graph stores it: prose without markup, and the calls it asked for."""
+    """The model turn as the graph stores it: prose without markup, and the calls it asked for.
+
+    What the call cost travels with the message, because the node that made it is not the node
+    that reports it; the reasoning does not, because the trace owns it and the history does not.
+    """
     calls = list(getattr(streamed, "tool_calls", None) or [])
-    return AIMessage(content=prose, tool_calls=calls or _parsed_calls(payloads))
+    return AIMessage(
+        content=prose,
+        tool_calls=calls or _parsed_calls(payloads),
+        usage_metadata=getattr(streamed, "usage_metadata", None),
+    )
 
 
 def _parsed_calls(payloads: Sequence[str]) -> list[ToolCall]:

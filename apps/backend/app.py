@@ -47,12 +47,17 @@ it is in that live list at request time - an allowlist over untrusted input. Abs
 
 The list is filtered to models that can actually hold a conversation: an endpoint also serves
 embedding-only models (`nomic-embed-text`, which this app itself uses for RAG), and picking one
-breaks the turn. `chat_capable_lister` asks `/api/show` per model id and keeps the ones whose
-`capabilities` include `completion`, caching each answer for the process - the tag list is
-short and rarely changes, so one lookup per id is enough. An endpoint too old to report
-capabilities falls back to excluding the configured `agent.embed_model` by prefix. Filtering
-happens in the lister, not the handler, so the `/chat` allowlist is the same list the picker
-was offered.
+breaks the turn. `chat_capable_lister` keeps the ids whose declared `capabilities` include
+`completion`; an endpoint too old to report capabilities falls back to excluding the configured
+`agent.embed_model` by prefix. Filtering happens in the lister, not the handler, so the `/chat`
+allowlist is the same list the picker was offered.
+
+The same declaration decides whether a turn asks the model to think (ADR 0012 as amended).
+Ollama refuses a `think` request outright for a model that does not declare `thinking`, so
+`thinking_checker` enables the reasoning channel per model rather than per process: configured
+on in `agent.thinking` and declared by the model, or no reasoning for that turn. One
+`cached_capabilities` wrapper serves both readers, so `/api/show` is asked once per id per
+process however many turns and model lists follow.
 
 Sliding session (ADR 0009 as amended). Every authenticated request re-issues the caller's
 token when it is close to expiring and returns the new one on the `X-Refreshed-Token`
@@ -95,6 +100,7 @@ import logging
 import os
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
+from time import perf_counter
 from typing import Annotated, Protocol
 
 import httpx
@@ -145,6 +151,7 @@ _TAGS_PATH = "/api/tags"
 _SHOW_PATH = "/api/show"
 _CHAT_PATH = "/api/chat"
 _COMPLETION_CAPABILITY = "completion"
+_THINKING_CAPABILITY = "thinking"
 _INVALID_CREDENTIALS = "invalid credentials"
 _INVALID_TOKEN = "invalid or expired token"
 _UNKNOWN_MODEL = "unknown model"
@@ -221,7 +228,7 @@ class Conversation:
     messages: list[Message]
 
 
-def ollama_chat_runner(base_url: str) -> ChatRunner:
+def ollama_chat_runner(base_url: str, thinking: Callable[[str], bool]) -> ChatRunner:
     """The production runner: ChatOllama plus the tenant's graph over the SQLite checkpointer."""
 
     def run(
@@ -231,7 +238,7 @@ def ollama_chat_runner(base_url: str) -> ChatRunner:
         with SqliteSaver.from_conn_string(str(CHECKPOINT_DB_PATH)) as checkpointer:
             graph = build_agent(
                 tenant_id,
-                ChatOllama(base_url=base_url, model=model),
+                ChatOllama(base_url=base_url, model=model, reasoning=thinking(model)),
                 checkpointer,
                 embedder=OllamaEmbed(base_url),
                 model_id=model,
@@ -281,6 +288,19 @@ def ollama_capability_checker(base_url: str) -> CapabilityChecker:
     return capabilities
 
 
+def cached_capabilities(capabilities: CapabilityChecker) -> CapabilityChecker:
+    """Wrap a checker so each id is asked once per process; the tag list is short and stable."""
+    cached: dict[str, list[str] | None] = {}
+
+    def read(model_id: str) -> list[str] | None:
+        """The model's capabilities, from the cache after the first lookup."""
+        if model_id not in cached:
+            cached[model_id] = capabilities(model_id)
+        return cached[model_id]
+
+    return read
+
+
 def ollama_titler(base_url: str) -> TitleModel:
     """The production titler: one non-streaming `/api/chat` completion on the titling timeout.
 
@@ -312,14 +332,11 @@ def ollama_titler(base_url: str) -> TitleModel:
 def chat_capable_lister(
     list_models: ModelLister, capabilities: CapabilityChecker
 ) -> ModelLister:
-    """Wrap a lister so only chat-capable ids survive; each id's capabilities are cached here."""
-    cached: dict[str, list[str] | None] = {}
+    """Wrap a lister so only chat-capable ids survive, per what the endpoint declares."""
 
     def chat_capable(model_id: str) -> bool:
         """Keep a model that declares `completion`; without a declaration, exclude the embedder."""
-        if model_id not in cached:
-            cached[model_id] = capabilities(model_id)
-        declared = cached[model_id]
+        declared = capabilities(model_id)
         if declared is None:
             return not model_id.startswith(runtime().agent.embed_model)
         return _COMPLETION_CAPABILITY in declared
@@ -329,6 +346,22 @@ def chat_capable_lister(
         return [model_id for model_id in list_models() if chat_capable(model_id)]
 
     return list_chat_models
+
+
+def thinking_checker(capabilities: CapabilityChecker) -> Callable[[str], bool]:
+    """Whether to ask a model to think: only if it is configured and the model declares it.
+
+    Ollama refuses `think` outright for a model without the `thinking` capability, so asking
+    every model to reason would break every turn on an endpoint serving one that cannot.
+    """
+
+    def thinks(model_id: str) -> bool:
+        """True when the reasoning channel is both wanted and supported for this model."""
+        if not runtime().agent.thinking:
+            return False
+        return _THINKING_CAPABILITY in (capabilities(model_id) or ())
+
+    return thinks
 
 
 def build_note_index(base_url: str) -> None:
@@ -368,11 +401,11 @@ def create_app(
     jwt_secret()
     base_url = os.environ.get(OLLAMA_ENV_VAR, DEFAULT_OLLAMA_BASE_URL)
     index_notes = note_index or (lambda: build_note_index(base_url))
-    run_chat = chat_runner or ollama_chat_runner(base_url)
-    list_models = chat_capable_lister(
-        model_lister or ollama_model_lister(base_url),
-        capability_checker or ollama_capability_checker(base_url),
+    capabilities = cached_capabilities(
+        capability_checker or ollama_capability_checker(base_url)
     )
+    run_chat = chat_runner or ollama_chat_runner(base_url, thinking_checker(capabilities))
+    list_models = chat_capable_lister(model_lister or ollama_model_lister(base_url), capabilities)
     ask_title = titler or ollama_titler(base_url)
     threads = registry or ConversationRegistry(STATE_DB_PATH)
     replay = transcript or read_transcript
@@ -531,8 +564,13 @@ def _sse(events: Iterator[TraceEvent], model: str) -> Iterator[str]:
     reader with a turn stuck at "streaming". It closes here instead with the terminal `done` frame
     ADR 0012 defines, status `failed`, so the client always learns how the turn ended. The reason
     is deliberately generic; the exception is logged, where its detail belongs.
+
+    The terminal frame carries the telemetry the turn managed to produce: the seconds it ran
+    before it broke, and no token counts, because a run that never reached `respond` never got
+    a usage report to pass on.
     """
     closed = False
+    started = perf_counter()
     try:
         for event in events:
             closed = event["type"] == EVENT_DONE
@@ -542,7 +580,15 @@ def _sse(events: Iterator[TraceEvent], model: str) -> Iterator[str]:
         if not closed:
             yield _frame(
                 DoneEvent(
-                    type=EVENT_DONE, status=STATUS_FAILED, answer=_TURN_FAILED, model=model
+                    type=EVENT_DONE,
+                    status=STATUS_FAILED,
+                    answer=_TURN_FAILED,
+                    model=model,
+                    input_tokens=0,
+                    output_tokens=0,
+                    duration_s=round(
+                        perf_counter() - started, runtime().agent.duration_decimals
+                    ),
                 )
             )
 

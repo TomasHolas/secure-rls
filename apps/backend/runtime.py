@@ -42,11 +42,13 @@ class AnalyticsConfig:
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Agent and model knobs (ADRs 0005, 0011)."""
+    """Agent and model knobs (ADRs 0005, 0011, 0012)."""
 
     model: str
     embed_model: str
     max_tool_retries: int
+    thinking: bool
+    duration_decimals: int
 
 
 @dataclass(frozen=True)
