@@ -77,7 +77,7 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
 - `[x]` **M1 — Dataset + RLS core.** `scripts/generate_dataset.py` →
   `employees.csv`; `db.py` (load + tenant-scoped executor); `security.py`
   (sqlglot validator); the adversarial test suite proving isolation, red → green.
-- `[ ]` **M2 — Agent.** `agent.py`: explicit LangGraph graph on Ollama with
+- `[x]` **M2 — Agent.** `agent.py`: explicit LangGraph graph on Ollama with
   RLS-enforced tools (`query_db`, `get_stats`, `plot`, `search_notes`, bonus
   `detect_anomalies`); multi-turn memory; two-tier retry policy (ADR 0011);
   tenant-filtered RAG via `rag.py` (ADR 0010); schema card + sample rows in
@@ -86,7 +86,7 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   an SSE stream of typed trace events, `/conversations` JWT-scoped CRUD,
   `/health`, `/models` proxying the endpoint's chat-capable model list — ADR 0012),
   `auth.py` (hardcoded tenant users, JWT with tenant claim, ADR 0009).
-- `[~]` **M4 — Frontend.** React SPA on the KB design system: login, streaming
+- `[x]` **M4 — Frontend.** React SPA on the KB design system: login, streaming
   chat with live trace (generated vs executed SQL side by side), conversation
   history sidebar, tenant badge, charts, transparent security-refusal and
   truncation states, cross-tenant isolation demo via login switch (ADR 0012).
