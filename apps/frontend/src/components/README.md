@@ -89,10 +89,9 @@ The standard page head: `eyebrow`, `title`, `subtitle`, plus optional `actions`.
 ### layout/Section
 
 The titled content card every block sits in (small uppercase title above a rounded
-card). Free-form content goes in a `.settings-block`; label/control rows use
-`.settings-row` (`.settings-label` + `.settings-name` + `.settings-help` on the left,
-`.settings-control` on the right). `.mono-inline` is the inline mono chip for values
-like a URL.
+card). Label/control rows inside it use `.settings-row` (`.settings-label` +
+`.settings-name` + `.settings-help` on the left, `.settings-control` on the right).
+`.mono-inline` is the inline mono chip for values like a URL.
 
 ```tsx
 <Section title="Backend">
@@ -123,6 +122,9 @@ Centered empty/placeholder state with a leading icon.
 - KB bricks not ported because nothing composes them yet (Modal, ConfirmDialog,
   tables, charts, atoms, ...). Port from KB when a view needs one — never hand-roll
   an equivalent.
+- Toolchain: Vite 7 + `@vitejs/plugin-react` 5 rather than KB's Vite 5 line, which
+  still carries dev-server advisories (`npm audit` reports one high, one moderate on
+  Vite 5). The design-system port itself is version-independent.
 
 ## Adding a new brick
 

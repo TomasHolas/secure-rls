@@ -1,8 +1,7 @@
 /**
  * The app-wide content card: a small uppercase title above a clean rounded card
  * (the "Settings" look). Every page composes this so the whole app shares one
- * visual language. Free-form content goes in a `.settings-block`; label/control
- * rows use `.settings-row`.
+ * visual language. Label/control rows inside it use `.settings-row`.
  */
 
 import type { ReactNode } from "react";
