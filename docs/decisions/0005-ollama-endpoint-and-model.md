@@ -1,6 +1,7 @@
 # ADR 0005 — Ollama as a configurable remote endpoint; model choice
 
-Status: accepted (model pick provisional until the M2 empirical gate)
+Status: accepted (amended 2026-08-21: demo model q8_0; live model picker; gate
+validates rather than picks)
 
 ## Context
 
@@ -24,6 +25,20 @@ unreachable. LangGraph tool calling requires a model with reliable tool support.
 - **M2 empirical gate**: before the pick is final, run the tool-calling smoke
   suite (does the model reliably call `query_db` with well-formed SQL across
   ~20 prompts?) against the candidates and record results in this ADR.
+- **Demo default (owner decision, 2026-08-21)**: the host serves two builds of
+  the chosen model — `Qwen3.8-27B-Uncensored:f16` (full precision, ~9.1 tok/s)
+  and `orcarouter/Qwen3.8-27B-Uncensored:q8_0` (~2x faster). The demo default
+  is **q8_0** for pacing; `runtime.json` `agent.model` carries it. The M2 gate
+  (issue #20) validates tool-call quality on both and records the table here —
+  it can veto q8_0 only on demonstrated tool-calling failures.
+- **The model is user-selectable at runtime**: the UI offers a model picker
+  populated live from the endpoint's `/api/tags` — never a hardcoded list —
+  proxied through the backend (`GET /models`, ADR 0012 as amended) so the
+  client never learns `OLLAMA_BASE_URL`. A client-chosen model id is accepted
+  only if present in that live list (allowlist over untrusted input).
+  `runtime.json` `agent.model` is the default when the client sends none.
+  Model choice has zero effect on RLS — every layer is model-agnostic
+  (ADR 0002), which the demo states explicitly.
 
 ## Consequences
 
