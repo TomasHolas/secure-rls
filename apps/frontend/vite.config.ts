@@ -1,8 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// VITE_API_URL points the SPA at the FastAPI backend; the default matches the
-// backend's local dev port (ADR 0001: backend 8002, frontend 3002).
+/** VITE_API_URL points the SPA at the backend; default matches ADR 0001 ports (8002/3002). */
 export default defineConfig({
   plugins: [react()],
   server: {
