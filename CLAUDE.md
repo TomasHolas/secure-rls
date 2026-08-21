@@ -108,6 +108,10 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
 > it (ADR 0009).
 
 ```bash
+# The deployment (M6b+, ADR 0013) - needs a repo-root .env with both variables set:
+cp apps/backend/.env.example .env    # then fill both; compose refuses to run otherwise
+docker compose up --build            # backend :8002, frontend :3002
+
 # Backend dev (M3+):
 cd apps/backend && uv sync && uv run uvicorn app:app --reload --port 8002
 
@@ -151,7 +155,8 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Frontend chat stream (SSE frames -> typed trace events -> one turn's state) | `apps/frontend/src/lib/sse.ts` + `lib/trace.ts`; rendered by `views/ChatView.tsx` over the `components/chat/` bricks |
 | Frontend conversation state (thread list, which thread is open, its replay) | `apps/frontend/src/lib/conversations.ts` — the one owner the rail (`views/ConversationsSidebar.tsx`) and the chat view share |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
-| CI | `.github/workflows/ci.yml` |
+| CI / CD | `.github/workflows/ci.yml` |
+| Images / the deployment unit | `apps/backend/Dockerfile`, `apps/frontend/Dockerfile` + `nginx.conf`, `docker-compose.yml` |
 | A design decision | `docs/decisions/` — new ADR, linked from `docs/INDEX.md` |
 
 ## Layering
