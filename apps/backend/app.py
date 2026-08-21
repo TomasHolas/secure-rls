@@ -15,7 +15,7 @@ Endpoints:
 - `POST /chat`              one turn as an SSE stream of ADR 0012 trace events.
 - `GET  /conversations`     the caller's threads, newest first.
 - `POST /conversations`     a new thread; the title is the first user message, truncated.
-- `GET  /conversations/{id}` the caller's own thread row.
+- `GET  /conversations/{id}` the caller's own thread row plus its replayed transcript.
 - `DELETE /conversations/{id}` the thread plus its checkpointer rows.
 
 Conversation titles are set when the thread is created (`POST /conversations {"title": ...}`
@@ -23,10 +23,12 @@ with the first user message), which is the only write the registry brick exposes
 that message in hand before it opens the stream. A thread created without one carries the
 configured default title.
 
-`GET /conversations/{id}` returns the registry row, not the transcript: replaying the message
-history means reading LangGraph's checkpointer for the thread, which no issue needs yet. When
-a client wants the full transcript, that endpoint grows a checkpointer read - the registry row
-it returns now stays as it is.
+`GET /conversations/{id}` returns the registry row plus `messages`, the thread's user questions
+and assistant answers replayed from LangGraph's checkpointer by `agent.thread_messages` - the
+sidebar needs them to reopen an old thread instead of showing an empty chat while server-side
+memory silently continues. The identity check comes first and is unchanged: the registry is
+consulted before the checkpointer is opened, so a foreign or missing id is the same 404 and no
+transcript is read for a thread the caller may not see.
 
 Model selection (ADR 0005 as amended). The client never learns `OLLAMA_BASE_URL`: `/models`
 proxies the endpoint's `/api/tags`, and a client-chosen `model` on `/chat` is honored only if
@@ -39,9 +41,9 @@ rather than serving unsigned-in-practice tokens. Importing this module is side-e
 the production app is built on first access to the module attribute `app`, which is what
 `uvicorn app:app` resolves.
 
-Seams. `create_app` takes the turn runner, the model lister, the registry and the
-checkpointer cleanup as arguments, defaulting to the production wiring. Tests pass fakes and
-never touch Ollama or the filesystem outside tmp_path.
+Seams. `create_app` takes the turn runner, the model lister, the registry and the two
+checkpointer accesses - transcript replay and cleanup - as arguments, defaulting to the
+production wiring. Tests pass fakes and never touch Ollama or the filesystem outside tmp_path.
 
 Paths. All state files are resolved here, once: the employee database (`db.DEFAULT_DB_PATH`,
 beside which `db.py` derives its own `audit.db` and `vectors.db`), the registry's `state.db`
@@ -51,6 +53,7 @@ and the LangGraph checkpointer's `checkpoints.db`.
 import json
 import os
 from collections.abc import Callable, Iterator
+from dataclasses import asdict, dataclass
 from typing import Annotated, Protocol
 
 import httpx
@@ -62,7 +65,7 @@ from langchain_ollama import ChatOllama
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
-from agent import TraceEvent, build_agent, run_turn
+from agent import Message, TraceEvent, build_agent, run_turn, thread_messages
 from auth import AuthError, Identity, create_token, jwt_secret, verify_password, verify_token
 from conversations import ConversationRegistry, NotFound, Thread
 from db import DEFAULT_DB_PATH
@@ -130,6 +133,16 @@ class ConversationRequest(BaseModel):
     title: str | None = None
 
 
+@dataclass(frozen=True)
+class Conversation:
+    """One thread as `GET /conversations/{id}` serves it: the registry row plus the transcript."""
+
+    thread_id: str
+    title: str
+    created: str
+    messages: list[Message]
+
+
 def ollama_chat_runner(base_url: str) -> ChatRunner:
     """The production runner: ChatOllama plus the tenant's graph over the SQLite checkpointer."""
 
@@ -170,6 +183,12 @@ def ollama_model_lister(base_url: str) -> ModelLister:
     return list_models
 
 
+def read_transcript(thread_id: str) -> list[Message]:
+    """Replay a thread's exchanges from the LangGraph checkpointer file; the agent owns the how."""
+    with SqliteSaver.from_conn_string(str(CHECKPOINT_DB_PATH)) as checkpointer:
+        return thread_messages(checkpointer, thread_id)
+
+
 def delete_checkpoints(thread_id: str) -> None:
     """Drop a deleted thread's LangGraph checkpointer rows; the registry row is already gone."""
     with SqliteSaver.from_conn_string(str(CHECKPOINT_DB_PATH)) as checkpointer:
@@ -181,6 +200,7 @@ def create_app(
     chat_runner: ChatRunner | None = None,
     model_lister: ModelLister | None = None,
     registry: ConversationRegistry | None = None,
+    transcript: Callable[[str], list[Message]] | None = None,
     cleanup: Callable[[str], None] | None = None,
 ) -> FastAPI:
     """Build the API, refusing to start without a usable signing secret (ADR 0009)."""
@@ -189,6 +209,7 @@ def create_app(
     run_chat = chat_runner or ollama_chat_runner(base_url)
     list_models = model_lister or ollama_model_lister(base_url)
     threads = registry or ConversationRegistry(STATE_DB_PATH)
+    replay = transcript or read_transcript
     drop_checkpoints = cleanup or delete_checkpoints
 
     app = FastAPI(title="secure-rls API", version=API_VERSION)
@@ -248,9 +269,18 @@ def create_app(
     @app.get("/conversations/{thread_id}")
     def get_conversation(
         thread_id: str, identity: Annotated[Identity, Depends(_identity)]
-    ) -> Thread:
-        """The caller's own thread row; a foreign or missing id is the same 404."""
-        return threads.get_thread(identity, thread_id)
+    ) -> Conversation:
+        """The caller's own thread and its transcript; a foreign or missing id is the same 404.
+
+        The registry answers first, so an id the caller does not own never reaches the
+        checkpointer. `messages` replays the exchanges only - the questions asked and the
+        answers given. The live trace of a turn (tool calls, generated vs executed SQL,
+        security events, retries) is ephemeral by design (ADR 0012): it is the SSE transport of
+        the turn that produced it, watched once, never re-served. A thread never chatted in
+        replays as an empty list.
+        """
+        thread = threads.get_thread(identity, thread_id)
+        return Conversation(**asdict(thread), messages=replay(thread_id))
 
     @app.delete("/conversations/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_conversation(

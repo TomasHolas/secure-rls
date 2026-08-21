@@ -8,15 +8,19 @@ and not the body's - and replays a fixed ADR 0012 event sequence so the SSE fram
 are exact.
 
 The registry here is the real `ConversationRegistry` on a tmp_path file: thread scoping is the
-security property under test, so faking it would test nothing.
+security property under test, so faking it would test nothing. The transcript seam is a fake
+holding canned exchanges per thread and recording every thread it was asked for - what belongs
+here is that the endpoint serves the transcript in order and never reads one for a thread the
+caller does not own; reconstructing it from a real checkpoint is `test_agent.py`'s job.
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import pytest
 from fastapi.testclient import TestClient
 
+from agent import Message
 from app import ModelEndpointError, create_app
 from auth import SECRET_ENV_VAR, AuthError
 from conversations import ConversationRegistry
@@ -34,6 +38,13 @@ CHOSEN_MODEL = MODELS[1]
 UNKNOWN_MODEL = "nonexistent-model:9b"
 
 ANSWER = "acme has 6 employees"
+QUESTION = "how many employees?"
+TRANSCRIPT = (
+    Message(role="user", content=QUESTION),
+    Message(role="assistant", content=ANSWER),
+    Message(role="user", content="and how many of them in sales?"),
+    Message(role="assistant", content="one of them is in sales"),
+)
 EVENTS = (
     {"type": "node_start", "node": "reason"},
     {"type": "token", "text": ANSWER},
@@ -71,11 +82,25 @@ class FakeRunner:
 
 
 @dataclass
+class FakeTranscripts:
+    """The transcript seam: canned exchanges per thread, recording every thread it was asked for."""
+
+    stored: dict[str, list[Message]] = field(default_factory=dict)
+    asked: list[str] = field(default_factory=list)
+
+    def __call__(self, thread_id: str) -> list[Message]:
+        """Record the lookup and replay what was stored for that thread, or nothing."""
+        self.asked.append(thread_id)
+        return self.stored.get(thread_id, [])
+
+
+@dataclass
 class Wiring:
     """A wired app plus the fakes the tests inspect."""
 
     client: TestClient
     runner: FakeRunner
+    transcripts: FakeTranscripts
     deleted: list[str]
 
 
@@ -87,16 +112,20 @@ def _signing_secret(monkeypatch):
 
 @pytest.fixture
 def wiring(tmp_path) -> Wiring:
-    """The app with a fake runner, a fake model list, a tmp registry and a recording cleanup."""
+    """The app with a fake runner and model list, a tmp registry, and recording replay/cleanup."""
     runner = FakeRunner()
+    transcripts = FakeTranscripts()
     deleted: list[str] = []
     app = create_app(
         chat_runner=runner,
         model_lister=lambda: list(MODELS),
         registry=ConversationRegistry(tmp_path / "state.db"),
+        transcript=transcripts,
         cleanup=deleted.append,
     )
-    return Wiring(client=TestClient(app), runner=runner, deleted=deleted)
+    return Wiring(
+        client=TestClient(app), runner=runner, transcripts=transcripts, deleted=deleted
+    )
 
 
 def _token(client: TestClient, credentials: tuple[str, str]) -> str:
@@ -262,11 +291,36 @@ def test_chat_on_a_foreign_thread_is_indistinguishable_from_a_missing_one(wiring
 
 def test_get_conversation_on_a_foreign_thread_is_a_404(wiring):
     alice_thread = _new_thread(wiring.client, _headers(wiring.client, ALICE))
+    wiring.transcripts.stored[alice_thread] = list(TRANSCRIPT)
     bob_headers = _headers(wiring.client, BOB)
     foreign = wiring.client.get(f"/conversations/{alice_thread}", headers=bob_headers)
     missing = wiring.client.get("/conversations/no-such-thread", headers=bob_headers)
     assert foreign.status_code == missing.status_code == 404
     assert foreign.json() == missing.json()
+    assert wiring.transcripts.asked == []
+
+
+def test_get_conversation_replays_the_exchanges_in_order(wiring):
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers, title=QUESTION)
+    wiring.transcripts.stored[thread_id] = list(TRANSCRIPT)
+
+    response = wiring.client.get(f"/conversations/{thread_id}", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["thread_id"] == thread_id
+    assert body["title"] == QUESTION
+    assert body["created"]
+    assert body["messages"] == [asdict(message) for message in TRANSCRIPT]
+    assert wiring.transcripts.asked == [thread_id]
+
+
+def test_get_conversation_replays_a_thread_never_chatted_in_as_empty(wiring):
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers)
+    response = wiring.client.get(f"/conversations/{thread_id}", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["messages"] == []
 
 
 def test_conversation_lists_are_scoped_to_the_identity(wiring):
