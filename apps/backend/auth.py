@@ -3,6 +3,12 @@
 Demo users are stored as PBKDF2-HMAC-SHA256 digests - 600,000 iterations, per-user
 16-byte salt, `algorithm$iterations$salt$hash` - and tokens are HS256 JWTs whose
 algorithm list is pinned on decode.
+
+The session slides. `create_token` mints a token that lives `auth.token_ttl_minutes`,
+and `refreshed_token` re-issues one for a still-valid token that expires within
+`auth.refresh_within_minutes` - so an active caller is never signed out mid-session
+while tokens stay short-lived in absolute terms. Refreshing decodes with the same
+pinned verification as `verify_token`: an expired or forged token refreshes nothing.
 """
 
 import hashlib
@@ -91,8 +97,22 @@ def create_token(identity: Identity) -> str:
 
 def verify_token(token: str) -> Identity:
     """Decode a token with the algorithm pinned (RFC 8725), raising AuthError on any failure."""
+    return _identity_of(_verified_claims(token))
+
+
+def refreshed_token(token: str) -> str | None:
+    """Re-issue a verified token that expires within the refresh window, else None."""
+    claims = _verified_claims(token)
+    remaining = datetime.fromtimestamp(claims["exp"], UTC) - datetime.now(UTC)
+    if remaining > timedelta(minutes=runtime().auth.refresh_within_minutes):
+        return None
+    return create_token(_identity_of(claims))
+
+
+def _verified_claims(token: str) -> dict:
+    """The token's claims, verified with the algorithm pinned; any failure is an AuthError."""
     try:
-        claims = jwt.decode(
+        return jwt.decode(
             token,
             jwt_secret(),
             algorithms=[_JWT_ALGORITHM],
@@ -100,6 +120,10 @@ def verify_token(token: str) -> Identity:
         )
     except jwt.PyJWTError as exc:
         raise AuthError(f"invalid or expired token: {exc}") from exc
+
+
+def _identity_of(claims: dict) -> Identity:
+    """The identity a verified claim set carries: the subject and its tenant."""
     return Identity(sub=claims["sub"], tenant_id=claims["tenant_id"])
 
 

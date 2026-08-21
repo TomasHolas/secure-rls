@@ -3,10 +3,19 @@
  * Bearer header and the 401 handling exist exactly once: a 401 anywhere means the
  * token is gone or expired, so the session is dropped and the SPA falls back to
  * the login view (ADR 0012). Views never call fetch directly.
+ *
+ * The session slides (ADR 0009 as amended): when a response carries
+ * `X-Refreshed-Token`, the server re-issued the token because it was close to
+ * expiring, and the session adopts it here. One place attaches the token and one
+ * place replaces it, so no view has to think about expiry and an active user is
+ * never signed out mid-session.
  */
 
-import { clearSession, getSession } from "../auth";
+import { clearSession, getSession, startSession } from "../auth";
 import { API_BASE_URL } from "../config";
+
+/** The header a sliding-session refresh arrives on (ADR 0009 as amended). */
+const REFRESHED_TOKEN_HEADER = "X-Refreshed-Token";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -145,7 +154,7 @@ function isString(value: unknown): value is string {
   return typeof value === "string";
 }
 
-/** Authenticated fetch: attaches the Bearer token, turns a 401 into a logout. */
+/** Authenticated fetch: attaches the Bearer token, adopts a refresh, turns a 401 into a logout. */
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const session = getSession();
   const headers = new Headers(init.headers);
@@ -156,5 +165,7 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
     clearSession();
     throw new ApiError(401, "Session expired. Sign in again.");
   }
+  const refreshed = response.headers.get(REFRESHED_TOKEN_HEADER);
+  if (refreshed) startSession(refreshed);
   return response;
 }

@@ -1,4 +1,4 @@
-/** HTTP client brick: Bearer attachment, 401 handling, login errors. */
+/** HTTP client brick: Bearer attachment, sliding-session refresh, 401 handling, login errors. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -22,11 +22,10 @@ async function load() {
   return { auth, api };
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
+function jsonResponse(body: unknown, status = 200, refreshedToken?: string): Response {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (refreshedToken) headers.set("X-Refreshed-Token", refreshedToken);
+  return new Response(JSON.stringify(body), { status, headers });
 }
 
 beforeEach(() => {
@@ -110,5 +109,86 @@ describe("apiFetch", () => {
 
     const response = await api.apiFetch("/chat", { method: "POST" });
     expect(response.status).toBe(500);
+  });
+});
+
+describe("sliding session", () => {
+  const refreshed = makeToken({
+    sub: "beta_analyst",
+    tenant_id: "beta",
+    exp: Math.floor(Date.now() / 1000) + 7200,
+  });
+
+  it("adopts a refreshed token from the response header", async () => {
+    const { auth, api } = await load();
+    auth.startSession(token);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ status: "ok" }, 200, refreshed)),
+    );
+
+    await api.apiFetch("/conversations");
+
+    expect(auth.getSession()?.token).toBe(refreshed);
+    expect(window.sessionStorage.getItem("secure-rls.token")).toBe(refreshed);
+  });
+
+  it("notifies subscribers so the next request carries the new token", async () => {
+    const { auth, api } = await load();
+    auth.startSession(token);
+    const changed = vi.fn();
+    auth.subscribe(changed);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ status: "ok" }, 200, refreshed))
+      .mockResolvedValueOnce(jsonResponse({ status: "ok" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.apiFetch("/conversations");
+    await api.apiFetch("/conversations");
+
+    expect(changed).toHaveBeenCalled();
+    const headers = fetchMock.mock.calls[1][1].headers as Headers;
+    expect(headers.get("Authorization")).toBe(`Bearer ${refreshed}`);
+  });
+
+  it("keeps the current token when no refresh header is sent", async () => {
+    const { auth, api } = await load();
+    auth.startSession(token);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ status: "ok" })));
+
+    await api.apiFetch("/conversations");
+
+    expect(auth.getSession()?.token).toBe(token);
+  });
+
+  it("adopts the refresh a chat stream response carries", async () => {
+    const { auth, api } = await load();
+    auth.startSession(token);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("data: {}\n\n", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream", "X-Refreshed-Token": refreshed },
+        }),
+      ),
+    );
+
+    await api.openChatStream({ thread_id: "t1", message: "hi" });
+
+    expect(auth.getSession()?.token).toBe(refreshed);
+  });
+
+  it("does not adopt anything from a 401", async () => {
+    const { auth, api } = await load();
+    auth.startSession(token);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ detail: "expired" }, 401, refreshed)),
+    );
+
+    await expect(api.apiFetch("/conversations")).rejects.toMatchObject({ status: 401 });
+    expect(auth.getSession()).toBeNull();
   });
 });
