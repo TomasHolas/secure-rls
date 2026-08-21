@@ -13,10 +13,13 @@
  * turn's terminal frame. Whether the turn answered, was blocked or failed does not change it -
  * the label describes the conversation, and the server falls back to the first message.
  *
- * `replay` is what the server remembers of a reopened thread - the exchanges only. Those
- * render as plain bubbles with no trace panel: the trace is the transport of the turn that
- * produced it and is never re-served (ADR 0012), so only turns streamed in this session
- * carry one. Switching threads (a new `chatKey`) drops the live turns with it.
+ * `replay` is what the server remembers of a reopened thread, already folded into turns by the
+ * store: the questions, the answers, and the tool evidence each turn produced - its SQL pair,
+ * its tables, its charts (ADR 0012 as amended). A replayed turn goes through the same `TurnView`
+ * a live one does, so there is one renderer and a reopened chart is the same brick as a fresh
+ * one. What a replayed turn cannot show is the thinking: the model's reasoning, the retries and
+ * the graph steps were the transport of that turn, are stored nowhere, and the note above the
+ * log says so. Switching threads (a new `chatKey`) drops the live turns with it.
  *
  * A turn reads top down in the order it happened: the trace of the steps first, then the answer
  * they produced, then what the turn cost beside the model that answered it. The reasoning inside
@@ -40,7 +43,6 @@ import { ChatMessage, Composer, ModelPicker, TracePanel } from "../components/ch
 import { EmptyState, Page, PageHeader } from "../components/layout";
 import { Pill } from "../components/Pill";
 import { ApiError, listModels, openChatStream } from "../lib/api";
-import type { Message } from "../lib/api";
 import { readTraceEvents } from "../lib/sse";
 import { applyEvent, failTurn, startTurn, tokensPerSecond } from "../lib/trace";
 import type { Turn, TurnUsage } from "../lib/trace";
@@ -69,7 +71,7 @@ export function ChatView({
   onTitled,
 }: {
   threadId: string | null;
-  replay: Message[];
+  replay: Turn[];
   chatKey: number;
   onStart: (title: string) => Promise<string>;
   onTitled: (threadId: string) => void;
@@ -193,16 +195,13 @@ export function ChatView({
         ) : null}
         {replay.length > 0 ? (
           <p className="chat-replay-note">
-            Replayed from the conversation the server remembers. The live trace of a past turn
-            is not stored, so only turns asked in this session carry one.
+            Replayed from the conversation the server remembers, with the evidence each turn's
+            tools returned - its SQL, tables and charts. The model's live reasoning, its retries
+            and the step timings are not stored, so only turns asked in this session show those.
           </p>
         ) : null}
-        {replay.map((message, index) => (
-          <ChatMessage
-            key={`replay-${index}`}
-            role={message.role === "user" ? "user" : "assistant"}
-            text={message.content}
-          />
+        {replay.map((turn, index) => (
+          <TurnView key={`replay-${index}`} turn={turn} live={false} />
         ))}
         {turns.map((turn, index) => (
           <TurnView key={index} turn={turn} live={streaming && index === turns.length - 1} />
@@ -214,6 +213,7 @@ export function ChatView({
   );
 }
 
+/** One turn, whether it streamed here or was read back: the same bricks either way. */
 function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
   const phase = turn.phase in PHASE_PILL ? PHASE_PILL[turn.phase as PilledPhase] : null;
   return (
@@ -222,7 +222,13 @@ function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
       <ChatMessage
         role="assistant"
         text={turn.answer || undefined}
-        lead={<TracePanel items={turn.items} streaming={live} />}
+        lead={
+          <TracePanel
+            items={turn.items}
+            streaming={live}
+            open={live || turn.phase === "replayed"}
+          />
+        }
         footer={
           phase || turn.model ? (
             <>

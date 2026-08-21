@@ -140,7 +140,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 |---|---|
 | Assignment-required deliverables | `apps/backend/app.py`, `db.py`, `agent.py`, `employees.csv`, `requirements.txt` (exported from `pyproject.toml` via `uv export`) |
 | REST endpoint | `apps/backend/app.py` — thin handler, one service call, no logic |
-| Conversation registry (scoped threads, titles, rename) | `apps/backend/conversations.py` (own app-state store `state.db`, beside the LangGraph checkpointer; access always verified against the JWT identity) |
+| Conversation registry (scoped threads, titles, rename, per-turn tool evidence) | `apps/backend/conversations.py` (own app-state store `state.db`, beside the LangGraph checkpointer; access always verified against the JWT identity). Stores each turn's server-produced tool payloads so a reopened thread re-renders its charts, SQL pair and tables — capped and pruned per `runtime.json` (ADR 0012 as amended); the live trace's reasoning and retries stay session-only |
 | Generated thread titles | `apps/backend/titles.py` — the model's few-word label for a thread, sanitized, with the first-message fallback; called by `PATCH /conversations/{id}`, never from the `/chat` stream (ADR 0012 as amended) |
 | Auth / JWT / tenant users | `apps/backend/auth.py` |
 | Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection |
@@ -155,8 +155,8 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Frontend UI | `apps/frontend/src/` — compose the design bricks (catalogue: `src/components/README.md`); never hand-roll a table/pill/button |
 | Frontend session (token, display-only JWT claims, logout) | `apps/frontend/src/auth.ts` |
 | Frontend HTTP calls (Bearer header, `X-Refreshed-Token` adoption, 401 -> login) | `apps/frontend/src/lib/api.ts` — the only module that calls `fetch` |
-| Frontend chat stream (SSE frames -> typed trace events -> one turn's state) | `apps/frontend/src/lib/sse.ts` + `lib/trace.ts`; rendered by `views/ChatView.tsx` over the `components/chat/` bricks |
-| Frontend conversation state (thread list, which thread is open, its replay) | `apps/frontend/src/lib/conversations.ts` — the one owner the rail (`views/ConversationsSidebar.tsx`) and the chat view share |
+| Frontend chat stream (SSE frames -> typed trace events -> one turn's state) | `apps/frontend/src/lib/sse.ts` + `lib/trace.ts`; rendered by `views/ChatView.tsx` over the `components/chat/` bricks. `lib/trace.ts` also folds a reopened thread's replay payload into the same turns, so a past turn renders through the same bricks as a live one |
+| Frontend conversation state (thread list, which thread is open, its replay) | `apps/frontend/src/lib/conversations.ts` — the one owner the rail (`views/ConversationsSidebar.tsx`) and the chat view share; `replay` is the open thread's past turns, already folded |
 | Number formatting a reader sees (axis ticks, bin edges, table cells) | `apps/frontend/src/lib/format.ts` — the only formatter; the backend emits raw numbers and never a locale-specific string |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
 | CI / CD | `.github/workflows/ci.yml` |

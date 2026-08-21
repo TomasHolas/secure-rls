@@ -100,18 +100,87 @@ limit", beside the answer it did get.
   read and the delete, so a rename aimed at another identity's thread changes
   nothing and answers with the same `NotFound` as a thread that never existed.
 - Replay serves what was said: the user's questions and the assistant's text,
-  read back from the checkpointer in order. The tool-call internals a turn
-  streamed live (generated vs executed SQL, results, security events, retries)
-  are not replayable — consistent with the live trace being the transport of
-  that turn rather than stored content. Reopening a thread therefore restores
-  the conversation the server still remembers, never a re-run of the reasoning
-  behind it.
+  read back from the checkpointer in order. Reopening a thread restores the
+  conversation the server still remembers, never a re-run of the reasoning
+  behind it. (This bullet originally put every tool-call internal out of
+  replay; issue #70 split that — see **Replayed tool evidence, session-only
+  thinking** below, which is binding: the evidence replays, the thinking does
+  not.)
 - **Amended after issue #66**: the text of an assistant turn that also asked
   for tools is part of what was said and is replayed. Dropping the whole
   message hid every partial and failed turn from the transcript while it stayed
   in the graph's memory — so the model could refer to a turn the reader could
   not see, which is exactly the information gap the model then filled with a
   confident, false explanation. The calls themselves stay out; only the words do.
+
+### Replayed tool evidence, session-only thinking (amended after issue #70)
+
+The line above — "the tool-call internals are not replayable" — was too broad,
+and the live pass showed the cost: a turn that drew a chart replayed as prose
+referring to a chart that was no longer on screen ("as the chart shows,
+Engineering leads"), with the SQL pair and the result table gone the same way.
+The answer text was persisted; the evidence for it was not. The amendment
+splits what one sentence used to cover:
+
+- **The evidence replays.** For every `tool_result` a turn produced, the
+  server-produced payload is stored and served back: the executed statement,
+  the row window that came back, the `chart_spec`, the anomalies, the retrieved
+  notes — plus the `generated_sql` the model wrote, which lives inside that
+  payload because the generated-versus-executed pair is the point of showing it.
+  `GET /conversations/{id}` returns them as `tool_results`, each keyed by the
+  turn its question opened, beside the `messages` it already returned.
+- **The thinking does not.** The model's `reasoning`, the `retry` events, the
+  `security_event`s and the `node_start` steps stay exactly as this ADR had
+  them: the live trace IS the transport of the turn that produced it. They are
+  never written to any store, so a reopened thread shows what was *done*, not
+  what was thought, and the UI says so above the replayed turns rather than
+  letting a reader assume a missing reasoning step means there was none.
+- **Why that split and not "store everything".** The evidence is database
+  ground truth the server computed; the thinking is model output whose value is
+  in watching it happen, whose volume is unbounded per turn, and which the
+  history deliberately does not keep (a replayed `<think>` block would be
+  reasoning presented as record). Keeping the split also keeps one property
+  worth defending in the demo: nothing the model *said about itself* is ever
+  re-served as fact.
+- **Where it lives, and scoped like everything else.** In `conversations.py`'s
+  `state.db`, beside the thread rows — application state, not tenant data, so
+  the same documented exception to "only `db.py` opens a connection" covers it.
+  Every payload row carries the `sub` and `tenant_id` that produced it, and both
+  the read and the write are filtered by both (ADR 0002 layer 1): a write aimed
+  at another identity's thread stores nothing and raises nothing, a read of one
+  returns nothing, and the endpoint still asks the registry for the thread
+  first, so a foreign id is the same 404 that reads no transcript and no
+  payload.
+- **Bounded three ways**, because "persist the trace" is otherwise unbounded
+  growth in a store that is served in one response: the row-shaped lists inside
+  a payload are cut to the executor's result cap (ADR 0007, `db.max_result_rows`
+  — the same cap that bounded the query, restated so the store's bound is its
+  own), at most `conversations.max_stored_results_per_turn` payloads of one turn
+  are kept (set to the tool-round cap `agent.max_tool_iterations` of issue #83,
+  so a turn that spent its whole round budget still replays every round), and
+  only the newest `conversations.max_stored_result_turns` turns of a thread keep
+  theirs. An older turn replays as text, exactly as it did before
+  this amendment. The model-facing rendering of a payload (the pipe-separated
+  table the tool returned to the model) is not stored at all: it is a second
+  copy of the same rows, for a reader who is not there any more.
+- **When it is written.** Off the `/chat` stream, as the events pass, and
+  flushed once the turn is over — so it costs the stream nothing while tokens
+  flow, a turn that broke mid-flight still stores what it did produce, and a
+  storage failure is logged and swallowed rather than turning a finished answer
+  into a failed turn. The turn number is the count of questions the thread then
+  holds: one `/chat` call appends exactly one question, so counting them is what
+  aligns a payload with the answer above it, and a turn that produced a
+  `tool_result` has necessarily checkpointed its question already.
+- **One renderer, not two.** The SPA folds the replay payload into the same
+  `Turn` objects the SSE stream folds into (`lib/trace.ts`), so a replayed SQL
+  pair, table or chart is the same brick a live one is. A second read-only
+  renderer would be the thing that drifts.
+
+This split is a modeling judgment, not a published pattern: no authoritative
+source prescribes which parts of an agent trace to persist. It is grounded in
+the two rules this ADR already applies — model output is untrusted and is
+sanitized or dropped rather than re-served as record (OWASP LLM05), and stored
+results are capped rather than unbounded (ADR 0007).
 
 ### Generated titles (amended after issue #72)
 

@@ -126,8 +126,12 @@ also the transcript store: this module owns the knowledge of what it holds, so r
 lives here rather than in the API layer. What comes back is what the two participants said -
 the user's questions and the assistant's text, including the text of a turn that also asked for
 tools, so a partial or failed turn is visible in the transcript instead of vanishing from it.
-The tool calls, their arguments and their results are still left out (ADR 0012: the live trace
-IS the transport, not a replay), as is an assistant message with no text at all.
+The tool calls and their arguments are left out of the transcript, as is an assistant message
+with no text at all. What a tool returned is not lost with them: the API layer keeps the
+server-produced payload of each `tool_result` in the conversation registry, keyed by turn, so a
+reopened thread can re-render its charts, SQL pair and tables (ADR 0012 as amended). What stays
+session-only is the thinking - the reasoning, the retries and the graph steps this module streams
+are the transport of the turn that produced them, and no store holds them.
 """
 
 import inspect
@@ -172,6 +176,7 @@ EXECUTE_TOOL = "execute_tool"
 AUDIT = "audit"
 RESPOND = "respond"
 
+EVENT_TOOL_RESULT = "tool_result"
 EVENT_DONE = "done"
 
 STATUS_OK = "ok"
