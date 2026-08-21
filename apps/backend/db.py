@@ -43,17 +43,41 @@ The caller's error surface stays two exceptions: `QueryRejected` from layer 2 (r
 its retryable flag - a query the engine itself refuses is an honest, retryable error, while a
 timeout is terminal) and `SecurityViolation` when an inner layer trips, which the agent never
 retries (ADR 0011).
+
+The retrieval path (ADR 0010) adds a second, narrow seam, because this module owns every
+`sqlite3.connect` in the repo while `rag.py` owns embedding and orchestration:
+
+- `notes_for_indexing` reads every tenant's notes once at load time, over the same read-only
+  connection and the same employees-only authorizer as a served query. It is a load-time
+  admin read like `init_db`, not a serving path - nothing but `rag.index_notes` calls it.
+- `init_vector_store` creates `vectors.db`'s `vec0` table on a writable connection.
+- `search_vectors` runs the one fixed KNN shape read-only. The vector store is a SEPARATE
+  file from the employees data on purpose: the connection that runs model-generated SQL caps
+  attached databases at zero and therefore cannot reach the virtual table at all. That matters
+  more than tidiness - sqlite-vec 0.1.9 does not check the result of preparing its own
+  `_rowids` shadow statement, so an authorizer that DENIES that read aborts the process
+  instead of raising (verified empirically; every other denial raises cleanly). Keeping vec0
+  out of the untrusted-SQL connection keeps that crash unreachable from a generated query.
+
+`_VectorGuard` is the vector path's authorizer allowlist, sized to what the fixed query
+actually asks about. Empirically, on sqlite-vec 0.1.9 a KNN read reports only SQLITE_SELECT,
+SQLITE_FUNCTION for `match`, and SQLITE_READ of the virtual table plus its `_rowids`,
+`_chunks` and `_auxiliary` shadow tables - the vector, metadata and info chunks are reached
+through the blob API, which the authorizer never sees. The allowlist is therefore "this
+virtual table and its own shadow tables, nothing else", which stays correct across a version
+bump that reads one more shadow table while still denying a read of any other table.
 """
 
 import csv
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import sqlite_vec
 from sqlglot import exp
 
 from runtime import DbConfig, runtime
@@ -62,6 +86,8 @@ from security import ALLOWED_TABLE, FORBIDDEN_FUNCTIONS, QueryRejected, validate
 TENANT_COLUMN = "tenant_id"
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "employees.db"
 AUDIT_DB_NAME = "audit.db"
+VECTOR_DB_NAME = "vectors.db"
+VECTOR_TABLE = "note_vectors"
 
 VERDICT_APPROVED = "approved"
 VERDICT_REJECTED = "rejected"
@@ -88,6 +114,25 @@ _INDEX = f"CREATE INDEX {ALLOWED_TABLE}_tenant ON {ALLOWED_TABLE} ({TENANT_COLUM
 _INSERT = (
     f"INSERT INTO {ALLOWED_TABLE} ({', '.join(_COLUMNS)}) "
     f"VALUES ({', '.join(['?'] * len(_COLUMNS))})"
+)
+
+_NOTES_SELECT = (
+    f"SELECT {TENANT_COLUMN}, user_id, name, notes FROM {ALLOWED_TABLE} ORDER BY user_id"
+)
+# `partition key` shards per tenant; `+` columns are payload vec0 stores but cannot filter on.
+_VECTOR_SCHEMA = (
+    f"CREATE VIRTUAL TABLE {VECTOR_TABLE} USING vec0("
+    f"{TENANT_COLUMN} text partition key, user_id integer, embedding float[{{dim}}], "
+    "+name text, +note text)"
+)
+_VECTOR_INSERT = (
+    f"INSERT INTO {VECTOR_TABLE} ({TENANT_COLUMN}, user_id, embedding, name, note) "
+    "VALUES (?, ?, ?, ?, ?)"
+)
+# The one retrieval shape: k and the tenant are bound, so the partition pre-filter runs first.
+_VECTOR_SEARCH = (
+    f"SELECT user_id, {TENANT_COLUMN}, name, note, distance FROM {VECTOR_TABLE} "
+    f"WHERE embedding MATCH ? AND k = ? AND {TENANT_COLUMN} = ?"
 )
 
 _AUDIT_COLUMNS = (
@@ -128,6 +173,15 @@ _ALLOWED_ACTIONS = frozenset(
 )
 _NO_ATTACHED_DATABASES = 0
 
+# What the fixed KNN query makes the authorizer ask about; every other action is denied.
+_VECTOR_ACTIONS = frozenset(
+    {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION}
+)
+_VECTOR_FUNCTIONS = frozenset({"match"})
+_SHADOW_PREFIX = f"{VECTOR_TABLE}_"
+# sqlite-vec 0.1.9 errors above this k and on a negative one: the extension's own limit, not policy.
+_VEC0_MAX_K = 4096
+
 # The one subquery layer 3 emits; layer 4a recognises a scoped source by this exact rendering.
 _SCOPED_SELECT = (
     exp.select(exp.Star())
@@ -166,6 +220,27 @@ class QueryResult:
     returned_count: int
     truncated: bool
     executed_sql: str
+
+
+@dataclass(frozen=True)
+class NoteRow:
+    """One employees row reduced to what the vector index stores about it (ADR 0010)."""
+
+    tenant_id: str
+    user_id: int
+    name: str
+    note: str
+
+
+@dataclass(frozen=True)
+class VectorMatch:
+    """One KNN hit, carrying the tenant_id that rag.py's egress check verifies."""
+
+    user_id: int
+    tenant_id: str
+    name: str
+    note: str
+    distance: float
 
 
 @dataclass(frozen=True)
@@ -249,6 +324,59 @@ def execute_scoped(
         raise QueryRejected(failure.reason, retryable=failure.retryable) from failure
     finally:
         _write_audit(_audit_path(db_path), attempt, clock)
+
+
+def notes_for_indexing(db_path: Path = DEFAULT_DB_PATH) -> list[NoteRow]:
+    """Every tenant's notes, read once at load time to build the vector index (ADR 0010).
+
+    A load-time admin read like `init_db`, not a serving path: it is unscoped by nature because
+    the index spans all tenants, but it still runs over the read-only connection and the
+    employees-only authorizer, so the engine itself bounds what it can touch.
+    """
+    config = runtime().db
+    guard = _EngineGuard(config)
+    try:
+        with closing(_connect(db_path, guard, config)) as conn:
+            return [NoteRow(*row) for row in conn.execute(_NOTES_SELECT)]
+    except sqlite3.Error as error:
+        denial = _denial(guard.denied)
+        if denial is not None:
+            raise denial from error
+        raise
+
+
+def init_vector_store(
+    db_path: Path, notes: Sequence[NoteRow], vectors: Sequence[Sequence[float]]
+) -> None:
+    """Rebuild the tenant-partitioned vec0 table beside db_path from notes and their embeddings."""
+    dim = _vector_dimension(notes, vectors)
+    with closing(_open_vector_store(_vector_path(db_path))) as conn, conn:
+        conn.execute(f"DROP TABLE IF EXISTS {VECTOR_TABLE}")
+        conn.execute(_VECTOR_SCHEMA.format(dim=dim))
+        conn.executemany(
+            _VECTOR_INSERT,
+            [
+                (note.tenant_id, note.user_id, sqlite_vec.serialize_float32(vector),
+                 note.name, note.note)
+                for note, vector in zip(notes, vectors, strict=True)
+            ],
+        )
+
+
+def search_vectors(
+    db_path: Path, query_vector: Sequence[float], tenant_id: str, k: int
+) -> list[VectorMatch]:
+    """The k nearest notes inside tenant_id's partition; the tenant is bound, never interpolated."""
+    path = _vector_path(db_path)
+    if not path.exists():
+        raise FileNotFoundError(f"no vector store at {path}: index_notes has not run")
+    guard = _VectorGuard()
+    params = (sqlite_vec.serialize_float32(query_vector), _capped_k(k), tenant_id)
+    try:
+        with closing(_connect_vectors(path, guard)) as conn:
+            return [VectorMatch(*row) for row in conn.execute(_VECTOR_SEARCH, params)]
+    except sqlite3.Error as error:
+        raise guard.explain(error) from error
 
 
 def audit_entries(db_path: Path = DEFAULT_DB_PATH) -> list[AuditEntry]:
@@ -358,10 +486,9 @@ class _EngineGuard:
 
     def explain(self, error: sqlite3.Error) -> Exception:
         """Name what the engine refused: this guard's own verdict where it has one."""
-        if self.denied is not None:
-            return SecurityViolation(
-                f"the engine denied {self.denied}", kind="authorizer_denied"
-            )
+        denial = _denial(self.denied)
+        if denial is not None:
+            return denial
         if self.expired:
             return _EngineFailure(
                 f"the query exceeded its {self.timeout_ms} ms budget", "timeout", retryable=False
@@ -440,6 +567,96 @@ def _verify_rows(result: QueryResult, tenant_id: str) -> None:
                     f"a result row carries tenant {row[index]!r}, not {tenant_id!r}",
                     kind="egress_row_mismatch",
                 )
+
+
+class _VectorGuard:
+    """The retrieval path's authorizer: this table's own storage and `match`, nothing else."""
+
+    def __init__(self) -> None:
+        self.denied: str | None = None
+
+    def authorize(
+        self,
+        action: int,
+        first: str | None,
+        second: str | None,
+        database: str | None,
+        source: str | None,
+    ) -> int:
+        """Allow the reads and the one function the fixed KNN query needs; deny everything else."""
+        if action == sqlite3.SQLITE_READ and not _is_vector_storage(first):
+            return self._deny(f"a read of {first}.{second}")
+        if action == sqlite3.SQLITE_FUNCTION and (second or "").lower() not in _VECTOR_FUNCTIONS:
+            return self._deny(f"a call to {second}")
+        if action in _VECTOR_ACTIONS:
+            return sqlite3.SQLITE_OK
+        return self._deny(f"authorizer action {action}")
+
+    def explain(self, error: sqlite3.Error) -> Exception:
+        """Report a denial as the security event it is; anything else stays the engine's error."""
+        return _denial(self.denied) or error
+
+    def _deny(self, description: str) -> int:
+        """Record the first denial, so a refusal can be reported rather than merely observed."""
+        self.denied = self.denied or description
+        return sqlite3.SQLITE_DENY
+
+
+def _denial(denied: str | None) -> SecurityViolation | None:
+    """The security event a guard's first denial is, or None if it denied nothing at all."""
+    if denied is None:
+        return None
+    return SecurityViolation(f"the engine denied {denied}", kind="authorizer_denied")
+
+
+def _is_vector_storage(table: str | None) -> bool:
+    """Whether table is the vec0 virtual table or one of the shadow tables it owns."""
+    name = (table or "").lower()
+    return name == VECTOR_TABLE or name.startswith(_SHADOW_PREFIX)
+
+
+def _vector_path(db_path: Path) -> Path:
+    """The vector index beside the data file: its own database, unreachable from generated SQL."""
+    return db_path.with_name(VECTOR_DB_NAME)
+
+
+def _vector_dimension(notes: Sequence[NoteRow], vectors: Sequence[Sequence[float]]) -> int:
+    """The dimension the vec0 column is declared with, taken from the embedder's own output."""
+    if len(notes) != len(vectors):
+        raise ValueError(f"{len(notes)} notes but {len(vectors)} vectors")
+    if not vectors:
+        raise ValueError("the vector store needs at least one embedding to declare its dimension")
+    dim = len(vectors[0])
+    if any(len(vector) != dim for vector in vectors):
+        raise ValueError("the embedder returned vectors of differing dimensions")
+    return dim
+
+
+def _capped_k(k: int) -> int:
+    """Hold k inside the range sqlite-vec accepts, so a caller's number cannot become an error."""
+    return max(0, min(k, _VEC0_MAX_K))
+
+
+def _load_vec(conn: sqlite3.Connection) -> sqlite3.Connection:
+    """Load sqlite-vec through its Python API, never SQL load_extension, closing the door after."""
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    return conn
+
+
+def _open_vector_store(vector_path: Path) -> sqlite3.Connection:
+    """Open the vector store writable: the load-time connection that owns the vec0 DDL."""
+    return _load_vec(sqlite3.connect(vector_path))
+
+
+def _connect_vectors(vector_path: Path, guard: _VectorGuard) -> sqlite3.Connection:
+    """Open the vector store read-only with the retrieval allowlist installed (layer 2.5)."""
+    conn = _load_vec(sqlite3.connect(f"{vector_path.resolve().as_uri()}?mode=ro", uri=True))
+    conn.execute(_QUERY_ONLY)
+    conn.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, _NO_ATTACHED_DATABASES)
+    conn.set_authorizer(guard.authorize)
+    return conn
 
 
 def _audit_path(db_path: Path) -> Path:
