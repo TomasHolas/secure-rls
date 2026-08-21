@@ -116,6 +116,21 @@ export async function getConversation(threadId: string): Promise<Conversation> {
   return { ...body, messages: Array.isArray(body.messages) ? body.messages : [] };
 }
 
+/**
+ * PATCH /conversations/{id}: the thread retitled server-side from its first exchange.
+ *
+ * The body carries the stored row, so the caller adopts a title rather than guessing one. The
+ * server always answers with a usable title (ADR 0012 as amended) - the model's, or the
+ * first-message fallback - so a resolved call never means "the title is now worse".
+ */
+export async function retitleConversation(threadId: string): Promise<Thread> {
+  const response = await apiFetch(`/conversations/${encodeURIComponent(threadId)}`, {
+    method: "PATCH",
+  });
+  if (!response.ok) throw new ApiError(response.status, conversationFailure(response.status));
+  return (await response.json()) as Thread;
+}
+
 /** DELETE /conversations/{id}: drops the thread and its checkpointer state server-side. */
 export async function deleteConversation(threadId: string): Promise<void> {
   const response = await apiFetch(`/conversations/${encodeURIComponent(threadId)}`, {

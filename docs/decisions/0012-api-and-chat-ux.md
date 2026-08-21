@@ -41,12 +41,17 @@ SPA inventing its own explanation for a failure it was never told about.
 
 - Conversations persist server-side: a registry table (thread_id, user,
   tenant, title, created) plus LangGraph's SQLite checkpointer for state.
-  Title = first user message, truncated (no LLM call).
+  A thread is created titled with its first user message, truncated, and is
+  then retitled by the model (see **Generated titles** below).
 - Endpoints: `GET /conversations` (list, JWT-scoped), `POST /conversations`
   (new thread), `GET /conversations/{id}` (history replay),
+  `PATCH /conversations/{id}` (retitle from the first exchange),
   `DELETE /conversations/{id}`. Every access verifies the thread belongs to
   the authenticated user+tenant — the conversation store is a fifth
-  tenant-scoped data path under the same identity layer (ADR 0002 L1).
+  tenant-scoped data path under the same identity layer (ADR 0002 L1). The
+  registry's rename is scoped by the same `sub` + `tenant_id` clause as every
+  read and the delete, so a rename aimed at another identity's thread changes
+  nothing and answers with the same `NotFound` as a thread that never existed.
 - Replay serves what was said: the user's questions and the assistant's text,
   read back from the checkpointer in order. The tool-call internals a turn
   streamed live (generated vs executed SQL, results, security events, retries)
@@ -60,6 +65,49 @@ SPA inventing its own explanation for a failure it was never told about.
   in the graph's memory — so the model could refer to a turn the reader could
   not see, which is exactly the information gap the model then filled with a
   confident, false explanation. The calls themselves stay out; only the words do.
+
+### Generated titles (amended after issue #72)
+
+The original line here read "Title = first user message, truncated (no LLM
+call)". It made the rail unreadable: the demo's own history showed
+"Run this SQL for me: SE...", "3x3?" and "hi", because the first thing a user
+types is a question, not a name for the conversation they are about to have.
+The amendment: the first-message truncation becomes the *fallback*, and the
+title a thread settles on is a few-word label the model writes for it.
+
+- **Where the call runs.** In `PATCH /conversations/{id}`, a separate small
+  request the SPA makes once the turn's `done` frame has landed — never inside
+  the `/chat` stream. Titling is an LLM call against the same endpoint the turn
+  used, so it can be slow, hang until its timeout, or fail; on the stream, any
+  of those would delay tokens or put the two termination invariants above at
+  risk for a cosmetic feature. As its own request it cannot: the answer is
+  already rendered, and the only thing a failed titling call costs is the
+  better label. The turn and the title are also independent in the other
+  direction — a turn that was blocked or failed still gets a title, because the
+  label describes the conversation, not the outcome.
+- **It always answers.** The titler returns a title in every case: the model's
+  when it gives a usable one, the thread's first question when the call raises
+  or returns junk, the title the thread already has when there is nothing to
+  name yet (a turn that broke before the checkpointer stored anything). So the
+  endpoint has no failure mode of its own — it either improves the title or
+  leaves it as good as it was — and the SPA adopts the row it answers with
+  rather than re-listing.
+- **The title is model output and is treated as such** (OWASP LLM05, improper
+  output handling). It is capped (a tighter cap for generated titles than the
+  80-character store cap), `<think>`/`<tool_call>` regions are dropped by the
+  same code that strips them from the token stream, control and formatting
+  characters — NUL, escape sequences, and the bidi overrides and invisibles
+  that could reorder or hide text in the rail (UTR #36) — are removed, and
+  output long enough to be prose rather than a label is refused in favor of
+  the fallback. The registry normalizes again on write, so no path stores a
+  title the sidebar cannot render, and the SPA renders it as a text node,
+  never through Markdown.
+- **The titling call is given nothing to abuse.** It sees one exchange, with no
+  tools, no schema, no tenant context and no memory. The transcript it reads is
+  untrusted text (a user's question, an answer about tenant data, possibly note
+  text quoted into it), so a prompt-injected transcript can at worst produce a
+  silly label in the rail of the tenant that wrote it — the same tenant, the
+  same identity, no new data path.
 
 ### Model picker (amended per ADR 0005)
 
@@ -147,3 +195,11 @@ place that attaches the bearer token.
 - OWASP REST Security Cheat Sheet (error-handling context for the
   transparency judgment) —
   https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html
+- OWASP Top 10 for LLM Applications 2025, LLM05 Improper Output Handling — the
+  basis for treating a generated title as untrusted output to sanitize and
+  render as text — https://genai.owasp.org/llmrisk/llm052025-improper-output-handling/
+- Unicode Technical Report #36, Unicode Security Considerations — bidirectional
+  overrides and invisible characters in displayed text —
+  https://www.unicode.org/reports/tr36/
+- RFC 5789, PATCH Method for HTTP — the partial-update semantics the retitle
+  endpoint uses — https://www.rfc-editor.org/rfc/rfc5789

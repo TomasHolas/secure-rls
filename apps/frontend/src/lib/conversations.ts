@@ -3,10 +3,17 @@
  * have, and what did they say". The sidebar and the chat view are siblings that both need
  * it, so it lives here rather than in either of them (CLAUDE.md, one concern one module).
  *
- * A thread is created lazily, when the first question titles it: the registry exposes no
- * title update, and ADR 0012 fixes the title as the first user message, so a thread posted
- * on the New chat click could only carry the placeholder title forever. New chat therefore
- * opens an empty draft and `startThread` registers it the moment there is a question.
+ * A thread is created lazily, when the first question titles it: a thread posted on the New
+ * chat click would sit in the rail under the placeholder title until it was asked something.
+ * New chat therefore opens an empty draft and `startThread` registers it the moment there is
+ * a question.
+ *
+ * `titleThread` is the second half of that (ADR 0012 as amended): once the first turn is over,
+ * the server generates the few-word label from the exchange and this store adopts the row it
+ * answers with. Adopting the response rather than re-listing is deliberate - the PATCH body IS
+ * the stored row, so one request settles it and the rail cannot reorder or flicker around the
+ * thread the reader is looking at. A failed refresh is logged and nothing else: the thread
+ * keeps the first-message title it already had, which is a title, not an error to report.
  *
  * `replay` holds the exchanges the server remembers for the open thread - questions and
  * answers only. The trace of a past turn is not replayable by design (ADR 0012), so the
@@ -23,12 +30,14 @@ import {
   deleteConversation,
   getConversation,
   listConversations,
+  retitleConversation,
 } from "./api";
 import type { Message, Thread } from "./api";
 
 const LIST_FAILURE = "Could not load your conversations.";
 const OPEN_FAILURE = "Could not open that conversation.";
 const DELETE_FAILURE = "Could not delete that conversation.";
+const TITLE_FAILURE = "the conversation title was not refreshed";
 
 export interface ConversationsStore {
   threads: Thread[];
@@ -43,6 +52,8 @@ export interface ConversationsStore {
   remove: (threadId: string) => void;
   /** Registers the thread the first question of a draft belongs to and returns its id. */
   startThread: (title: string) => Promise<string>;
+  /** Has the server title the thread from the turn it just had, and adopts the row it stores. */
+  titleThread: (threadId: string) => void;
 }
 
 interface Open {
@@ -123,6 +134,16 @@ export function useConversations(): ConversationsStore {
     return thread.thread_id;
   }, []);
 
+  const titleThread = useCallback((threadId: string) => {
+    retitleConversation(threadId)
+      .then((titled) =>
+        setThreads((previous) =>
+          previous.map((thread) => (thread.thread_id === titled.thread_id ? titled : thread)),
+        ),
+      )
+      .catch((cause) => console.warn(`secure-rls: ${reason(cause, TITLE_FAILURE)}`));
+  }, []);
+
   return {
     threads,
     activeId: open.activeId,
@@ -134,6 +155,7 @@ export function useConversations(): ConversationsStore {
     select,
     remove,
     startThread,
+    titleThread,
   };
 }
 

@@ -16,12 +16,22 @@ Endpoints:
 - `GET  /conversations`     the caller's threads, newest first.
 - `POST /conversations`     a new thread; the title is the first user message, truncated.
 - `GET  /conversations/{id}` the caller's own thread row plus its replayed transcript.
+- `PATCH /conversations/{id}` the thread retitled from its first exchange by the model.
 - `DELETE /conversations/{id}` the thread plus its checkpointer rows.
 
-Conversation titles are set when the thread is created (`POST /conversations {"title": ...}`
-with the first user message), which is the only write the registry brick exposes; the SPA has
-that message in hand before it opens the stream. A thread created without one carries the
-configured default title.
+Conversation titles (ADR 0012 as amended). A thread is created titled with its first user
+message, truncated (`POST /conversations {"title": ...}`) - the SPA has that message in hand
+before it opens the stream, and a thread created without one carries the configured default.
+`PATCH /conversations/{id}` then replaces it with the few-word label `titles.py` gets from the
+model, and returns the updated row.
+
+That PATCH is deliberately its own request rather than a step inside the `/chat` stream: the
+titling call is an LLM call, and one that hangs, times out or dies must not be able to delay a
+token or break the turn's termination contract. The SPA fires it once the `done` frame has
+landed, so the answer is already on screen and the only thing at stake is the label. The
+handler's order is the security-relevant part: the registry is asked first, so a foreign or
+missing id is the same 404 as everywhere else and neither the transcript nor the model is
+touched for a thread the caller may not see.
 
 `GET /conversations/{id}` returns the registry row plus `messages`, the thread's user questions
 and assistant answers replayed from LangGraph's checkpointer by `agent.thread_messages` - the
@@ -71,9 +81,9 @@ or missing one costs embeddings. It needs the embedding endpoint, so a failure t
 logged and boot continues; `search_notes` then reports retrieval as offline rather than raising.
 
 Seams. `create_app` takes the turn runner, the model lister, the capability checker, the
-registry, the note indexer and the two checkpointer accesses - transcript replay and cleanup -
-as arguments, defaulting to the production wiring. Tests pass fakes and never touch Ollama or
-the filesystem outside tmp_path.
+titler, the registry, the note indexer and the two checkpointer accesses - transcript replay
+and cleanup - as arguments, defaulting to the production wiring. Tests pass fakes and never
+touch Ollama or the filesystem outside tmp_path.
 
 Paths. All state files are resolved here, once: the employee database (`db.DEFAULT_DB_PATH`,
 beside which `db.py` derives its own `audit.db` and `vectors.db`), the registry's `state.db`
@@ -119,6 +129,7 @@ from conversations import ConversationRegistry, NotFound, Thread
 from db import DEFAULT_DB_PATH
 from rag import OllamaEmbed, ensure_index
 from runtime import runtime
+from titles import TitleModel, generate_title
 
 API_VERSION = "0.1.0"
 FRONTEND_ORIGIN = "http://localhost:3002"
@@ -132,6 +143,7 @@ CHECKPOINT_DB_PATH = DB_PATH.with_name("checkpoints.db")
 
 _TAGS_PATH = "/api/tags"
 _SHOW_PATH = "/api/show"
+_CHAT_PATH = "/api/chat"
 _COMPLETION_CAPABILITY = "completion"
 _INVALID_CREDENTIALS = "invalid credentials"
 _INVALID_TOKEN = "invalid or expired token"
@@ -269,6 +281,34 @@ def ollama_capability_checker(base_url: str) -> CapabilityChecker:
     return capabilities
 
 
+def ollama_titler(base_url: str) -> TitleModel:
+    """The production titler: one non-streaming `/api/chat` completion on the titling timeout.
+
+    The endpoint is called directly rather than through the graph's `ChatOllama` because this is
+    not a turn: no tools, no tenant, no checkpoint, one prompt and one line back. What it does
+    need is a hard deadline, which is why it sits next to the other two raw-httpx callers here.
+    An unreachable or slow endpoint raises, and `titles.generate_title` falls back.
+    """
+
+    def ask(prompt: str) -> str:
+        """Ask the configured model for a title and return whatever it answered, verbatim."""
+        with httpx.Client(
+            base_url=base_url, timeout=runtime().conversations.title_timeout_s
+        ) as client:
+            response = client.post(
+                _CHAT_PATH,
+                json={
+                    "model": runtime().agent.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                },
+            )
+            response.raise_for_status()
+        return response.json().get("message", {}).get("content", "")
+
+    return ask
+
+
 def chat_capable_lister(
     list_models: ModelLister, capabilities: CapabilityChecker
 ) -> ModelLister:
@@ -313,6 +353,7 @@ def create_app(
     chat_runner: ChatRunner | None = None,
     model_lister: ModelLister | None = None,
     capability_checker: CapabilityChecker | None = None,
+    titler: TitleModel | None = None,
     registry: ConversationRegistry | None = None,
     transcript: Callable[[str], list[Message]] | None = None,
     cleanup: Callable[[str], None] | None = None,
@@ -332,6 +373,7 @@ def create_app(
         model_lister or ollama_model_lister(base_url),
         capability_checker or ollama_capability_checker(base_url),
     )
+    ask_title = titler or ollama_titler(base_url)
     threads = registry or ConversationRegistry(STATE_DB_PATH)
     replay = transcript or read_transcript
     drop_checkpoints = cleanup or delete_checkpoints
@@ -344,7 +386,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[FRONTEND_ORIGIN],
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
         expose_headers=[REFRESHED_TOKEN_HEADER],
     )
@@ -417,6 +459,24 @@ def create_app(
         """
         thread = threads.get_thread(identity, thread_id)
         return Conversation(**asdict(thread), messages=replay(thread_id))
+
+    @app.patch("/conversations/{thread_id}")
+    def retitle_conversation(
+        thread_id: str, identity: Annotated[Identity, Depends(_identity)]
+    ) -> Thread:
+        """Retitle the caller's own thread from its first exchange, and return the updated row.
+
+        The order is the contract. The registry answers first, so a foreign or missing id is the
+        same 404 as everywhere else and no transcript is read and no model called for a thread
+        the caller may not see. Then the titler gets the exchange and returns a title in every
+        case (ADR 0012 as amended): the model's when it gives a usable one, the first question
+        when the call fails or answers with junk, the current title when there is nothing to
+        name yet. So this endpoint has no failure mode of its own - it either renames the thread
+        to something better or leaves it as good as it was.
+        """
+        thread = threads.get_thread(identity, thread_id)
+        title = generate_title(replay(thread_id), ask_title, current=thread.title)
+        return threads.rename_thread(identity, thread_id, title)
 
     @app.delete("/conversations/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_conversation(

@@ -38,6 +38,7 @@ function SignedIn({ session }: { session: Session }) {
         replay={conversations.replay}
         chatKey={conversations.chatKey}
         onStart={conversations.startThread}
+        onTitled={conversations.titleThread}
       />
     </AppLayout>
   );

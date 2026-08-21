@@ -4,6 +4,14 @@ Every thread row carries the `sub` and `tenant_id` of the identity that created 
 every read, write and delete is filtered by BOTH. A thread that belongs to another
 identity raises the same `NotFound` with the same message as a thread that never existed,
 so the API cannot be used to probe for foreign thread ids (existence non-disclosure).
+`rename_thread` is scoped by the same clause as the rest: a rename aimed at another
+identity's thread changes nothing and answers exactly like a missing one.
+
+Titles are normalized on every write, whoever wrote them (ADR 0012 as amended): control and
+formatting characters become spaces, whitespace collapses, and the result is cut to the
+configured cap. A generated title is model output, so the store is the last place that can
+guarantee what the sidebar renders is one line of displayable text - no NUL, no escape
+sequence, no bidi override reordering the rail.
 
 Storage: this module owns its own SQLite file (`state.db`, path injected by the caller).
 That is a documented exception to the "only db.py opens a connection" rule - the registry
@@ -16,6 +24,7 @@ langgraph and the registry stays testable without it.
 """
 
 import sqlite3
+import unicodedata
 import uuid
 from collections.abc import Callable
 from contextlib import closing
@@ -37,6 +46,8 @@ CREATE TABLE IF NOT EXISTS threads (
 """
 
 _NOT_FOUND_MESSAGE = "conversation not found"
+# Cc and Cf: NUL and escape sequences, and the bidi overrides that could reorder the rail.
+_CONTROL_CATEGORIES = frozenset({"Cc", "Cf"})
 
 
 class NotFound(Exception):
@@ -105,6 +116,18 @@ class ConversationRegistry:
             raise NotFound(_NOT_FOUND_MESSAGE)
         return Thread(*row)
 
+    def rename_thread(self, identity: Identity, thread_id: str, title: str) -> Thread:
+        """Retitle the identity's own thread; a foreign or missing id raises the same NotFound."""
+        with closing(sqlite3.connect(self._state_db)) as conn:
+            renamed = conn.execute(
+                "UPDATE threads SET title = ? WHERE thread_id = ? AND sub = ? AND tenant_id = ?",
+                (_normalize_title(title), thread_id, identity.sub, identity.tenant_id),
+            ).rowcount
+            conn.commit()
+        if not renamed:
+            raise NotFound(_NOT_FOUND_MESSAGE)
+        return self.get_thread(identity, thread_id)
+
     def delete_thread(
         self,
         identity: Identity,
@@ -124,6 +147,19 @@ class ConversationRegistry:
             cleanup(thread_id)
 
 
+def plain_one_line(text: str) -> str:
+    """One line of displayable text: control and formatting characters out, whitespace collapsed.
+
+    The shape a title has to be in before anything renders it, wherever the text came from. It
+    is public because the titler needs the same judgment on a model's answer before it can tell
+    a label from noise (`titles.py`), and two copies of "what is displayable" would drift.
+    """
+    displayable = "".join(
+        " " if unicodedata.category(char) in _CONTROL_CATEGORIES else char for char in text
+    )
+    return " ".join(displayable.split())
+
+
 def _normalize_title(title: str) -> str:
-    """Collapse whitespace in the first user message and cut it to the configured length."""
-    return " ".join(title.split())[: runtime().conversations.title_max_chars]
+    """The title as the registry stores it: displayable, one line, cut to the configured cap."""
+    return plain_one_line(title)[: runtime().conversations.title_max_chars]
