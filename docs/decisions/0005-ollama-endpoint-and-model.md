@@ -52,8 +52,11 @@ unreachable. LangGraph tool calling requires a model with reliable tool support.
 - **The model is user-selectable at runtime**: the UI offers a model picker
   populated live from the endpoint's `/api/tags` — never a hardcoded list —
   proxied through the backend (`GET /models`, ADR 0012 as amended) so the
-  client never learns `OLLAMA_BASE_URL`. A client-chosen model id is accepted
-  only if present in that live list (allowlist over untrusted input).
+  client never learns `OLLAMA_BASE_URL`. The proxy offers only chat-capable
+  models: embedding-only ones the endpoint serves are filtered out per
+  `/api/show` capabilities (ADR 0012 as amended). A client-chosen model id is
+  accepted only if present in that filtered live list (allowlist over
+  untrusted input).
   `runtime.json` `agent.model` is the default when the client sends none.
   Model choice has zero effect on RLS — every layer is model-agnostic
   (ADR 0002), which the demo states explicitly.

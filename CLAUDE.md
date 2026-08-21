@@ -84,7 +84,7 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   the prompt; empirical model pick (ADR 0005).
 - `[x]` **M3 — REST API + auth.** `app.py` (thin handlers: `/login`, `/chat` as
   an SSE stream of typed trace events, `/conversations` JWT-scoped CRUD,
-  `/health`, `/models` proxying the endpoint's model list — ADR 0012),
+  `/health`, `/models` proxying the endpoint's chat-capable model list — ADR 0012),
   `auth.py` (hardcoded tenant users, JWT with tenant claim, ADR 0009).
 - `[~]` **M4 — Frontend.** React SPA on the KB design system: login, streaming
   chat with live trace (generated vs executed SQL side by side), conversation

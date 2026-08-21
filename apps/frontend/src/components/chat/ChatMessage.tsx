@@ -4,15 +4,17 @@
  * the user's question is a compact tinted bubble, the assistant's answer the full-width
  * card that the trace panel and the status pills hang under.
  *
- * The answer text is rendered as plain text with `white-space: pre-wrap` (KB does the
- * same for its answers). No markdown: the model's answer is prose about numbers, and
- * anything it might mark up - SQL, tables, charts - already has its own brick in the
- * trace, where it can be trusted to be the real thing rather than model-written markup.
+ * The assistant's answer arrives in markdown, so it goes through the `Markdown` brick
+ * (sanitized GFM, as in KB's answer panel). The user's question stays plain text with
+ * `white-space: pre-wrap`: it is what the person typed and is never interpreted as markup.
+ * Structured output the model might describe - SQL, tables, charts - still has its own
+ * brick in the trace, where it is the real thing rather than model-written markup.
  */
 
 import type { ReactNode } from "react";
 
 import { Icon } from "../Icon";
+import { Markdown } from "../Markdown";
 
 const ROLES = {
   user: { label: "You", icon: "user" },
@@ -37,7 +39,15 @@ export function ChatMessage({
         <Icon name={icon} size={15} />
         <span>{label}</span>
       </div>
-      {text ? <p className="msg-text">{text}</p> : null}
+      {text ? (
+        role === "assistant" ? (
+          <div className="msg-text markdown-body">
+            <Markdown>{text}</Markdown>
+          </div>
+        ) : (
+          <p className="msg-text">{text}</p>
+        )
+      ) : null}
       {children}
       {footer ? <div className="msg-footer">{footer}</div> : null}
     </article>

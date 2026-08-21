@@ -43,6 +43,14 @@ it arrives — the live trace IS the transport, not a replay.
 - `GET /models` (JWT-protected) proxies the Ollama endpoint's `/api/tags` and
   returns the live model list — the SPA never sees `OLLAMA_BASE_URL`, and the
   list is never hardcoded.
+- **The list is filtered to chat-capable models.** An endpoint also serves
+  embedding-only models (this app itself pulls `nomic-embed-text` for RAG), and
+  picking one breaks the turn: it cannot answer. The backend asks `/api/show`
+  per model id and keeps those whose `capabilities` include `completion`,
+  caching each answer for the process. An endpoint too old to report
+  capabilities falls back to excluding the configured `agent.embed_model` by
+  prefix. Filtering lives in the lister, so the `/chat` allowlist below is the
+  same list the picker was offered.
 - `POST /chat` accepts an optional `model` field, honored only if the id is in
   the live list at request time (allowlist over untrusted client input);
   otherwise the request is rejected. Absent, `runtime.json` `agent.model`
@@ -89,6 +97,9 @@ it arrives — the live trace IS the transport, not a replay.
 ## References
 
 - Ollama API (streaming chat) — https://docs.ollama.com/api
+- Ollama API, Show Model Information — the `capabilities` list the model filter
+  reads (`"capabilities": ["completion", "vision"]`) —
+  https://github.com/ollama/ollama/blob/main/docs/api.md#show-model-information
 - LangGraph streaming (`astream_events`) and persistence (checkpointers) —
   https://docs.langchain.com/oss/python/langgraph/overview
 - WHATWG HTML: Server-Sent Events — https://html.spec.whatwg.org/multipage/server-sent-events.html

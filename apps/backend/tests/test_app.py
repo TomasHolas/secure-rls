@@ -1,11 +1,15 @@
 """Suite for the REST edge (issue #23, ADR 0012).
 
 Network-free by construction: the app factory takes the turn runner, the model lister, the
-registry and the checkpointer cleanup as arguments, so no test reaches Ollama, the employee
-database or the real state files. `FakeRunner` records the keyword arguments it was called
-with - which is how the tenant-in-body tests prove the agent was built for the token's tenant
-and not the body's - and replays a fixed ADR 0012 event sequence so the SSE framing assertions
-are exact.
+capability checker, the registry and the checkpointer cleanup as arguments, so no test reaches
+Ollama, the employee database or the real state files. `FakeRunner` records the keyword
+arguments it was called with - which is how the tenant-in-body tests prove the agent was built
+for the token's tenant and not the body's - and replays a fixed ADR 0012 event sequence so the
+SSE framing assertions are exact.
+
+The model list the endpoint reports includes the embedding model this app itself uses for RAG,
+because that is the live situation the filter exists for; `FakeCapabilities` answers `/api/show`
+from a canned map and counts the lookups, which is how the cache is asserted.
 
 The registry here is the real `ConversationRegistry` on a tmp_path file: thread scoping is the
 security property under test, so faking it would test nothing. The transcript seam is a fake
@@ -33,8 +37,15 @@ ALICE = ("alice@acme", "demo-acme")
 BOB = ("bob@beta", "demo-beta")
 ACME = "acme"
 
-MODELS = ["fake-model:1b", "other-model:3b"]
-CHOSEN_MODEL = MODELS[1]
+CHAT_MODELS = ["fake-model:1b", "other-model:3b"]
+EMBED_MODEL = f"{runtime().agent.embed_model}:latest"
+SERVED_MODELS = [*CHAT_MODELS, EMBED_MODEL]
+CAPABILITIES: dict[str, list[str] | None] = {
+    CHAT_MODELS[0]: ["completion"],
+    CHAT_MODELS[1]: ["completion", "tools"],
+    EMBED_MODEL: ["embedding"],
+}
+CHOSEN_MODEL = CHAT_MODELS[1]
 UNKNOWN_MODEL = "nonexistent-model:9b"
 
 ANSWER = "acme has 6 employees"
@@ -95,12 +106,28 @@ class FakeTranscripts:
 
 
 @dataclass
+class FakeCapabilities:
+    """The `/api/show` seam: canned capabilities per model id, counting every lookup."""
+
+    declared: dict[str, list[str] | None] = field(
+        default_factory=lambda: dict(CAPABILITIES)
+    )
+    asked: list[str] = field(default_factory=list)
+
+    def __call__(self, model_id: str) -> list[str] | None:
+        """Record the lookup and answer what the endpoint would declare for that model."""
+        self.asked.append(model_id)
+        return self.declared.get(model_id)
+
+
+@dataclass
 class Wiring:
     """A wired app plus the fakes the tests inspect."""
 
     client: TestClient
     runner: FakeRunner
     transcripts: FakeTranscripts
+    capabilities: FakeCapabilities
     deleted: list[str]
 
 
@@ -115,16 +142,35 @@ def wiring(tmp_path) -> Wiring:
     """The app with a fake runner and model list, a tmp registry, and recording replay/cleanup."""
     runner = FakeRunner()
     transcripts = FakeTranscripts()
+    capabilities = FakeCapabilities()
     deleted: list[str] = []
     app = create_app(
         chat_runner=runner,
-        model_lister=lambda: list(MODELS),
+        model_lister=lambda: list(SERVED_MODELS),
+        capability_checker=capabilities,
         registry=ConversationRegistry(tmp_path / "state.db"),
         transcript=transcripts,
         cleanup=deleted.append,
     )
     return Wiring(
-        client=TestClient(app), runner=runner, transcripts=transcripts, deleted=deleted
+        client=TestClient(app),
+        runner=runner,
+        transcripts=transcripts,
+        capabilities=capabilities,
+        deleted=deleted,
+    )
+
+
+def _client(tmp_path, *, model_lister=None, capability_checker=None) -> TestClient:
+    """A client wired like the fixture but with the model seams a single test wants to vary."""
+    return TestClient(
+        create_app(
+            chat_runner=FakeRunner(),
+            model_lister=model_lister or (lambda: list(SERVED_MODELS)),
+            capability_checker=capability_checker or FakeCapabilities(),
+            registry=ConversationRegistry(tmp_path / "state.db"),
+            cleanup=lambda thread_id: None,
+        )
     )
 
 
@@ -190,24 +236,38 @@ def test_every_non_login_route_rejects_a_forged_token(wiring, method, path):
     assert response.status_code == 401
 
 
-def test_models_returns_the_live_list_and_the_configured_default(wiring):
+def test_models_returns_the_chat_capable_list_and_the_configured_default(wiring):
     response = wiring.client.get("/models", headers=_headers(wiring.client, ALICE))
     assert response.status_code == 200
-    assert response.json() == {"models": MODELS, "default": runtime().agent.model}
+    assert response.json() == {"models": CHAT_MODELS, "default": runtime().agent.model}
+    assert EMBED_MODEL not in response.json()["models"]
+
+
+def test_models_falls_back_to_the_embed_model_prefix_without_declared_capabilities(tmp_path):
+    silent = FakeCapabilities(declared={})
+    client = _client(tmp_path, capability_checker=silent)
+
+    response = client.get("/models", headers=_headers(client, ALICE))
+
+    assert response.status_code == 200
+    assert response.json()["models"] == CHAT_MODELS
+    assert silent.asked == SERVED_MODELS
+
+
+def test_models_asks_the_endpoint_about_each_model_once(wiring):
+    headers = _headers(wiring.client, ALICE)
+
+    wiring.client.get("/models", headers=headers)
+    wiring.client.get("/models", headers=headers)
+
+    assert wiring.capabilities.asked == SERVED_MODELS
 
 
 def test_models_answers_502_generically_when_the_endpoint_is_down(tmp_path):
     def unreachable() -> list[str]:
         raise ModelEndpointError("connect timeout to http://host.example:11434")
 
-    client = TestClient(
-        create_app(
-            chat_runner=FakeRunner(),
-            model_lister=unreachable,
-            registry=ConversationRegistry(tmp_path / "state.db"),
-            cleanup=lambda thread_id: None,
-        )
-    )
+    client = _client(tmp_path, model_lister=unreachable)
     response = client.get("/models", headers=_headers(client, ALICE))
     assert response.status_code == 502
     assert "host.example" not in response.text
@@ -251,6 +311,18 @@ def test_chat_rejects_a_model_the_endpoint_does_not_serve(wiring):
     response = wiring.client.post(
         "/chat",
         json={"thread_id": thread_id, "message": "hi", "model": UNKNOWN_MODEL},
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert wiring.runner.calls == []
+
+
+def test_chat_rejects_an_embedding_model_the_endpoint_does_serve(wiring):
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers)
+    response = wiring.client.post(
+        "/chat",
+        json={"thread_id": thread_id, "message": "hi", "model": EMBED_MODEL},
         headers=headers,
     )
     assert response.status_code == 400
