@@ -30,6 +30,13 @@ it arrives — the live trace IS the transport, not a replay.
   `DELETE /conversations/{id}`. Every access verifies the thread belongs to
   the authenticated user+tenant — the conversation store is a fifth
   tenant-scoped data path under the same identity layer (ADR 0002 L1).
+- Replay serves the exchanges only: the user's questions and the assistant's
+  answers, read back from the checkpointer in order. The tool-call internals a
+  turn streamed live (generated vs executed SQL, results, security events,
+  retries) are not replayable — consistent with the live trace being the
+  transport of that turn rather than stored content. Reopening a thread
+  therefore restores the conversation the server still remembers, never a
+  re-run of the reasoning behind it.
 
 ### Model picker (amended per ADR 0005)
 
