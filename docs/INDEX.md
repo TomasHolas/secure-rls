@@ -28,3 +28,5 @@ docs in the same change.
 - [0009 — Auth implementation: PBKDF2 hashing, pinned-algorithm JWT](decisions/0009-auth-implementation.md)
 - [0010 — Tenant-filtered RAG over notes (sqlite-vec partition keys)](decisions/0010-tenant-filtered-rag.md)
 - [0011 — Agent design: explicit graph, retry policy, memory, tool contracts](decisions/0011-agent-design.md)
+- [0012 — API transport and chat UX: SSE, scoped conversations, transparent refusals](decisions/0012-api-and-chat-ux.md)
+- [0013 — Deployment: CI+CD to GHCR, compose as the deployment unit](decisions/0013-deployment-cicd.md)

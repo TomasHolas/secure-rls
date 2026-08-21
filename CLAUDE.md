@@ -66,15 +66,22 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   `detect_anomalies`); multi-turn memory; two-tier retry policy (ADR 0011);
   tenant-filtered RAG via `rag.py` (ADR 0010); schema card + sample rows in
   the prompt; empirical model pick (ADR 0005).
-- `[ ]` **M3 — REST API + auth.** `app.py` (thin handlers: `/login`, `/chat`,
-  `/health`), `auth.py` (hardcoded tenant users, JWT with tenant claim).
-- `[ ]` **M4 — Frontend.** React SPA on the KB design system: login, chat with
-  reasoning/SQL trace, tenant badge, charts, cross-tenant isolation demo.
-- `[ ]` **M5 — Evaluation harness.** `evals/`: correctness suite (NL questions vs
-  pandas ground truth) + adversarial suite (leakage attempts); scored report.
-- `[ ]` **M6 — CI + README.** GitHub Actions (ruff, pytest, frontend build,
-  model-free eval mode); README with architecture, setup, tenant creds,
-  challenges, time spent.
+- `[ ]` **M3 — REST API + auth.** `app.py` (thin handlers: `/login`, `/chat` as
+  an SSE stream of typed trace events, `/conversations` JWT-scoped CRUD,
+  `/health` — ADR 0012), `auth.py` (hardcoded tenant users, JWT with tenant
+  claim, ADR 0009).
+- `[ ]` **M4 — Frontend.** React SPA on the KB design system: login, streaming
+  chat with live trace (generated vs executed SQL side by side), conversation
+  history sidebar, tenant badge, charts, transparent security-refusal and
+  truncation states, cross-tenant isolation demo via login switch (ADR 0012).
+- `[ ]` **M5 — Evaluation harness.** `evals/`: ~25 correctness questions vs
+  pandas ground truth (1% tolerance) + ~15 single-turn and ~5 multi-turn
+  adversarial cases + retrieval/poisoned-notes attacks; committed scored
+  report (ADR 0004 as amended).
+- `[ ]` **M6 — CI/CD + README.** GitHub Actions: CI (ruff, pytest, dataset
+  regen diff, frontend build, mocked eval dry run, compose build) + CD (images
+  to GHCR on main; `docker compose up` as the deployment — ADR 0013); README
+  with architecture, setup, tenant creds, challenges, time spent.
 
 ## How to run
 
@@ -105,6 +112,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 |---|---|
 | Assignment-required deliverables | `apps/backend/app.py`, `db.py`, `agent.py`, `employees.csv`, `requirements.txt` (exported from `pyproject.toml` via `uv export`) |
 | REST endpoint | `apps/backend/app.py` — thin handler, one service call, no logic |
+| Conversation registry (scoped threads, titles) | `apps/backend/conversations.py` (state in the LangGraph SQLite checkpointer; access always verified against the JWT identity) |
 | Auth / JWT / tenant users | `apps/backend/auth.py` |
 | Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection |
 | SQL validation (allowlist) | `apps/backend/security.py` |

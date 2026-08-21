@@ -64,14 +64,14 @@ and tenant context — which also feeds the UI trace and the eval leakage checks
 
 | Component | Responsibility |
 |---|---|
-| `apps/backend/app.py` | FastAPI edge: `/login`, `/chat`, `/health`. Thin handlers, no logic. |
+| `apps/backend/app.py` | FastAPI edge: `/login`, `/chat` (SSE stream of typed trace events, ADR 0012), `/conversations` (JWT-scoped list/create/replay/delete), `/health`. Thin handlers, no logic. |
 | `apps/backend/auth.py` | Hardcoded demo users (one+ per tenant), password check, JWT issue/verify with `tenant_id` claim. |
 | `apps/backend/agent.py` | Explicit LangGraph graph: system prompt with schema card + per-tenant sample rows, tool definitions, retry policy, multi-turn checkpointer, trace collection. |
 | `apps/backend/rag.py` | Note embedding (Ollama `/api/embed`) and tenant-partitioned vector search (ADR 0010); storage and queries go through `db.py`. |
 | `apps/backend/security.py` | The SQL validator brick (layer 2). Pure function: SQL text in, validated AST or a typed rejection out. |
 | `apps/backend/db.py` | CSV load, schema, the scoped executor (layers 3+4). The only module that opens a SQLite connection. |
 | `apps/backend/evals/` | Correctness + adversarial suites over the same bricks (ADR 0004). |
-| `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, chat with reasoning/SQL trace, tenant badge, charts. |
+| `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, streaming chat with live reasoning/SQL trace (generated vs executed side by side), conversation history sidebar, tenant badge, charts, transparent security-refusal and truncation states (ADR 0012). |
 
 ## Data model
 
