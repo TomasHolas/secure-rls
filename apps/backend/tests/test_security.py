@@ -134,7 +134,17 @@ TERMINAL = (
     + NO_EMPLOYEES_REFERENCE
 )
 
-MALFORMED = [
+PARAMETERS = [
+    "SELECT * FROM employees WHERE name = ?",
+    "SELECT * FROM employees WHERE name = :name",
+    "SELECT * FROM employees WHERE name = @name",
+    "SELECT * FROM employees WHERE tenant_id = :tenant_id",
+    "SELECT * FROM employees LIMIT ?",
+    "SELECT * FROM employees WHERE id IN (SELECT id FROM employees WHERE name = ?)",
+    "WITH t AS (SELECT * FROM employees WHERE name = ?) SELECT * FROM t",
+]
+
+MALFORMED = PARAMETERS + [
     "this is not sql at all !!!",
     "SELECT FROM WHERE",
     "SELEKT * FROM employees",
@@ -170,6 +180,31 @@ def test_malformed_sql_is_retryable(sql):
         validate_sql(sql)
     assert caught.value.retryable is True
     assert caught.value.reason
+
+
+@pytest.mark.parametrize("sql", PARAMETERS)
+def test_a_parameter_is_refused_with_a_reason_that_names_the_fix(sql):
+    """The agent must be told what to write instead, or the retry repeats the same mistake."""
+    with pytest.raises(QueryRejected) as caught:
+        validate_sql(sql)
+    assert caught.value.retryable is True
+    assert "literal values inline" in caught.value.reason
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM sqlite_master WHERE name = ?",
+        "SELECT load_extension(?) FROM employees",
+        "SELECT * FROM employees WHERE id = ?; DROP TABLE employees",
+        "WITH employees AS (SELECT ? AS id) SELECT * FROM employees",
+    ],
+)
+def test_a_parameter_does_not_soften_a_policy_violation(sql):
+    """The retryable check runs last, so a hostile query buys no retry to probe the boundary."""
+    with pytest.raises(QueryRejected) as caught:
+        validate_sql(sql)
+    assert caught.value.retryable is False
 
 
 def test_approved_ast_round_trips_to_equivalent_sql():
