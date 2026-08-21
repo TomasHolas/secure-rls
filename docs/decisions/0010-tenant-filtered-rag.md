@@ -44,6 +44,23 @@ pattern, with the same four layers as the SQL path:
   exact version is pinned and the tenant-isolation invariant is covered by
   tests that re-run on any upgrade.
 
+## Implementation notes (added after issue #18 landed)
+
+- Empirical authorizer map for a vec0 KNN read: SQLITE_SELECT, SQLITE_FUNCTION
+  on `match`, and SQLITE_READ on the virtual table plus its `_rowids`,
+  `_chunks`, and `_auxiliary` shadow tables; the remaining shadow tables go
+  through the blob API and never consult the authorizer.
+- **sqlite-vec 0.1.9 segfaults (exit 139) if the authorizer denies the
+  `_rowids` shadow read** - an unchecked statement-prepare in the pre-v1
+  extension. Consequence: the vector index lives in its own `vectors.db`,
+  and the connection executing model-generated SQL caps attached databases
+  at zero - so the crash is unreachable from any generated query, by
+  construction rather than by filter.
+- The tenant partition predicate is provably load-bearing: dropping it
+  returns rows from every tenant (tested), and the isolation test is rigged
+  so it cannot pass vacuously - the only semantically-close note belongs to
+  the foreign tenant.
+
 ## Consequences
 
 - The demo gains a third secured data path with zero new security code paths —
