@@ -11,6 +11,7 @@
  */
 
 import type {
+  DoneEvent,
   RetryEvent,
   SecurityEvent,
   ToolCallEvent,
@@ -42,7 +43,10 @@ export interface OrphanItem {
 
 export type TraceItem = NodeItem | CallItem | OrphanItem;
 
-/** `streaming` until a `done` event lands; `failed` is a transport error, never an answer. */
+/**
+ * `streaming` until a `done` event lands. `failed` is a turn that never reached an answer -
+ * the backend saying so in its terminal frame, or a stream this client could not read.
+ */
 export type TurnPhase = "streaming" | "ok" | "blocked" | "gave_up" | "failed";
 
 export interface Turn {
@@ -72,18 +76,29 @@ export function applyEvent(turn: Turn, event: TraceEvent): Turn {
     case "security_event":
       return { ...turn, items: attachOutcome(turn.items, event) };
     case "done":
-      return {
-        ...turn,
-        answer: turn.answer || event.answer,
-        phase: event.status,
-        model: event.model,
-      };
+      return done(turn, event);
   }
 }
 
 /** A turn whose stream broke: an unreachable endpoint or a rejected request, stated as such. */
 export function failTurn(turn: Turn, error: string): Turn {
   return { ...turn, phase: "failed", error };
+}
+
+/**
+ * The turn as its terminal frame leaves it. A `failed` status is the backend's own diagnosis
+ * of a run that never answered, so it goes to `error` and whatever text streamed before it
+ * stays the answer - the view states the diagnosis instead of guessing at one.
+ */
+function done(turn: Turn, event: DoneEvent): Turn {
+  const failed = event.status === "failed";
+  return {
+    ...turn,
+    answer: failed ? turn.answer : turn.answer || event.answer,
+    phase: event.status,
+    model: event.model,
+    error: failed ? event.answer : turn.error,
+  };
 }
 
 function callItem(event: ToolCallEvent): CallItem {

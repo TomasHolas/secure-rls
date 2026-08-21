@@ -83,6 +83,11 @@ class FakeEmbed:
         return [value / norm for value in counts]
 
 
+def _never_indexes(*args: object, **kwargs: object) -> int:
+    """Fail the test if a store that already holds notes is embedded a second time."""
+    raise AssertionError("an existing note index must not be rebuilt at startup")
+
+
 def _bucket(word: str, dim: int) -> int:
     """A process-independent bucket for one word; Python's own hash() is salted per run."""
     digest = hashlib.blake2b(word.encode(), digest_size=8).digest()
@@ -212,6 +217,33 @@ def test_generated_sql_cannot_reach_the_vector_table(db_path):
 def test_searching_before_the_index_exists_fails_loudly(tmp_path):
     with pytest.raises(FileNotFoundError):
         db.search_vectors(tmp_path / "data.db", [0.0] * _DIM, ACME, 5)
+
+
+def test_a_scoped_search_before_the_index_exists_is_an_availability_error(tmp_path):
+    """The tool layer needs to tell an operator condition apart from a model or security error."""
+    with pytest.raises(rag.RetrievalUnavailable):
+        rag.search_notes_scoped(tmp_path / "data.db", FakeEmbed(), _LEADERSHIP_QUERY, ACME)
+
+
+def test_an_empty_store_counts_as_no_index_at_all(tmp_path):
+    """Startup decides on rows held, not on a file existing (ADR 0010 as amended)."""
+    assert db.vector_store_rows(tmp_path / "data.db") == 0
+
+
+def test_ensuring_the_index_builds_it_once_and_then_leaves_it_alone(tmp_path, monkeypatch):
+    """The startup build is idempotent: a store that already holds notes costs no embeddings."""
+    csv_path = tmp_path / "employees.csv"
+    lines = [",".join(_HEADER)]
+    lines += [",".join(str(field) for field in row) for row in _ROWS]
+    csv_path.write_text("\n".join(lines) + "\n")
+    path = tmp_path / "data.db"
+    db.init_db(csv_path, path)
+
+    assert rag.ensure_index(path, FakeEmbed()) == len(_ROWS)
+    assert db.vector_store_rows(path) == len(_ROWS)
+
+    monkeypatch.setattr(rag, "index_notes", _never_indexes)
+    assert rag.ensure_index(path, FakeEmbed()) == len(_ROWS)
 
 
 def test_the_vector_authorizer_allows_only_the_stores_own_storage():

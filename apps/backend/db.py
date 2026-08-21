@@ -50,7 +50,9 @@ The retrieval path (ADR 0010) adds a second, narrow seam, because this module ow
 - `notes_for_indexing` reads every tenant's notes once at load time, over the same read-only
   connection and the same employees-only authorizer as a served query. It is a load-time
   admin read like `init_db`, not a serving path - nothing but `rag.index_notes` calls it.
-- `init_vector_store` creates `vectors.db`'s `vec0` table on a writable connection.
+- `init_vector_store` creates `vectors.db`'s `vec0` table on a writable connection, and
+  `vector_store_rows` counts what it holds over the same writable seam - the startup check that
+  makes indexing idempotent (ADR 0010). Neither is a serving path.
 - `search_vectors` runs the one fixed KNN shape read-only. The vector store is a SEPARATE
   file from the employees data on purpose: the connection that runs model-generated SQL caps
   attached databases at zero and therefore cannot reach the virtual table at all. That matters
@@ -129,6 +131,7 @@ _VECTOR_INSERT = (
     f"INSERT INTO {VECTOR_TABLE} ({TENANT_COLUMN}, user_id, embedding, name, note) "
     "VALUES (?, ?, ?, ?, ?)"
 )
+_VECTOR_COUNT = f"SELECT COUNT(*) FROM {VECTOR_TABLE}"
 # The one retrieval shape: k and the tenant are bound, so the partition pre-filter runs first.
 _VECTOR_SEARCH = (
     f"SELECT user_id, {TENANT_COLUMN}, name, note, distance FROM {VECTOR_TABLE} "
@@ -361,6 +364,24 @@ def init_vector_store(
                 for note, vector in zip(notes, vectors, strict=True)
             ],
         )
+
+
+def vector_store_rows(db_path: Path) -> int:
+    """How many notes the store beside db_path holds; 0 when it was never built (ADR 0010).
+
+    A load-time admin read like `init_vector_store`, over the same writable seam and never from a
+    serving path: it exists so startup can tell an already-indexed store from a missing one
+    without re-embedding. A file that is absent, or present without the vec0 table, counts as 0.
+    """
+    path = _vector_path(db_path)
+    if not path.exists():
+        return 0
+    with closing(_open_vector_store(path)) as conn:
+        try:
+            (count,) = conn.execute(_VECTOR_COUNT).fetchone()
+        except sqlite3.Error:
+            return 0
+    return int(count)
 
 
 def search_vectors(

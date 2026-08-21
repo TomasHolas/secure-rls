@@ -246,6 +246,29 @@ describe("edge cases", () => {
     expect(turn).toMatchObject({ phase: "gave_up", answer: "I gave up." });
   });
 
+  it("states the backend's own diagnosis when the turn ends in a failed frame", () => {
+    const diagnosis = "The turn ended in a server-side failure before an answer was composed.";
+    const turn = fold([
+      { type: "node_start", node: "reason" },
+      { type: "token", text: "Engineering " },
+      { type: "done", status: "failed", answer: diagnosis, model: "qwen3:8b" },
+    ]);
+
+    expect(turn).toMatchObject({
+      phase: "failed",
+      answer: "Engineering ",
+      error: diagnosis,
+      model: "qwen3:8b",
+    });
+  });
+
+  it("does not turn a failed frame's reason into the answer of the turn", () => {
+    const turn = fold([{ type: "done", status: "failed", answer: "it broke", model: "m" }]);
+
+    expect(turn.answer).toBe("");
+    expect(turn.error).toBe("it broke");
+  });
+
   it("records a broken stream as a failed turn without inventing an answer", () => {
     const streaming = fold([{ type: "node_start", node: "reason" }]);
     const failed = failTurn(streaming, "The model endpoint is unavailable.");

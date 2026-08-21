@@ -12,9 +12,11 @@
  * produced it and is never re-served (ADR 0012), so only turns streamed in this session
  * carry one. Switching threads (a new `chatKey`) drops the live turns with it.
  *
- * A stream that ends without a `done` event, or a request the API refuses, is shown as a
- * failed turn: the agent contract says a broken run is the caller's to render, and this
- * view never dresses one up as an answer.
+ * A turn that never reaches an answer is shown as failed, never dressed up as one. The reason
+ * is the backend's whenever the backend has one: a `done` frame with status `failed` carries the
+ * server's own diagnosis, which is what the reader sees. The strings below cover only what the
+ * backend cannot say - a stream that stopped without any terminal frame, and a request the API
+ * refused before the turn began.
  *
  * `.chat-log` is the view's only scroll container and this view follows its bottom only
  * while the reader is already there: a token arrives many times a second and each one can
@@ -40,7 +42,11 @@ const BOTTOM_SLACK = 24;
 const PHASE_PILL = {
   gave_up: { tone: "warn", label: "gave up after retries" },
   blocked: { tone: "danger", label: "blocked by a security layer" },
+  failed: { tone: "danger", label: "failed before answering" },
 } as const;
+
+/** The phases that earn a pill of their own; the rest are carried by the answer alone. */
+type PilledPhase = keyof typeof PHASE_PILL;
 
 export function ChatView({
   threadId,
@@ -189,7 +195,7 @@ export function ChatView({
 }
 
 function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
-  const phase = turn.phase === "blocked" || turn.phase === "gave_up" ? PHASE_PILL[turn.phase] : null;
+  const phase = turn.phase in PHASE_PILL ? PHASE_PILL[turn.phase as PilledPhase] : null;
   return (
     <div className="chat-turn">
       <ChatMessage role="user" text={turn.question} />

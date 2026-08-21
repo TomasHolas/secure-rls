@@ -46,6 +46,22 @@ describe("readTraceEvents", () => {
     expect(events[3]).toMatchObject({ status: "ok", model: "qwen3:8b" });
   });
 
+  it("carries a terminal failed frame like any other done event", async () => {
+    const response = responseOf(
+      frame({ type: "node_start", node: "reason" }) +
+        frame({ type: "done", status: "failed", answer: "the run broke", model: "qwen3:8b" }),
+    );
+
+    const events = await collect(response);
+
+    expect(events[1]).toEqual({
+      type: "done",
+      status: "failed",
+      answer: "the run broke",
+      model: "qwen3:8b",
+    });
+  });
+
   it("reassembles a frame split across chunks", async () => {
     const whole = frame({ type: "token", text: "half and half" });
     const cut = Math.floor(whole.length / 2);
