@@ -41,6 +41,15 @@ class AgentConfig:
 
 
 @dataclass(frozen=True)
+class RagConfig:
+    """Retrieval and embedding knobs (ADR 0010)."""
+
+    top_k: int
+    embed_batch_size: int
+    embed_timeout_s: float
+
+
+@dataclass(frozen=True)
 class AuthConfig:
     """Auth knobs (ADR 0009)."""
 
@@ -61,6 +70,7 @@ class Runtime:
     dataset: DatasetConfig
     db: DbConfig
     agent: AgentConfig
+    rag: RagConfig
     auth: AuthConfig
     conversations: ConversationsConfig
 
@@ -73,6 +83,7 @@ def runtime() -> Runtime:
         dataset=DatasetConfig(**raw["dataset"]),
         db=DbConfig(**raw["db"]),
         agent=AgentConfig(**raw["agent"]),
+        rag=RagConfig(**raw["rag"]),
         auth=AuthConfig(**raw["auth"]),
         conversations=ConversationsConfig(**raw["conversations"]),
     )
