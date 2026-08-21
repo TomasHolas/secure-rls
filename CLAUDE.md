@@ -8,7 +8,23 @@ This repo is a take-home case study for an AI Engineer position,
 defended in a 60-minute live demo call. Every line must be simple enough to
 explain and every design decision has a written rationale in
 [`docs/decisions/`](docs/decisions/). The assignment itself is summarized in
-[`docs/architecture.md`](docs/architecture.md#assignment-compliance-map).
+[`docs/requirements.md`](docs/requirements.md).
+
+**This repo is developed by AI agents, design-first.** The work queue is the
+[issue tracker](https://github.com/TomasHolas/secure-rls/issues): epics #2-#7
+track the implementation issues #13-#32. How to work here:
+
+1. Pick an open implementation issue; read this file plus the ADRs the issue
+   references before writing code.
+2. The issue's **binding contracts** (signatures, data shapes) are law for
+   parallel work — to change one, amend the referenced ADR and the issue text
+   FIRST, then the code.
+3. Branch `feat/<issue>-<slug>`, small commits, PR body contains
+   `closes #<issue>`. Rebase on `main` before merging — parallel PRs land
+   often.
+4. Keep everything in git: if it is not committed, the next agent (possibly on
+   another machine) does not know it exists. Docs that a change makes stale are
+   updated in the same PR.
 
 ## What this is
 
