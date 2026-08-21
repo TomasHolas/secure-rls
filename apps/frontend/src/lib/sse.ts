@@ -13,7 +13,8 @@
  * terminator; a frame whose payload is not JSON with a `type` is reported to the
  * console and skipped, so one bad frame cannot end an otherwise healthy turn; a
  * consumer that stops early cancels the body on the way out, and a cancelled stream
- * ends the generator quietly instead of raising.
+ * ends the generator quietly instead of raising. A run that breaks server-side arrives
+ * as a `done` event with status `failed` rather than as a body that simply stops.
  */
 
 import type { ChartSpec } from "../components/charts";
@@ -85,7 +86,11 @@ export interface RetryEvent {
   reason: string;
 }
 
-export type TurnStatus = "ok" | "blocked" | "gave_up";
+/**
+ * How a turn ended. The agent composes the first three; `failed` is the API's terminal
+ * frame for a run that broke before it could answer, with the reason in `answer`.
+ */
+export type TurnStatus = "ok" | "blocked" | "gave_up" | "failed";
 
 export interface DoneEvent {
   type: "done";

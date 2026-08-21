@@ -65,6 +65,14 @@ const BLOCKED = [
   { type: "done", status: "blocked", answer: "That query is not allowed.", model: MODEL },
 ];
 
+const DIAGNOSIS =
+  "The turn ended in a server-side failure before an answer was composed. Ask again.";
+const FAILED = [
+  { type: "node_start", node: "reason" },
+  { type: "tool_call", id: "c1", tool: "search_notes", args: { query: "leadership" } },
+  { type: "done", status: "failed", answer: DIAGNOSIS, model: MODEL },
+];
+
 function sseResponse(events: unknown[]): Response {
   return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
 }
@@ -246,6 +254,17 @@ describe("the chat view", () => {
     ).toBeTruthy();
     expect(screen.getByText("blocked by a security layer")).toBeTruthy();
     expect(screen.getByText("policy_violation")).toBeTruthy();
+  });
+
+  it("shows the backend's diagnosis of a failed turn instead of its own fallback", async () => {
+    api.openChatStream.mockImplementation(() => Promise.resolve(sseResponse(FAILED)));
+    await renderReady();
+    ask("who shows leadership?");
+
+    expect(await screen.findByText(DIAGNOSIS)).toBeTruthy();
+    expect(screen.getByText("failed before answering")).toBeTruthy();
+    expect(screen.queryByText(/The turn failed. Try again./)).toBeNull();
+    expect(screen.queryByText(/stream ended before the turn finished/)).toBeNull();
   });
 
   it("reports a stream that ends without a done event", async () => {
