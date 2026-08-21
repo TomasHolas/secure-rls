@@ -18,6 +18,10 @@ dependencies = [
     "uvicorn>=0.52.4",
 ]
 
+[tool.uv]
+# sqlite-vec needs a sqlite3 built with loadable-extension support; the managed builds have it.
+python-preference = "only-managed"
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",

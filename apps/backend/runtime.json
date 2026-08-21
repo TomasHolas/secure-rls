@@ -24,6 +24,11 @@
     "embed_model": "nomic-embed-text",
     "max_tool_retries": 3
   },
+  "rag": {
+    "top_k": 5,
+    "embed_batch_size": 64,
+    "embed_timeout_s": 120
+  },
   "auth": {
     "token_ttl_minutes": 30
   },
