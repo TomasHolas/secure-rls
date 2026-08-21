@@ -1,6 +1,7 @@
 # ADR 0009 — Auth implementation: PBKDF2 password hashing, pinned-algorithm JWT
 
-Status: accepted
+Status: accepted (amended 2026-08-21: sliding session - 120-minute token, renewed
+within 30 minutes of expiry via the X-Refreshed-Token response header)
 
 ## Context
 
@@ -24,7 +25,33 @@ RLS layer 1's foundation. Constraint: prefer the stdlib over new dependencies.
   audience (OWASP JWT Cheat Sheet). Verification pins the algorithm list
   (`jwt.decode(token, key, algorithms=["HS256"])`) per RFC 8725 section 3.1,
   rejecting `alg=none` and confusion attacks. Claims: `sub`, `tenant_id`,
-  `exp` (30 minutes, matching the FastAPI tutorial), `iat`.
+  `exp`, `iat`.
+- **Session lifetime: a sliding session** (amended per issue #71).
+  `auth.token_ttl_minutes` is **120**, and `auth.refresh_within_minutes` is
+  **30**: an authenticated request whose token expires within that window is
+  answered with a freshly signed one carrying the same `sub` and `tenant_id`.
+  The original 30-minute expiry was justified only by matching the FastAPI
+  tutorial — a code sample, not a threat model. For a single-issuer demo app
+  there is no attack a short hard expiry meaningfully narrows: the token is not
+  revocable either way, so a stolen one is usable until it lapses whatever the
+  number, and no second audience exists to limit exposure to. A forced sign-out
+  mid-demo, by contrast, is a real failure with a real cost. The sliding session
+  takes both halves: tokens stay short-lived in absolute terms (a leaked one
+  dies within two hours of the session's last use, and an abandoned session
+  still lapses on its own), while an active user is never interrupted. This is
+  the standard shape of a stateless JWT session — short access token, renewed
+  while in use — and the honest alternative, one long flat TTL, buys the same
+  continuity only by making every issued token long-lived.
+- **Refresh transport**: the new token comes back on the `X-Refreshed-Token`
+  response header of the request that earned it, so every authenticated endpoint
+  refreshes transparently and there is no `/refresh` route and no client timer.
+  CORS exposes the header to the SPA, and `lib/api.ts` adopts it into the
+  session brick in the one place that already attaches the bearer token; the
+  boot-time `exp` check stays as the client's own staleness guard. Refreshing
+  runs the same pinned-algorithm decode as verification, so an expired or forged
+  token refreshes nothing and is still a 401. A token is verified once per
+  request, at its start: the `/chat` SSE generator never re-checks, so a turn
+  already streaming completes even if the clock passes `exp` mid-stream.
 - **Signing secret**: at least 256 bits (RFC 7518 section 3.2 requires a key
   no smaller than the hash output for HS256; generate with
   `openssl rand -hex 32`), loaded from the environment. **The app fails fast
@@ -40,6 +67,16 @@ RLS layer 1's foundation. Constraint: prefer the stdlib over new dependencies.
   run — the setup docs include the one-line secret generation.
 - Layer 1's JWT tampering tests (wrong signature, alg=none, expired, missing)
   map one-to-one to the RFC 8725 requirements.
+- The sliding session is an **idle** timeout in OWASP's terms: a continuously
+  used session renews indefinitely, because a stateless token cannot be capped
+  without a server-side record of when the session actually began. That is the
+  accepted gap of a demo with no revocation story; the stateless way to close it
+  is a first-issued-at claim the refresh copies forward and refuses to extend
+  past, which is noted here rather than built.
+- Because the refresh rides on an ordinary response header, the SPA needs no
+  timer and no refresh endpoint, but every client of this API must read
+  `X-Refreshed-Token` to benefit — a client that ignores it degrades to a hard
+  two-hour expiry rather than breaking.
 
 ## Alternatives
 
@@ -49,6 +86,14 @@ RLS layer 1's foundation. Constraint: prefer the stdlib over new dependencies.
   the sourced practice this repo commits to.
 - **Server-side sessions** — no visible tenant claim crossing the trust
   boundary; JWT makes layer 1 demonstrable.
+- **One long flat TTL** (a day, say) — the same "no forced sign-out" outcome
+  with less machinery, but every token issued is long-lived, including the ones
+  handed to a session used once and abandoned. Rejected: the sliding window
+  costs one config value and one response header.
+- **A dedicated `/refresh` endpoint plus a client-side timer** — the classic
+  shape, and necessary when refresh and access tokens differ. Here it would add
+  a route, a timer and a second token type to renew a single-audience session
+  that every request already proves is alive.
 
 ## References
 
@@ -61,7 +106,10 @@ RLS layer 1's foundation. Constraint: prefer the stdlib over new dependencies.
 - RFC 8725, JWT Best Current Practices — https://www.rfc-editor.org/rfc/rfc8725.html
 - RFC 7518, JSON Web Algorithms (HS256 key size) —
   https://www.rfc-editor.org/rfc/rfc7518.html
-- FastAPI security tutorial (PyJWT, HS256, 30-minute expiry, openssl rand) —
+- OWASP Session Management Cheat Sheet (idle vs absolute timeout; a session
+  expiring on inactivity rather than on a fixed clock) —
+  https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html
+- FastAPI security tutorial (PyJWT, HS256, openssl rand) —
   https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/
 - OWASP Secrets Management Cheat Sheet —
   https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html

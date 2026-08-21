@@ -30,7 +30,8 @@
     "embed_timeout_s": 120
   },
   "auth": {
-    "token_ttl_minutes": 30
+    "token_ttl_minutes": 120,
+    "refresh_within_minutes": 30
   },
   "conversations": {
     "title_max_chars": 80

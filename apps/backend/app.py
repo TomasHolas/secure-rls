@@ -44,6 +44,15 @@ capabilities falls back to excluding the configured `agent.embed_model` by prefi
 happens in the lister, not the handler, so the `/chat` allowlist is the same list the picker
 was offered.
 
+Sliding session (ADR 0009 as amended). Every authenticated request re-issues the caller's
+token when it is close to expiring and returns the new one on the `X-Refreshed-Token`
+response header (exposed to the SPA through CORS), so an active user is never signed out
+mid-demo. The header is set once per request by the `_identity` dependency, from the token
+the request arrived with; `/chat` copies it onto the streaming response because a directly
+returned `Response` does not inherit the dependency's headers. Verification happens once, at
+request start - the SSE generator never re-checks, so a turn already in flight completes even
+if the clock passes `exp` while it streams.
+
 Startup fails fast when `JWT_SECRET` is unset or too weak (ADR 0009): `create_app` calls
 `auth.jwt_secret()` before it builds anything, so a misconfigured process refuses to boot
 rather than serving unsigned-in-practice tokens. Importing this module is side-effect free -
@@ -76,7 +85,15 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
 from agent import Message, TraceEvent, build_agent, run_turn, thread_messages
-from auth import AuthError, Identity, create_token, jwt_secret, verify_password, verify_token
+from auth import (
+    AuthError,
+    Identity,
+    create_token,
+    jwt_secret,
+    refreshed_token,
+    verify_password,
+    verify_token,
+)
 from conversations import ConversationRegistry, NotFound, Thread
 from db import DEFAULT_DB_PATH
 from rag import OllamaEmbed
@@ -84,6 +101,7 @@ from runtime import runtime
 
 API_VERSION = "0.1.0"
 FRONTEND_ORIGIN = "http://localhost:3002"
+REFRESHED_TOKEN_HEADER = "X-Refreshed-Token"
 OLLAMA_ENV_VAR = "OLLAMA_BASE_URL"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -284,6 +302,7 @@ def create_app(
         allow_origins=[FRONTEND_ORIGIN],
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
+        expose_headers=[REFRESHED_TOKEN_HEADER],
     )
     app.add_exception_handler(NotFound, _not_found)
     app.add_exception_handler(ModelEndpointError, _bad_gateway)
@@ -308,7 +327,9 @@ def create_app(
 
     @app.post("/chat")
     def chat(
-        body: ChatRequest, identity: Annotated[Identity, Depends(_identity)]
+        body: ChatRequest,
+        identity: Annotated[Identity, Depends(_identity)],
+        response: Response,
     ) -> StreamingResponse:
         """Stream one turn as SSE; the thread must belong to the token's identity."""
         threads.get_thread(identity, body.thread_id)
@@ -318,7 +339,11 @@ def create_app(
             message=body.message,
             model=_resolve_model(body.model, list_models),
         )
-        return StreamingResponse(_sse(events), media_type="text/event-stream")
+        stream = StreamingResponse(_sse(events), media_type="text/event-stream")
+        refreshed = response.headers.get(REFRESHED_TOKEN_HEADER)
+        if refreshed is not None:
+            stream.headers[REFRESHED_TOKEN_HEADER] = refreshed
+        return stream
 
     @app.get("/conversations")
     def list_conversations(identity: Annotated[Identity, Depends(_identity)]) -> list[Thread]:
@@ -360,6 +385,7 @@ def create_app(
 
 
 def _identity(
+    response: Response,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> Identity:
     """The verified caller behind the Bearer token - the only source of tenant and sub."""
@@ -370,13 +396,17 @@ def _identity(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        return verify_token(credentials.credentials)
+        identity = verify_token(credentials.credentials)
+        refreshed = refreshed_token(credentials.credentials)
     except AuthError as exc:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             _INVALID_TOKEN,
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+    if refreshed is not None:
+        response.headers[REFRESHED_TOKEN_HEADER] = refreshed
+    return identity
 
 
 def _resolve_model(requested: str | None, list_models: ModelLister) -> str:

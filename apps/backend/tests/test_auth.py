@@ -14,6 +14,7 @@ from auth import (
     Identity,
     create_token,
     jwt_secret,
+    refreshed_token,
     verify_password,
     verify_token,
 )
@@ -85,6 +86,62 @@ def test_token_ttl_comes_from_runtime_config():
         algorithms=["HS256"],
     )
     assert claims["exp"] - claims["iat"] == runtime().auth.token_ttl_minutes * 60
+
+
+def _token_expiring_in(minutes: float, *, sub: str = "alice@acme", tenant_id: str = "acme") -> str:
+    """A validly signed token whose remaining lifetime the refresh window is measured against."""
+    issued_at = datetime.now(UTC)
+    return jwt.encode(
+        {
+            "sub": sub,
+            "tenant_id": tenant_id,
+            "iat": issued_at,
+            "exp": issued_at + timedelta(minutes=minutes),
+        },
+        TEST_SECRET,
+        algorithm="HS256",
+    )
+
+
+def test_a_freshly_issued_token_is_not_refreshed():
+    assert refreshed_token(create_token(Identity(sub="alice@acme", tenant_id="acme"))) is None
+
+
+def test_a_token_outside_the_refresh_window_is_not_refreshed():
+    outside = runtime().auth.refresh_within_minutes + 1
+    assert refreshed_token(_token_expiring_in(outside)) is None
+
+
+def test_a_token_inside_the_refresh_window_is_reissued():
+    inside = runtime().auth.refresh_within_minutes / 2
+    old = _token_expiring_in(inside, sub="bob@beta", tenant_id="beta")
+    fresh = refreshed_token(old)
+    assert fresh is not None
+    assert fresh != old
+    assert verify_token(fresh) == Identity(sub="bob@beta", tenant_id="beta")
+    assert _claims(fresh)["exp"] > _claims(old)["exp"]
+
+
+def test_a_reissued_token_carries_the_full_configured_lifetime():
+    fresh = refreshed_token(_token_expiring_in(1))
+    claims = _claims(fresh)
+    assert claims["exp"] - claims["iat"] == runtime().auth.token_ttl_minutes * 60
+
+
+def test_an_expired_token_is_never_refreshed():
+    with pytest.raises(AuthError):
+        refreshed_token(_token_expiring_in(-1))
+
+
+def test_an_unsigned_token_is_never_refreshed():
+    token = _unsigned_token({"sub": "alice@acme", "tenant_id": "beta", "iat": 0, "exp": 1 << 31})
+    with pytest.raises(AuthError):
+        refreshed_token(token)
+
+
+def _claims(token: str) -> dict:
+    """The token's claims, read back without re-checking expiry."""
+    return jwt.decode(token, TEST_SECRET, algorithms=["HS256"], options={"verify_exp": False})
 
 
 def test_tampered_signature_is_rejected():

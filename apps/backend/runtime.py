@@ -60,9 +60,10 @@ class RagConfig:
 
 @dataclass(frozen=True)
 class AuthConfig:
-    """Auth knobs (ADR 0009)."""
+    """Auth knobs (ADR 0009): the token lifetime and the sliding-refresh window inside it."""
 
     token_ttl_minutes: int
+    refresh_within_minutes: int
 
 
 @dataclass(frozen=True)

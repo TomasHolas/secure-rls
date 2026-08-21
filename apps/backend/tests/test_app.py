@@ -11,6 +11,12 @@ The model list the endpoint reports includes the embedding model this app itself
 because that is the live situation the filter exists for; `FakeCapabilities` answers `/api/show`
 from a canned map and counts the lookups, which is how the cache is asserted.
 
+The sliding-session tests (ADR 0009 as amended) sign their own tokens with a chosen expiry
+second rather than logging in, because what is under test is the remaining lifetime: inside the
+refresh window a response carries `X-Refreshed-Token`, outside it does not, and an expired
+token is still a 401 that refreshes nothing. `ExpiringRunner` makes the expiry land while the
+SSE stream is open, so "an in-flight turn survives it" is asserted rather than argued.
+
 The registry here is the real `ConversationRegistry` on a tmp_path file: thread scoping is the
 security property under test, so faking it would test nothing. The transcript seam is a fake
 holding canned exchanges per thread and recording every thread it was asked for - what belongs
@@ -19,13 +25,15 @@ caller does not own; reconstructing it from a real checkpoint is `test_agent.py`
 """
 
 import json
+import time
 from dataclasses import asdict, dataclass, field
 
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 
 from agent import Message
-from app import ModelEndpointError, create_app
+from app import REFRESHED_TOKEN_HEADER, ModelEndpointError, create_app
 from auth import SECRET_ENV_VAR, AuthError
 from conversations import ConversationRegistry
 from runtime import runtime
@@ -90,6 +98,25 @@ class FakeRunner:
     def last(self) -> dict[str, str]:
         """The most recent turn's arguments."""
         return self.calls[-1]
+
+
+@dataclass
+class ExpiringRunner:
+    """Replays the canned events, crossing the caller's token expiry between the first two.
+
+    The sliding-session property under test is that a turn already streaming is not killed by
+    the clock passing `exp`: verification happens once, at request start. Sleeping inside the
+    generator is what makes the expiry land mid-stream rather than before the request.
+    """
+
+    expires_at: float
+
+    def __call__(self, *, tenant_id, thread_id, message, model):
+        """Yield the first event, wait out the token, then finish the turn."""
+        for index, event in enumerate(EVENTS):
+            if index == 1:
+                time.sleep(max(0.0, self.expires_at - time.time()) + 0.1)
+            yield dict(event)
 
 
 @dataclass
@@ -450,6 +477,103 @@ def test_the_app_refuses_to_build_without_a_usable_signing_secret(monkeypatch, s
         monkeypatch.setenv(SECRET_ENV_VAR, secret)
     with pytest.raises(AuthError):
         create_app()
+
+
+def _token_expiring_at(expires_at: int) -> str:
+    """A validly signed token for ALICE with an exact expiry second (ADR 0009 sliding session)."""
+    return jwt.encode(
+        {"sub": ALICE[0], "tenant_id": ACME, "iat": int(time.time()), "exp": expires_at},
+        TEST_SECRET,
+        algorithm="HS256",
+    )
+
+
+def _expiring_headers(seconds: float) -> dict[str, str]:
+    """An Authorization header whose token has the given remaining lifetime."""
+    return {"Authorization": f"Bearer {_token_expiring_at(int(time.time() + seconds))}"}
+
+
+def _inside_the_window() -> float:
+    """A remaining lifetime comfortably inside the configured refresh window, in seconds."""
+    return runtime().auth.refresh_within_minutes * 60 / 2
+
+
+def test_a_request_inside_the_refresh_window_is_answered_with_a_fresh_token(wiring):
+    response = wiring.client.get("/conversations", headers=_expiring_headers(_inside_the_window()))
+
+    assert response.status_code == 200
+    claims = jwt.decode(response.headers[REFRESHED_TOKEN_HEADER], TEST_SECRET, algorithms=["HS256"])
+    assert (claims["sub"], claims["tenant_id"]) == (ALICE[0], ACME)
+    assert claims["exp"] - claims["iat"] == runtime().auth.token_ttl_minutes * 60
+
+
+def test_the_refreshed_token_is_accepted_and_needs_no_further_refresh(wiring):
+    refreshed = wiring.client.get(
+        "/conversations", headers=_expiring_headers(_inside_the_window())
+    ).headers[REFRESHED_TOKEN_HEADER]
+
+    again = wiring.client.get("/conversations", headers={"Authorization": f"Bearer {refreshed}"})
+
+    assert again.status_code == 200
+    assert REFRESHED_TOKEN_HEADER not in again.headers
+
+
+def test_a_request_outside_the_refresh_window_carries_no_refreshed_token(wiring):
+    response = wiring.client.get("/conversations", headers=_headers(wiring.client, ALICE))
+    assert response.status_code == 200
+    assert REFRESHED_TOKEN_HEADER not in response.headers
+
+
+def test_an_expired_token_is_still_rejected_and_refreshes_nothing(wiring):
+    response = wiring.client.get("/conversations", headers=_expiring_headers(-60))
+    assert response.status_code == 401
+    assert REFRESHED_TOKEN_HEADER not in response.headers
+
+
+def test_chat_carries_the_refreshed_token_on_the_streaming_response(wiring):
+    thread_id = _new_thread(wiring.client, _headers(wiring.client, ALICE))
+
+    response = wiring.client.post(
+        "/chat",
+        json={"thread_id": thread_id, "message": QUESTION},
+        headers=_expiring_headers(_inside_the_window()),
+    )
+
+    assert response.status_code == 200
+    assert response.headers[REFRESHED_TOKEN_HEADER]
+    assert [event["type"] for event in _sse_events(response.text)] == [
+        event["type"] for event in EVENTS
+    ]
+
+
+def test_a_turn_in_flight_is_not_killed_by_the_token_expiring(tmp_path):
+    expires_at = int(time.time()) + 1
+    client = TestClient(
+        create_app(
+            chat_runner=ExpiringRunner(expires_at=expires_at),
+            model_lister=lambda: list(SERVED_MODELS),
+            capability_checker=FakeCapabilities(),
+            registry=ConversationRegistry(tmp_path / "state.db"),
+            cleanup=lambda thread_id: None,
+        )
+    )
+    headers = {"Authorization": f"Bearer {_token_expiring_at(expires_at)}"}
+    thread_id = _new_thread(client, headers)
+
+    response = client.post(
+        "/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert [event["type"] for event in events] == [event["type"] for event in EVENTS]
+    assert events[-1]["status"] == "ok"
+    assert client.get("/conversations", headers=headers).status_code == 401
+
+
+def test_cors_exposes_the_refreshed_token_header_to_the_spa(wiring):
+    response = wiring.client.get("/health", headers={"Origin": "http://localhost:3002"})
+    assert REFRESHED_TOKEN_HEADER in response.headers["access-control-expose-headers"]
 
 
 def test_cors_allows_only_the_frontend_origin(wiring):

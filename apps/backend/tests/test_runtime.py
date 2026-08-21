@@ -15,7 +15,13 @@ def test_runtime_loads_typed_values():
     assert rt.agent.max_tool_retries == 3
     assert rt.rag.top_k == 5
     assert rt.rag.embed_batch_size == 64
-    assert rt.auth.token_ttl_minutes == 30
+    assert rt.auth.token_ttl_minutes == 120
+    assert rt.auth.refresh_within_minutes == 30
+
+
+def test_refresh_window_fits_inside_the_token_lifetime():
+    rt = runtime()
+    assert 0 < rt.auth.refresh_within_minutes < rt.auth.token_ttl_minutes
 
 
 def test_tenant_split_sums_to_one():

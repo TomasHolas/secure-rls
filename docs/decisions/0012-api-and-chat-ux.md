@@ -60,6 +60,20 @@ it arrives — the live trace IS the transport, not a replay.
 - Logout invalidates nothing server-side (JWT is stateless) but the UI drops
   the token; a re-login lists only that identity's threads.
 
+### Session refresh header (per ADR 0009 as amended)
+
+Every JWT-protected response — `/models`, the `/conversations` routes and the
+`/chat` stream alike — may carry an `X-Refreshed-Token` header holding a newly
+signed token for the same identity. It appears when the presented token is
+within `auth.refresh_within_minutes` of expiring; the client stores it and sends
+that one from then on. This is an API-wide contract, not a `/chat` detail: the
+header is CORS-exposed so the SPA can read it, it never appears on a 401, and it
+is set once per request from the token the request arrived with. The SSE
+generator does not re-verify anything, so a turn already streaming is unaffected
+by its token expiring mid-stream. There is no `/refresh` endpoint — the session
+slides on ordinary traffic, and `lib/api.ts` adopts the header in the same one
+place that attaches the bearer token.
+
 ### Security visibility
 
 - **Transparent refusals**: a `security_event` renders as a distinct blocked
