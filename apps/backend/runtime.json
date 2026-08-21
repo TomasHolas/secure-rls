@@ -16,5 +16,8 @@
   },
   "auth": {
     "token_ttl_minutes": 30
+  },
+  "conversations": {
+    "title_max_chars": 80
   }
 }
