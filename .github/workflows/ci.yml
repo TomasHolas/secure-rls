@@ -38,6 +38,31 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
+  dataset:
+    name: dataset (regenerate + diff)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/backend
+    steps:
+      - uses: actions/checkout@v7
+
+      # setup-uv publishes no moving major tag past v7, so pin the exact release
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          working-directory: apps/backend
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Regenerate dataset
+        run: uv run python scripts/generate_dataset.py
+
+      - name: Diff against committed dataset
+        run: git diff --exit-code -- employees.csv poisoned_manifest.json
+
   frontend:
     name: frontend (build)
     runs-on: ubuntu-latest
