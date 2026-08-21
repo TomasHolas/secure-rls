@@ -17,17 +17,19 @@ import hashlib
 import json
 import math
 import re
+from collections import Counter
 from dataclasses import replace
 from typing import Any
 
 import pytest
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import Field
 
 import agent
+import analytics
 import db
 import rag
 from agent import (
@@ -36,8 +38,10 @@ from agent import (
     KIND_MALFORMED_ARGUMENTS,
     KIND_MALFORMED_SQL,
     KIND_POLICY,
+    KIND_TOOL_ERROR,
     LAYER_ARGUMENTS,
     LAYER_ENFORCEMENT,
+    LAYER_EXECUTION,
     LAYER_VALIDATION,
     REASON,
     RESPOND,
@@ -84,6 +88,9 @@ _BETA_MARKER = "beta secret"
 _DIM = 32
 _CALL_ID = "call-1"
 _THREAD = "thread-1"
+_OUTCOMES = ("tool_result", "retry", "security_event")
+# What a tool raising by surprise would leak if the reason it produced were not composed here.
+_LEAK = "/Users/demo/state/vectors.db line 372"
 
 
 class ScriptedLLM(BaseChatModel):
@@ -107,6 +114,22 @@ class ScriptedLLM(BaseChatModel):
         if len(self.seen) > len(self.script):
             raise AssertionError(f"the model was called {len(self.seen)} times, past its script")
         return ChatResult(generations=[ChatGeneration(message=self.script[len(self.seen) - 1])])
+
+
+class SplitLLM(ScriptedLLM):
+    """Streams each scripted message a few characters at a time, splitting any markup in it."""
+
+    size: int = 4
+
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        """Yield the next scripted message in small chunks, so no tag arrives whole."""
+        self.seen.append(list(messages))
+        if len(self.seen) > len(self.script):
+            raise AssertionError(f"the model was called {len(self.seen)} times, past its script")
+        text = self.script[len(self.seen) - 1].text
+        for start in range(0, len(text), self.size):
+            piece = text[start : start + self.size]
+            yield ChatGenerationChunk(message=AIMessageChunk(content=piece))
 
 
 class FakeEmbed:
@@ -133,9 +156,42 @@ def _tool_call(name: str, **args: object) -> AIMessage:
     )
 
 
+def _tool_calls(*specs: tuple[str, dict]) -> AIMessage:
+    """One assistant message asking for several tool calls at once, each with its own id."""
+    return AIMessage(
+        content="calling several tools",
+        tool_calls=[
+            {"name": name, "args": args, "id": f"{_CALL_ID}-{index}"}
+            for index, (name, args) in enumerate(specs)
+        ],
+    )
+
+
+def _raise(*args: object, **kwargs: object) -> None:
+    """Stand in for a tool that breaks in a way nothing in the graph anticipated."""
+    raise RuntimeError(f"no such file: {_LEAK}")
+
+
+def _raise_missing_store(*args: object, **kwargs: object) -> None:
+    """Stand in for the vector store db.py reports as never built, path and all."""
+    raise FileNotFoundError(f"no vector store at {_LEAK}: index_notes has not run")
+
+
 def _of_type(events: list[dict], kind: str) -> list[dict]:
     """Every event of one type, in the order the stream produced them."""
     return [event for event in events if event["type"] == kind]
+
+
+def _closed(events: list[dict]) -> None:
+    """Assert the ADR 0012 invariant: every announced call ends in exactly one outcome."""
+    announced = Counter(event["id"] for event in _of_type(events, "tool_call"))
+    settled = Counter(event["id"] for event in events if event["type"] in _OUTCOMES)
+    assert announced == settled, f"{announced} announced, {settled} settled"
+
+
+def _text(events: list[dict]) -> str:
+    """Everything the stream presented to the reader, in order."""
+    return "".join(event["text"] for event in _of_type(events, "token"))
 
 
 def _one(events: list[dict], kind: str) -> dict:
@@ -174,8 +230,8 @@ def checkpointer(tmp_path):
 def build(db_path):
     """Compile an agent over the fixture database for a script of assistant messages."""
 
-    def make(*script, tenant=ACME, checkpointer=None, model_id=None):
-        llm = ScriptedLLM(script=list(script))
+    def make(*script, tenant=ACME, checkpointer=None, model_id=None, chunked=False):
+        llm = (SplitLLM if chunked else ScriptedLLM)(script=list(script))
         graph = build_agent(
             tenant,
             llm,
@@ -491,6 +547,168 @@ def test_a_refused_argument_names_the_layer_that_refused_it(build):
     assert retry["kind"] == KIND_MALFORMED_SQL
 
 
+def test_a_tool_that_raises_becomes_a_retry_the_model_can_answer(build, monkeypatch):
+    """An unexpected tool failure is fed back inside the same turn instead of killing it."""
+    monkeypatch.setattr(analytics, "get_stats", _raise)
+    graph, llm = build(
+        _tool_call("get_stats", metric="avg", column="salary"),
+        AIMessage(content="the statistics tool is broken, so I cannot give you the average"),
+    )
+    events = list(run_turn(graph, "average salary?", _THREAD))
+
+    retry = _one(events, "retry")
+    assert retry["layer"] == LAYER_EXECUTION
+    assert retry["kind"] == KIND_TOOL_ERROR
+    assert "get_stats" in retry["reason"]
+    assert _of_type(events, "security_event") == []
+    assert retry["reason"] in llm.seen[-1][-1].text
+    done = _one(events, "done")
+    assert done["status"] == STATUS_OK
+    assert done["answer"] == "the statistics tool is broken, so I cannot give you the average"
+
+
+def test_the_reason_a_raising_tool_gives_the_model_carries_no_server_detail(build, monkeypatch):
+    """The model is told which tool failed and nothing else: no path, no frame, no class name."""
+    monkeypatch.setattr(analytics, "get_stats", _raise)
+    graph, _ = build(
+        _tool_call("get_stats", metric="avg", column="salary"),
+        AIMessage(content="I could not compute that"),
+    )
+    events = list(run_turn(graph, "average salary?", _THREAD))
+
+    reason = _one(events, "retry")["reason"]
+    assert _LEAK not in reason
+    assert "RuntimeError" not in reason
+    assert "Traceback" not in reason
+    assert _LEAK not in json.dumps(events)
+
+
+@pytest.mark.parametrize(
+    ("script", "patch"),
+    [
+        ((("get_stats", {"metric": "avg", "column": "salary"}),), (analytics, "get_stats")),
+        ((("search_notes", {"query": "leadership"}),), (rag, "search_notes_scoped")),
+        ((("detect_anomalies", {"column": "salary"}),), (analytics, "detect_anomalies")),
+    ],
+    ids=["get_stats", "search_notes", "detect_anomalies"],
+)
+def test_no_raising_tool_leaves_a_trace_step_running(build, monkeypatch, script, patch):
+    """Whichever tool breaks, every announced call still ends in exactly one outcome."""
+    monkeypatch.setattr(*patch, _raise)
+    (call,) = script
+    graph, _ = build(_tool_call(call[0], **call[1]), AIMessage(content="that did not work"))
+    events = list(run_turn(graph, "a question", _THREAD))
+
+    _closed(events)
+    assert _one(events, "retry")["kind"] == KIND_TOOL_ERROR
+    assert _one(events, "done")["status"] == STATUS_OK
+
+
+def test_a_tool_that_keeps_raising_gives_up_and_the_failed_turn_is_persisted(
+    build, checkpointer, tuned, monkeypatch
+):
+    """A spent budget on a broken tool still ends in an answer the transcript keeps."""
+    tuned(max_tool_retries=2)
+    monkeypatch.setattr(analytics, "get_stats", _raise)
+    graph, _ = build(
+        *(_tool_call("get_stats", metric="avg", column="salary") for _ in range(2)),
+        checkpointer=checkpointer,
+    )
+    events = list(run_turn(graph, "average salary?", _THREAD))
+
+    _closed(events)
+    done = _one(events, "done")
+    assert done["status"] == STATUS_GAVE_UP
+    assert "get_stats" in done["answer"]
+    replayed = thread_messages(checkpointer, _THREAD)
+    assert replayed[0] == agent.Message(role=ROLE_USER, content="average salary?")
+    assert replayed[-1] == agent.Message(role=ROLE_ASSISTANT, content=done["answer"])
+
+
+def test_a_missing_note_index_is_stated_once_and_never_retried(build, monkeypatch):
+    """A store that was never built is an operator condition, so the tool says so and moves on."""
+    monkeypatch.setattr(db, "search_vectors", _raise_missing_store)
+    graph, _ = build(
+        _tool_call("search_notes", query="leadership"),
+        AIMessage(content="note search is offline, so I cannot quote any note"),
+    )
+    events = list(run_turn(graph, "who shows leadership?", _THREAD))
+
+    result = _one(events, "tool_result")
+    assert "note search is unavailable" in result["content"]
+    assert result["data"]["notes"] == []
+    assert _LEAK not in json.dumps(events)
+    assert _of_type(events, "retry") == []
+    assert _of_type(events, "security_event") == []
+    assert _one(events, "done")["status"] == STATUS_OK
+
+
+def test_a_turn_that_calls_two_tools_answers_both_calls(build):
+    """Multi-call turns work: every call is announced, run and closed with its own result."""
+    graph, llm = build(
+        _tool_calls(
+            ("get_stats", {"metric": "avg", "column": "salary"}),
+            ("detect_anomalies", {"column": "salary"}),
+        ),
+        AIMessage(content="the average is skewed by one outlier"),
+    )
+    events = list(run_turn(graph, "average salary and any outliers?", _THREAD))
+
+    _closed(events)
+    assert [event["tool"] for event in _of_type(events, "tool_call")] == [
+        "get_stats",
+        "detect_anomalies",
+    ]
+    results = _of_type(events, "tool_result")
+    assert [result["tool"] for result in results] == ["get_stats", "detect_anomalies"]
+    assert results[1]["data"]["anomalies"]
+    assert _one(events, "done")["status"] == STATUS_OK
+    assert sum(1 for message in llm.seen[-1] if message.type == "tool") == 2
+
+
+def test_thinking_markup_never_becomes_the_answer(build):
+    """A model that thinks out loud in <think> tags has that text held back, split or not."""
+    graph, _ = build(
+        AIMessage(content=f"<think>the user wants a count</think>acme has {_ACME_ROWS} employees"),
+        chunked=True,
+    )
+    events = list(run_turn(graph, "how many employees?", _THREAD))
+
+    assert _text(events) == f"acme has {_ACME_ROWS} employees"
+    assert _one(events, "done")["answer"] == f"acme has {_ACME_ROWS} employees"
+    assert "think" not in json.dumps(events)
+
+
+def test_a_tool_call_written_as_plain_text_is_parsed_instead_of_answered(build):
+    """Markup the model wrote instead of a real call becomes the call, never the answer."""
+    written = json.dumps({"name": "get_stats", "arguments": {"metric": "avg", "column": "salary"}})
+    graph, _ = build(
+        AIMessage(content=f"<tool_call>{written}</tool_call>"),
+        AIMessage(content="the average salary is 1060"),
+        chunked=True,
+    )
+    events = list(run_turn(graph, "average salary?", _THREAD))
+
+    call = _one(events, "tool_call")
+    assert call["tool"] == "get_stats"
+    assert call["args"] == {"metric": "avg", "column": "salary"}
+    _closed(events)
+    assert _one(events, "done")["answer"] == "the average salary is 1060"
+    assert "tool_call>" not in _text(events)
+
+
+def test_unreadable_markup_is_dropped_rather_than_presented_as_prose(build):
+    """A tool call this graph cannot read is not an answer either; the turn says it has none."""
+    graph, _ = build(AIMessage(content="<tool_call>{not json at all}</tool_call>"), chunked=True)
+    events = list(run_turn(graph, "average salary?", _THREAD))
+
+    assert _of_type(events, "tool_call") == []
+    assert "tool_call" not in _text(events)
+    done = _one(events, "done")
+    assert done["status"] == STATUS_OK
+    assert done["answer"] == "I could not produce an answer to that."
+
+
 def test_a_second_turn_on_one_thread_sees_the_first(build, checkpointer):
     """The checkpointer carries the whole first turn - question, tool result and answer."""
     graph, llm = build(
@@ -540,8 +758,8 @@ def test_the_retry_budget_resets_between_turns(build, checkpointer, tuned):
     assert _one(second, "done")["status"] == STATUS_GAVE_UP
 
 
-def test_replay_returns_the_exchanges_in_order_without_the_tool_internals(build, checkpointer):
-    """Two turns replay as four messages: each question and the answer it got, nothing between."""
+def test_replay_keeps_what_was_said_and_leaves_the_tool_internals_out(build, checkpointer):
+    """Replay carries every word either side said, including the preamble to a tool call."""
     answer = f"acme has {_ACME_ROWS} employees"
     graph, _ = build(
         _tool_call("query_db", sql="SELECT COUNT(*) AS n FROM employees"),
@@ -555,10 +773,12 @@ def test_replay_returns_the_exchanges_in_order_without_the_tool_internals(build,
     replayed = thread_messages(checkpointer, _THREAD)
     assert [(message.role, message.content) for message in replayed] == [
         (ROLE_USER, "how many employees?"),
+        (ROLE_ASSISTANT, "calling query_db"),
         (ROLE_ASSISTANT, answer),
         (ROLE_USER, "are you sure?"),
         (ROLE_ASSISTANT, "the same six, yes"),
     ]
+    assert all("SELECT" not in message.content for message in replayed)
 
 
 def test_replay_is_keyed_by_thread_and_empty_for_one_never_chatted_in(build, checkpointer):
@@ -577,7 +797,7 @@ def test_replay_carries_the_refusal_the_graph_composed_itself(build, checkpointe
     events = list(run_turn(graph, "read the schema table", _THREAD))
 
     replayed = thread_messages(checkpointer, _THREAD)
-    assert [message.role for message in replayed] == [ROLE_USER, ROLE_ASSISTANT]
+    assert [message.role for message in replayed] == [ROLE_USER, ROLE_ASSISTANT, ROLE_ASSISTANT]
     assert replayed[-1].content == _one(events, "done")["answer"]
 
 
