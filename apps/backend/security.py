@@ -16,6 +16,8 @@ The allowlist, applied to model-generated SQL parsed in the sqlite dialect:
   in that reference's own scope; schema-qualified names and table functions are refused
 - at least one reference to employees, so an approved query always reads the scoped table
 - no forbidden function by name: loading extensions or reaching the filesystem
+- no bound parameter of any style, since layer 4a counts placeholders to prove the tenant
+  binding applied and a parameter the model wrote itself would shift that count
 
 CTE shadowing: a CTE named employees is refused outright, even with an innocuous body.
 Layer 3 rewrites every employees reference into a tenant-filtered subquery, so both layers
@@ -32,6 +34,12 @@ agent probe the boundary. SQL that does not parse, or that parses to an expressi
 instead of a statement (a fenced answer, a bare word), is an honest error worth a retry.
 Nesting deep enough to exhaust the stack is refused as a violation rather than raised as a
 crash, so hostile input always leaves this layer as an explicit verdict.
+
+A bare parameter is the one honest error found inside a query that parses: the model wrote
+? or :name where a literal belongs. It is refused as retryable so the agent rewrites it,
+and the check runs last, after every terminal rule, so a hostile query that also carries a
+parameter stays terminal and buys no retry to probe with. Layer 4a still counts
+placeholders structurally as the fail-closed backstop.
 """
 
 import sqlglot
@@ -74,6 +82,9 @@ _STATEMENT_NODES = (
 
 _NON_SELECT_ROOTS = (*_STATEMENT_NODES, exp.SetOperation)
 
+# Every parameter style the sqlite dialect parses: ? and :name are Placeholder, @name is Parameter.
+_PARAMETER_NODES = (exp.Placeholder, exp.Parameter)
+
 
 class QueryRejected(Exception):
     """A refused query: reason is the audit-log text, retryable marks an honest error."""
@@ -111,6 +122,7 @@ def _validate(sql: str) -> exp.Select:
     _reject_nested_statements(root)
     _reject_forbidden_functions(root)
     _check_table_references(root)
+    _reject_parameters(root)
     return root
 
 
@@ -142,6 +154,14 @@ def _reject_forbidden_functions(root: exp.Select) -> None:
         for name in (func.name, func.sql_name()):
             if name and name.lower() in FORBIDDEN_FUNCTIONS:
                 raise QueryRejected(f"function {name} is not allowed", retryable=False)
+
+
+def _reject_parameters(root: exp.Select) -> None:
+    """Refuse a bound parameter the model wrote, as a retryable nudge to inline the value."""
+    if next(root.find_all(*_PARAMETER_NODES), None) is not None:
+        raise QueryRejected(
+            "parameters are not supported - write literal values inline", retryable=True
+        )
 
 
 def _check_table_references(root: exp.Select) -> None:

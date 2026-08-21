@@ -299,11 +299,24 @@ def test_an_interpolated_tenant_filter_is_refused_even_though_it_scopes_correctl
     assert caught.value.kind == "rewrite_not_applied"
 
 
-def test_a_placeholder_in_the_generated_sql_is_refused(execute):
-    """An unbound ? would shift which value the engine binds where, so the counts must agree."""
+def test_a_placeholder_in_the_generated_sql_is_refused(monkeypatch, execute):
+    """An unbound ? would shift which value the engine binds where, so the counts must agree.
+
+    Layer 2 rejects a placeholder first as a retryable honest error (issue #45); standing that
+    one rule down leaves layers 3 and 4a to prove the structural backstop still fails closed.
+    """
+    monkeypatch.setattr(db, "validate_sql", lambda sql: sqlglot.parse_one(sql, dialect="sqlite"))
     with pytest.raises(SecurityViolation) as caught:
         execute("SELECT * FROM employees WHERE name = ?")
     assert caught.value.kind == "rewrite_not_applied"
+
+
+def test_a_placeholder_is_refused_as_retryable_before_it_reaches_the_backstop(execute):
+    """Layer 2 turns the model's own ? into a retry it can fix, not a terminal refusal."""
+    with pytest.raises(QueryRejected) as caught:
+        execute("SELECT * FROM employees WHERE name = ?")
+    assert caught.value.retryable is True
+    assert "literal values inline" in caught.value.reason
 
 
 def test_the_structural_check_refuses_a_rewrite_bound_to_another_tenant(monkeypatch, execute):
