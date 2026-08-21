@@ -20,7 +20,7 @@
     "max_scan_rows": 5000
   },
   "agent": {
-    "model": "",
+    "model": "huihui_ai/qwen3-abliterated:30b-a3b",
     "embed_model": "nomic-embed-text",
     "max_tool_retries": 3
   },
