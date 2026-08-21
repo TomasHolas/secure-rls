@@ -53,6 +53,7 @@ const RATE_DECIMALS = 1;
 const BOTTOM_SLACK = 24;
 const PHASE_PILL = {
   gave_up: { tone: "warn", label: "gave up after retries" },
+  cut_short: { tone: "warn", label: "stopped at its turn limit" },
   blocked: { tone: "danger", label: "blocked by a security layer" },
   failed: { tone: "danger", label: "failed before answering" },
 } as const;

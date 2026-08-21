@@ -38,12 +38,14 @@ from dataclasses import asdict, dataclass, field, replace
 import jwt
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.messages import HumanMessage
 
 import app
 from agent import STATUS_FAILED, Message
 from app import (
     REFRESHED_TOKEN_HEADER,
     ModelEndpointError,
+    bounded_model,
     cached_capabilities,
     create_app,
     thinking_checker,
@@ -371,6 +373,32 @@ def test_only_a_model_that_declares_thinking_is_asked_to_think():
 
     assert thinks(CHAT_MODELS[0]) is True
     assert thinks(CHAT_MODELS[1]) is False
+
+
+def test_the_turn_model_carries_the_configured_generation_bounds():
+    """The client the turn runs on is bounded, and by the runtime knobs rather than by a constant.
+
+    `num_predict` and `num_ctx` are the parameter names langchain-ollama 1.1.0 forwards as Ollama
+    request options; left unset each falls back to whatever the endpoint decides, which is the
+    unbounded generation of issue #83 (OWASP LLM10).
+    """
+    bounds = runtime().agent
+    client = bounded_model("http://model.example:11434", CHAT_MODELS[0], reasoning=False)
+
+    assert client.num_predict == bounds.max_output_tokens
+    assert client.num_ctx == bounds.context_window
+    assert client.model == CHAT_MODELS[0]
+
+
+def test_the_generation_bounds_reach_the_endpoint_as_request_options():
+    """The two bounds are not just set on the client: they ride in the options Ollama reads."""
+    bounds = runtime().agent
+    client = bounded_model("http://model.example:11434", CHAT_MODELS[0], reasoning=False)
+
+    options = client._chat_params([HumanMessage(content=QUESTION)])["options"]
+
+    assert options["num_predict"] == bounds.max_output_tokens
+    assert options["num_ctx"] == bounds.context_window
 
 
 def test_no_model_is_asked_to_think_when_the_configuration_turns_it_off(monkeypatch):

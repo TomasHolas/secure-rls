@@ -75,10 +75,17 @@ the production app is built on first access to the module attribute `app`, which
 `uvicorn app:app` resolves.
 
 Stream termination (ADR 0012 as amended). `POST /chat` always ends in one `done` frame. The
-agent composes `ok`, `blocked` and `gave_up`; a run that breaks before it can - an unreachable
-model endpoint, a recursion limit - is closed here with `status: "failed"` and the reason in
-`answer`, instead of a body that simply stops and leaves the reader waiting. The reason is
-generic on purpose: the exception is logged server-side, never streamed.
+agent composes `ok`, `blocked`, `gave_up` and `cut_short`; a run that breaks before it can - an
+unreachable model endpoint - is closed here with `status: "failed"` and the reason in `answer`,
+instead of a body that simply stops and leaves the reader waiting. The reason is generic on
+purpose: the exception is logged server-side, never streamed.
+
+Bounded generation (ADR 0011 as amended). The model client this module builds carries the two
+generation bounds a turn cannot set for itself: `agent.max_output_tokens` as Ollama's
+`num_predict` and `agent.context_window` as its `num_ctx`. They belong here because this is the
+module that owns the client - the graph is handed a model, never an endpoint - and they are the
+resource half of the per-turn budget whose other half (the wall-clock deadline and the
+tool-round cap) the graph enforces.
 
 Startup indexing (ADR 0010 as amended). `create_app` builds the note vector store before it
 serves anything, idempotently - a store that already holds notes is left alone, so only an empty
@@ -228,6 +235,24 @@ class Conversation:
     messages: list[Message]
 
 
+def bounded_model(base_url: str, model: str, *, reasoning: bool) -> ChatOllama:
+    """The turn's model client with its generation bounded (ADR 0011 as amended, OWASP LLM10).
+
+    `num_predict` caps what one call may generate and `num_ctx` sizes the context it generates
+    into; langchain-ollama forwards both as Ollama request `options` (verified against 1.1.0).
+    Unset, each falls back to the endpoint's own default - which is how one hostile prompt was
+    able to generate for forty minutes, and why these are `runtime.json` knobs rather than
+    something the endpoint decides for us.
+    """
+    return ChatOllama(
+        base_url=base_url,
+        model=model,
+        reasoning=reasoning,
+        num_predict=runtime().agent.max_output_tokens,
+        num_ctx=runtime().agent.context_window,
+    )
+
+
 def ollama_chat_runner(base_url: str, thinking: Callable[[str], bool]) -> ChatRunner:
     """The production runner: ChatOllama plus the tenant's graph over the SQLite checkpointer."""
 
@@ -238,7 +263,7 @@ def ollama_chat_runner(base_url: str, thinking: Callable[[str], bool]) -> ChatRu
         with SqliteSaver.from_conn_string(str(CHECKPOINT_DB_PATH)) as checkpointer:
             graph = build_agent(
                 tenant_id,
-                ChatOllama(base_url=base_url, model=model, reasoning=thinking(model)),
+                bounded_model(base_url, model, reasoning=thinking(model)),
                 checkpointer,
                 embedder=OllamaEmbed(base_url),
                 model_id=model,

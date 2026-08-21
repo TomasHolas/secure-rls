@@ -96,10 +96,12 @@ export interface RetryEvent {
 }
 
 /**
- * How a turn ended. The agent composes the first three; `failed` is the API's terminal
- * frame for a run that broke before it could answer, with the reason in `answer`.
+ * How a turn ended. The agent composes the first four - `cut_short` is a turn one of its
+ * per-turn bounds stopped, its time limit or its tool-round cap (ADR 0011 as amended) - and
+ * `failed` is the API's terminal frame for a run that broke before it could answer, with the
+ * reason in `answer`.
  */
-export type TurnStatus = "ok" | "blocked" | "gave_up" | "failed";
+export type TurnStatus = "ok" | "blocked" | "gave_up" | "cut_short" | "failed";
 
 /**
  * How a turn ended and what it cost: the summed usage of its model calls and the wall-clock

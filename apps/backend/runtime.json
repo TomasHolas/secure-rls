@@ -23,6 +23,10 @@
     "model": "huihui_ai/qwen3-abliterated:30b-a3b",
     "embed_model": "nomic-embed-text",
     "max_tool_retries": 3,
+    "max_tool_iterations": 6,
+    "max_output_tokens": 4096,
+    "context_window": 16384,
+    "turn_deadline_s": 120.0,
     "thinking": true,
     "duration_decimals": 2
   },
