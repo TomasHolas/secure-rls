@@ -204,6 +204,32 @@
 .data-table td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 .data-table-note { margin: var(--space-2) 0 0; color: var(--fg-4); font-size: var(--text-xs); }
 
+/* ---------------- Markdown body ---------------- */
+/* KB's .markdown-body rules verbatim: the Markdown brick's output, whatever wraps it.
+   white-space: normal undoes an outer pre-wrap so rendered blocks control their own spacing. */
+.markdown-body, .markdown-body p, .markdown-body li { white-space: normal; }
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+.markdown-body p { font-size: var(--text-md); line-height: var(--leading-loose); color: var(--fg-2); margin: 0 0 var(--space-4); }
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 { font-weight: 650; color: var(--fg-1); line-height: var(--leading-normal); margin: var(--space-5) 0 var(--space-3); }
+.markdown-body h1, .markdown-body h2 { font-size: var(--text-lg); }
+.markdown-body h3, .markdown-body h4 { font-size: var(--text-md); }
+.markdown-body ul, .markdown-body ol { margin: 0 0 var(--space-4); padding-left: 1.4em; display: flex; flex-direction: column; gap: var(--space-2); }
+.markdown-body li { font-size: var(--text-md); line-height: var(--leading-normal); color: var(--fg-2); }
+.markdown-body li::marker { color: var(--fg-4); }
+.markdown-body a { color: var(--fg-brand); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--fg-brand) 35%, transparent); }
+.markdown-body a:hover { border-bottom-color: var(--fg-brand); }
+.markdown-body strong { color: var(--fg-1); font-weight: 650; }
+.markdown-body em { font-style: italic; }
+.markdown-body code { font-family: var(--font-mono); font-size: 0.88em; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 1px 5px; }
+.markdown-body pre { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4); overflow-x: auto; margin: 0 0 var(--space-4); }
+.markdown-body pre code { background: none; border: none; padding: 0; font-size: var(--text-sm); }
+.markdown-body blockquote { margin: 0 0 var(--space-4); padding-left: var(--space-4); border-left: 3px solid var(--border-default); color: var(--fg-3); }
+.markdown-body table { border-collapse: collapse; margin: 0 0 var(--space-4); font-size: var(--text-sm); }
+.markdown-body th, .markdown-body td { border: 1px solid var(--border-subtle); padding: var(--space-2) var(--space-3); text-align: left; }
+.markdown-body th { background: var(--bg-surface); color: var(--fg-1); font-weight: 600; }
+.markdown-body hr { border: none; border-top: 1px solid var(--border-subtle); margin: var(--space-5) 0; }
+
 /* ---------------- Chat transcript ---------------- */
 /* KB has no chat UI: the bubble is its .ask-answer card plus the icon + caps role header
    it puts above an answer, the composer is its .bm-composer. */

@@ -20,6 +20,7 @@ components/
   Icon.tsx         <Icon name="..." /> — Google Material Symbols only
   Pill.tsx         the status chip — tones neutral/accent/ok/warn/danger
   CodeBlock.tsx    labelled monospace block with a copy control (SQL lives here)
+  Markdown.tsx     render a markdown string as sanitized GFM HTML
   DataTable.tsx    backend rows as a compact, visually capped table
   TenantPill.tsx   the identity chip (tenant + user) in the header slot
   forms/           FormCard, TextField (+ index barrel)
@@ -92,6 +93,19 @@ the generated and the executed statement are rendered by the same code in the sa
 register — two of these in a `.sql-pair` grid IS the side-by-side money shot of the demo.
 The copy control hides itself where `navigator.clipboard` is unavailable (insecure
 origin, jsdom) instead of offering a button that cannot work.
+
+### Markdown
+
+```tsx
+<Markdown>{turn.answer}</Markdown>
+```
+
+The KB brick, ported: `react-markdown` with `remark-gfm` (tables, lists, strikethrough)
+and `rehype-sanitize`, links forced to `target="_blank" rel="noopener noreferrer"`. The
+sanitize plugin is the point — the string is model-written, so raw HTML in it is stripped
+rather than rendered. Styled by `.markdown-body` in `app.css` (KB's rules verbatim), which
+also resets an outer `white-space: pre-wrap`, so wrap it in a `markdown-body` element.
+Assistant answers are its only caller today.
 
 ### DataTable
 
@@ -229,9 +243,11 @@ either. Fixtures for all three kinds live in `charts/Chart.test.tsx` (`npm test`
 
 One turn's bubble: an icon + caps role header over the text, `user` a compact tinted
 bubble and `assistant` the full-width card the trace and the status pills hang under.
-The text is **plain text with `white-space: pre-wrap`, no markdown** — anything the
-model might mark up (SQL, tables, charts) already has its own brick in the trace, where
-it is the real thing rather than model-written markup.
+The **assistant** body goes through the `Markdown` brick (answers arrive in markdown, so
+`**bold**` must not show literally); the **user** body stays plain text with
+`white-space: pre-wrap` — it is what the person typed, never interpreted as markup.
+Structured output the model might describe (SQL, tables, charts) still has its own brick
+in the trace, where it is the real thing rather than model-written markup.
 
 ### chat/Composer
 
@@ -299,6 +315,10 @@ back to the text the model itself read, so no result ever renders as nothing.
   verbatim; the components are new so this app has one owner per form shape.
 - `TenantPill` is new (KB has no tenants); its visual is KB's `.category-pill` shape
   with the accent color instead of the per-category one.
+- `Markdown` drops KB's `[[wiki-link]]` chips, `[n]` citation chips and the `inline`
+  mode: this app has no records to link and no cited sources, so all three branches
+  would be dead code. The library set and pins are KB's (`react-markdown`,
+  `remark-gfm`, `rehype-sanitize`); the `.markdown-body` CSS is verbatim.
 - KB bricks not ported because nothing composes them yet (Modal, ConfirmDialog,
   atoms, ...). Port from KB when a view needs one — never hand-roll an equivalent.
 - **KB has no chat UI at all** (no bubbles, no streaming text, no composer beyond its
