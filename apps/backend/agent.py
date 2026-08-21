@@ -67,6 +67,13 @@ for the same failure, so a trace event and its audit row can be read side by sid
 A stream that raises rather than ending in `done` is a transport failure - an unreachable
 model endpoint, or LangGraph's recursion limit tripping on a model that loops - and is the
 caller's to render; this module does not dress a broken run up as an answer.
+
+Replay (`thread_messages`). The checkpointer that gives the graph its multi-turn memory is
+also the transcript store: this module owns the knowledge of what it holds, so reading it back
+lives here rather than in the API layer. What comes back is the conversation as the two
+participants would recall it - user questions and the assistant answers they got - and nothing
+else. The tool-call internals the trace shows live are deliberately not replayable (ADR 0012:
+the live trace IS the transport, not a replay).
 """
 
 import inspect
@@ -108,6 +115,9 @@ RESPOND = "respond"
 STATUS_OK = "ok"
 STATUS_BLOCKED = "blocked"
 STATUS_GAVE_UP = "gave_up"
+
+ROLE_USER = "user"
+ROLE_ASSISTANT = "assistant"
 
 LAYER_VALIDATION = "query validation"
 LAYER_ENFORCEMENT = "scoped execution"
@@ -270,6 +280,14 @@ TraceEvent = (
 )
 
 
+@dataclass(frozen=True)
+class Message:
+    """One replayed exchange: who spoke and what they said, as the API serves it."""
+
+    role: str
+    content: str
+
+
 class _PendingCall(TypedDict):
     """One tool call after validation: normalized arguments, or the reason it may not run."""
 
@@ -409,8 +427,48 @@ def run_turn(graph: CompiledStateGraph, question: str, thread_id: str) -> Iterat
         pending=[],
         outcomes=[],
     )
-    config = {"configurable": {"thread_id": thread_id}}
-    yield from graph.stream(state, config, stream_mode="custom")
+    yield from graph.stream(state, _thread_config(thread_id), stream_mode="custom")
+
+
+def thread_messages(checkpointer: BaseCheckpointSaver, thread_id: str) -> list[Message]:
+    """Replay one thread's user questions and assistant answers, oldest first, from its state.
+
+    The checkpointer keeps the graph's whole `messages` channel - the human turns, the assistant
+    turns that asked for tools, the tool results those calls returned, and the assistant turns
+    that finally answered. Replay keeps only the last kind and the human turns: the tool-call
+    internals are the live trace's job (ADR 0012), and a reload is not a re-run. An assistant
+    message carrying tool calls is such an internal even when it also carries text, so it is
+    dropped; a message with no text (an empty model turn the graph then answered for) has
+    nothing to show and is dropped too.
+
+    A thread the checkpointer has never seen - never chatted in, or already deleted - replays as
+    an empty list, not an error; whether the thread may be read at all is the caller's check.
+    Messages carry no timestamp because the checkpoint stores none per message; the thread's
+    `created` in the registry is the only time the API can honestly report.
+    """
+    saved = checkpointer.get_tuple(_thread_config(thread_id))
+    if saved is None:
+        return []
+    replayed = []
+    for message in saved.checkpoint.get("channel_values", {}).get("messages", ()):
+        role = _replay_role(message)
+        if role and message.text:
+            replayed.append(Message(role=role, content=message.text))
+    return replayed
+
+
+def _thread_config(thread_id: str) -> dict[str, dict[str, str]]:
+    """The LangGraph config that keys graph state and checkpoints to one conversation."""
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def _replay_role(message: AnyMessage) -> str:
+    """The transcript role of a stored message, or "" for the internals replay leaves out."""
+    if isinstance(message, HumanMessage):
+        return ROLE_USER
+    if isinstance(message, AIMessage) and not message.tool_calls:
+        return ROLE_ASSISTANT
+    return ""
 
 
 @dataclass(frozen=True)

@@ -41,12 +41,15 @@ from agent import (
     LAYER_VALIDATION,
     REASON,
     RESPOND,
+    ROLE_ASSISTANT,
+    ROLE_USER,
     STATUS_BLOCKED,
     STATUS_GAVE_UP,
     STATUS_OK,
     VALIDATE,
     build_agent,
     run_turn,
+    thread_messages,
 )
 from runtime import runtime
 
@@ -535,6 +538,47 @@ def test_the_retry_budget_resets_between_turns(build, checkpointer, tuned):
     assert _one(first, "retry")["attempt"] == 1
     assert _one(second, "retry")["attempt"] == 1
     assert _one(second, "done")["status"] == STATUS_GAVE_UP
+
+
+def test_replay_returns_the_exchanges_in_order_without_the_tool_internals(build, checkpointer):
+    """Two turns replay as four messages: each question and the answer it got, nothing between."""
+    answer = f"acme has {_ACME_ROWS} employees"
+    graph, _ = build(
+        _tool_call("query_db", sql="SELECT COUNT(*) AS n FROM employees"),
+        AIMessage(content=answer),
+        AIMessage(content="the same six, yes"),
+        checkpointer=checkpointer,
+    )
+    list(run_turn(graph, "how many employees?", _THREAD))
+    list(run_turn(graph, "are you sure?", _THREAD))
+
+    replayed = thread_messages(checkpointer, _THREAD)
+    assert [(message.role, message.content) for message in replayed] == [
+        (ROLE_USER, "how many employees?"),
+        (ROLE_ASSISTANT, answer),
+        (ROLE_USER, "are you sure?"),
+        (ROLE_ASSISTANT, "the same six, yes"),
+    ]
+
+
+def test_replay_is_keyed_by_thread_and_empty_for_one_never_chatted_in(build, checkpointer):
+    """A thread the checkpointer never saw replays as nothing - not an error, not a neighbor."""
+    graph, _ = build(AIMessage(content="first answer"), checkpointer=checkpointer)
+    list(run_turn(graph, "first question", _THREAD))
+
+    assert thread_messages(checkpointer, "thread-2") == []
+
+
+def test_replay_carries_the_refusal_the_graph_composed_itself(build, checkpointer):
+    """A blocked turn replays with the deterministic refusal standing in as the answer."""
+    graph, _ = build(
+        _tool_call("query_db", sql="SELECT * FROM sqlite_master"), checkpointer=checkpointer
+    )
+    events = list(run_turn(graph, "read the schema table", _THREAD))
+
+    replayed = thread_messages(checkpointer, _THREAD)
+    assert [message.role for message in replayed] == [ROLE_USER, ROLE_ASSISTANT]
+    assert replayed[-1].content == _one(events, "done")["answer"]
 
 
 def test_the_system_prompt_carries_the_schema_card_and_own_tenant_samples(build):
