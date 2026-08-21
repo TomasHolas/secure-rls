@@ -15,9 +15,14 @@
  * A stream that ends without a `done` event, or a request the API refuses, is shown as a
  * failed turn: the agent contract says a broken run is the caller's to render, and this
  * view never dresses one up as an answer.
+ *
+ * `.chat-log` is the view's only scroll container and this view follows its bottom only
+ * while the reader is already there: a token arrives many times a second and each one can
+ * relayout the transcript, so yanking a reader who scrolled up would make the answer
+ * unreadable. Sending is the one explicit "take me back down" and re-pins it.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ChatMessage, Composer, ModelPicker, TracePanel } from "../components/chat";
 import { EmptyState, Page, PageHeader } from "../components/layout";
@@ -30,6 +35,8 @@ import type { Turn } from "../lib/trace";
 
 const STREAM_CUT = "The stream ended before the turn finished.";
 const GENERIC_FAILURE = "The turn failed. Try again.";
+/** How far off the bottom still counts as "at the bottom": a rounding-error gap, not a scroll. */
+const BOTTOM_SLACK = 24;
 const PHASE_PILL = {
   gave_up: { tone: "warn", label: "gave up after retries" },
   blocked: { tone: "danger", label: "blocked by a security layer" },
@@ -50,8 +57,22 @@ export function ChatView({
   const [model, setModel] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [streaming, setStreaming] = useState(false);
-  const bottom = useRef<HTMLDivElement>(null);
+  const log = useRef<HTMLDivElement>(null);
   const openKey = useRef(chatKey);
+  const following = useRef(true);
+  const queued = useRef(false);
+
+  // One scroll per animation frame, however many tokens landed in it.
+  const follow = useCallback(() => {
+    if (!following.current || queued.current) return;
+    queued.current = true;
+    requestAnimationFrame(() => {
+      queued.current = false;
+      const el = log.current;
+      // Re-checked: the reader can scroll away between scheduling this frame and running it.
+      if (el && following.current) el.scrollTop = el.scrollHeight;
+    });
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -72,17 +93,18 @@ export function ChatView({
 
   useEffect(() => {
     openKey.current = chatKey;
+    following.current = true;
     setTurns([]);
     setStreaming(false);
   }, [chatKey]);
 
-  useEffect(() => {
-    bottom.current?.scrollIntoView?.({ block: "end" });
-  }, [turns, replay]);
+  useEffect(follow, [turns, replay, follow]);
 
   async function send(message: string): Promise<void> {
     const key = chatKey;
     const mine = () => openKey.current === key;
+    // Asking is the explicit request to come back down, whatever the reader was reading.
+    following.current = true;
     setTurns((previous) => [...previous, startTurn(message)]);
     setStreaming(true);
     try {
@@ -129,7 +151,14 @@ export function ChatView({
         }
       />
 
-      <div className="chat-log">
+      <div
+        ref={log}
+        className="chat-log"
+        onScroll={(event) => {
+          const el = event.currentTarget;
+          following.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK;
+        }}
+      >
         {turns.length === 0 && replay.length === 0 ? (
           <EmptyState icon="message-circle">
             Ask a question to start. Try an aggregate ("average salary per department"), a
@@ -152,7 +181,6 @@ export function ChatView({
         {turns.map((turn, index) => (
           <TurnView key={index} turn={turn} live={streaming && index === turns.length - 1} />
         ))}
-        <div ref={bottom} />
       </div>
 
       <Composer onSend={(message) => void send(message)} disabled={streaming} />

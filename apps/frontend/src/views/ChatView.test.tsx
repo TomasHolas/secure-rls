@@ -27,6 +27,8 @@ const EXECUTED =
   "SELECT department, AVG(salary) AS avg FROM (SELECT * FROM employees WHERE tenant_id = ?) GROUP BY department";
 const QUESTION = "average salary per department";
 const MODEL = "qwen3:8b";
+const VIEWPORT = 400;
+const CONTENT = 2000;
 
 const ANSWERING = [
   { type: "node_start", node: "reason" },
@@ -69,10 +71,53 @@ function sseResponse(events: unknown[]): Response {
   return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
 }
 
+/** A stream fed one event at a time, so a test can act between two tokens of one turn. */
+function manualStream() {
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start: (c) => {
+      controller = c;
+    },
+  });
+  return {
+    response: new Response(body),
+    push: (event: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)),
+    close: () => controller.close(),
+  };
+}
+
+/** Animation frames the test drives itself, so "one scroll per frame" is observable. */
+function heldFrames() {
+  const pending: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => pending.push(cb));
+  return { pending, flush: () => pending.splice(0).forEach((cb) => cb(0)) };
+}
+
 function ask(question = QUESTION): void {
   const box = screen.getByLabelText("Question");
   fireEvent.change(box, { target: { value: question } });
   fireEvent.keyDown(box, { key: "Enter" });
+}
+
+/**
+ * jsdom has no layout, so the log reports no scrollable box at all. This makes one element
+ * behave like a scroller - a fixed viewport over taller content, with a settable scrollTop -
+ * which is what the follow-the-bottom rule reads.
+ */
+function fakeScroller(container: HTMLElement) {
+  const el = container.querySelector(".chat-log") as HTMLElement;
+  let top = 0;
+  Object.defineProperty(el, "clientHeight", { configurable: true, get: () => VIEWPORT });
+  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => CONTENT });
+  Object.defineProperty(el, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (value: number) => {
+      top = value;
+    },
+  });
+  return { el, top: () => top };
 }
 
 function renderChat(props: Partial<ChatViewProps> = {}) {
@@ -104,6 +149,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("the chat view", () => {
@@ -271,5 +317,74 @@ describe("the chat view", () => {
     renderChat();
 
     expect(await screen.findByText("model list unavailable")).toBeTruthy();
+  });
+});
+
+describe("following the bottom of the log", () => {
+  /** The log, a held frame queue and a drained mount frame: the state every case starts from. */
+  async function readingAtTheBottom(props: Partial<ChatViewProps> = { threadId: "t1" }) {
+    const frames = heldFrames();
+    const { view } = await renderReady(props);
+    const log = fakeScroller(view.container);
+    frames.flush();
+    return { frames, log };
+  }
+
+  it("scrolls the log to the bottom when a question is sent", async () => {
+    const { frames, log } = await readingAtTheBottom();
+
+    ask();
+    await screen.findByText("Engineering leads at 91000.");
+    frames.flush();
+
+    expect(log.top()).toBe(CONTENT);
+  });
+
+  it("leaves a reader who scrolled up where they are while tokens keep landing", async () => {
+    const stream = manualStream();
+    api.openChatStream.mockResolvedValue(stream.response);
+    const { frames, log } = await readingAtTheBottom();
+
+    ask();
+    stream.push({ type: "token", text: "first" });
+    await screen.findByText("first");
+    frames.flush();
+    expect(log.top()).toBe(CONTENT);
+
+    log.el.scrollTop = 200;
+    fireEvent.scroll(log.el);
+    stream.push({ type: "token", text: " and second" });
+    await screen.findByText("first and second");
+    frames.flush();
+
+    expect(log.top()).toBe(200);
+    stream.close();
+  });
+
+  it("comes back to the bottom when that reader asks the next question", async () => {
+    const { frames, log } = await readingAtTheBottom();
+    log.el.scrollTop = 200;
+    fireEvent.scroll(log.el);
+
+    ask();
+    await screen.findByText("Engineering leads at 91000.");
+    frames.flush();
+
+    expect(log.top()).toBe(CONTENT);
+  });
+
+  it("scrolls once per frame however many tokens land in it", async () => {
+    const stream = manualStream();
+    api.openChatStream.mockResolvedValue(stream.response);
+    const { frames, log } = await readingAtTheBottom();
+
+    ask();
+    for (const text of ["a", "b", "c", "d"]) stream.push({ type: "token", text });
+    await screen.findByText("abcd");
+
+    expect(frames.pending).toHaveLength(1);
+    frames.flush();
+    expect(log.top()).toBe(CONTENT);
+    stream.close();
   });
 });

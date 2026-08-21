@@ -5,20 +5,22 @@
    selectors. The shell is a persistent top header + scrolling main column. */
 
 /* ============================ App shell ============================ */
+/* KB's shell grows with the document; a chat needs the opposite, so this one is exactly the
+   viewport and every scroll happens inside it. Header and rail are flex furniture measured by
+   layout, which is what lets the rail span the page without anyone guessing a header height. */
 .app {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  /* The sticky header's own height: what the sticky rail below it has to clear. */
-  --header-h: 59px;
+  height: 100vh;
+  height: 100dvh;
 }
 
-/* The rail and the main column sit side by side under the header. */
+/* The rail and the main column sit side by side under the header, both full height. */
 .app-body { display: flex; flex: 1; align-items: stretch; min-height: 0; }
 
 /* ---------------- Header (persistent) ---------------- */
 .header {
-  position: sticky; top: 0; z-index: 20;
+  flex: 0 0 auto; z-index: 20;
   display: flex; align-items: center; gap: var(--space-6);
   padding: var(--space-4) var(--space-8);
   background: color-mix(in srgb, var(--bg-page) 80%, transparent);
@@ -45,16 +47,22 @@
 .header-actions { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
 
 /* ---------------- Main column ---------------- */
-.main { flex: 1; min-width: 0; background: var(--bg-page); position: relative; }
+/* A column so a full-height view (the chat) can claim the region with flex: 1; its own
+   overflow catches the views that are taller than the shell instead (the login card). */
+.main {
+  flex: 1; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; overflow-y: auto;
+  background: var(--bg-page); position: relative;
+}
 
 /* ---------------- Conversation rail (shell sidebar) ---------------- */
 /* KB's .wiki-sidebar rail, lifted into the shell: in KB every view owns its own rail and
-   none of them collapse, but the thread list outlives the page it sits next to. The column
-   is sticky with its own scroll, so a long history never scrolls the transcript. */
+   none of them collapse, but the thread list outlives the page it sits next to. The column is
+   a full-height flex item with its own scroll, so a long history never scrolls the transcript
+   and the divider runs the whole page rather than stopping under the last thread. */
 .sidebar {
-  position: sticky; top: var(--header-h); align-self: flex-start;
   box-sizing: border-box; flex: 0 0 272px; width: 272px;
-  max-height: calc(100vh - var(--header-h)); overflow-y: auto;
+  min-height: 0; overflow-y: auto;
   display: flex; flex-direction: column; gap: var(--space-2);
   padding: var(--space-5) var(--space-4);
   border-right: 1px solid var(--border-subtle);
@@ -295,9 +303,22 @@
 /* ---------------- Chat transcript ---------------- */
 /* KB has no chat UI: the bubble is its .ask-answer card plus the icon + caps role header
    it puts above an answer, the composer is its .bm-composer. */
-.chat { display: flex; flex-direction: column; gap: var(--space-6); max-width: 1100px; }
+/* The one full-height page: it claims the main column, and inside it the head and the
+   composer are fixed furniture around the log. Centred, so the slack of a wide viewport is
+   split rather than all piling up on the right. */
+.chat {
+  display: flex; flex-direction: column; gap: var(--space-6);
+  flex: 1; min-height: 0;
+  box-sizing: border-box; width: 100%; max-width: 1100px; margin: 0 auto;
+}
 .chat-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-4); }
-.chat-log { display: flex; flex-direction: column; gap: var(--space-8); }
+/* The single scroll container of the view. The padding keeps the last message clear of the
+   composer's top border, which is also what a scroll-to-bottom lands on. */
+.chat-log {
+  display: flex; flex-direction: column; gap: var(--space-8);
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding-bottom: var(--space-4);
+}
 /* States what a reopened thread does and does not carry: exchanges yes, past traces no. */
 .chat-replay-note { margin: 0; color: var(--fg-4); font-size: var(--text-xs); line-height: var(--leading-normal); }
 .chat-turn { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -308,12 +329,18 @@
 .msg-assistant { box-shadow: var(--shadow-sm); }
 .msg-assistant .msg-role { color: var(--fg-brand); }
 .msg-text { margin: 0; font-size: var(--text-md); line-height: var(--leading-loose); color: var(--fg-1); white-space: pre-wrap; }
+/* pre-wrap is for the question the person typed; the rendered answer controls its own
+   whitespace. Same specificity as .msg-text and later in the file, so the markdown body wins
+   on the wrapper too, not only on the blocks .markdown-body p/li already reach. */
+.msg-text.markdown-body { white-space: normal; }
 .msg-pending { margin: 0; color: var(--fg-4); font-size: var(--text-sm); }
 .msg-footer { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-4); }
 .msg .form-error { margin-top: 0; }
 
 /* ---------------- Composer ---------------- */
-.composer { position: sticky; bottom: 0; display: flex; flex-direction: column; background: var(--bg-page); border-top: 1px solid var(--border-subtle); padding: var(--space-4) 0; }
+/* Pinned to the bottom by being the last item of the full-height chat column - outside the
+   scroll container, so it can never sit over the message a scroll-to-bottom just revealed. */
+.composer { flex: 0 0 auto; display: flex; flex-direction: column; background: var(--bg-page); border-top: 1px solid var(--border-subtle); padding: var(--space-4) 0; }
 .composer-label { margin-bottom: var(--space-2); font-size: var(--text-2xs); font-weight: 600; letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--fg-4); }
 .composer-input { width: 100%; box-sizing: border-box; background: var(--bg-surface-2); border: 1px solid var(--border-default); border-radius: var(--radius-md); color: var(--fg-1); font-family: var(--font-body); font-size: var(--text-md); line-height: var(--leading-normal); padding: var(--space-3) var(--space-4); resize: vertical; outline: none; transition: border-color var(--dur-fast) var(--ease-out); }
 /* Single clean ring: the accent border, with the global :focus-visible shadow suppressed. */
@@ -361,7 +388,12 @@
 
 /* The demo's money shot: what the model wrote next to what the scoped executor ran
    (KB's two-column .usage-grid, collapsing on a narrow viewport). */
-.sql-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); align-items: start; }
+/* Stretched cells plus a shared floor under the code: the two statements differ in length by
+   the scoping rewrite, and a pair of unequal cards reads as two findings instead of one
+   comparison. */
+.sql-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); align-items: stretch; }
+.sql-pair > .code-block { display: flex; flex-direction: column; }
+.sql-pair .code-block-body { flex: 1; min-height: calc(4 * var(--leading-normal) * var(--text-xs)); }
 @media (max-width: 920px) { .sql-pair { grid-template-columns: 1fr; } }
 
 /* ---------------- Modal + confirm dialog ---------------- */

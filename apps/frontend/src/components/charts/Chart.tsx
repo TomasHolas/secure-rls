@@ -5,7 +5,7 @@
  * register) — the KB uses no chart library, so neither does this (ADR 0006).
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import { EmptyState } from "../layout/EmptyState";
 
@@ -39,7 +39,9 @@ export function Chart({ spec, height = 260 }: { spec: ChartSpec; height?: number
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(FALLBACK_WIDTH);
 
-  useEffect(() => {
+  // Measured before the first paint: a frame at FALLBACK_WIDTH would reflow the plot under
+  // a reader mid-stream, and the chart arrives exactly while tokens are still landing.
+  useLayoutEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
     const measure = () => setWidth(el.getBoundingClientRect().width || FALLBACK_WIDTH);
@@ -51,7 +53,7 @@ export function Chart({ spec, height = 260 }: { spec: ChartSpec; height?: number
 
   if (spec.data.length === 0) {
     return (
-      <div className="chart">
+      <div className="chart" style={{ minHeight: height }}>
         <div className="chart-title">{spec.title}</div>
         <EmptyState icon="bar-chart">No data to plot.</EmptyState>
       </div>
@@ -74,7 +76,7 @@ export function Chart({ spec, height = 260 }: { spec: ChartSpec; height?: number
   const tickEvery = Math.ceil(spec.data.length / MAX_X_TICKS);
 
   return (
-    <div ref={wrapRef} className="chart">
+    <div ref={wrapRef} className="chart" style={{ minHeight: height }}>
       <div className="chart-title">{spec.title}</div>
       <svg width="100%" height={height} role="img" aria-label={spec.title}>
         {yTicks.map((v) => (
