@@ -18,6 +18,26 @@ export class ApiError extends Error {
   }
 }
 
+/** The `GET /models` body: the endpoint's live ids plus the id the server defaults to. */
+export interface ModelList {
+  models: string[];
+  default: string;
+}
+
+/** A conversation row as `POST /conversations` returns it. */
+export interface Thread {
+  thread_id: string;
+  title: string;
+  created: string;
+}
+
+/** One `POST /chat` turn. No tenant field exists to send: the server takes it from the JWT. */
+export interface ChatRequest {
+  thread_id: string;
+  message: string;
+  model?: string;
+}
+
 /** POST /login. Returns the raw JWT; throws ApiError(401) on bad credentials. */
 export async function login(username: string, password: string): Promise<string> {
   const response = await fetch(`${API_BASE_URL}/login`, {
@@ -34,6 +54,51 @@ export async function login(username: string, password: string): Promise<string>
   const body = (await response.json()) as { token?: unknown };
   if (typeof body.token !== "string") throw new ApiError(response.status, "Login failed. Try again.");
   return body.token;
+}
+
+/** GET /models: the endpoint's live model ids plus the configured default (ADR 0005). */
+export async function listModels(): Promise<ModelList> {
+  const response = await apiFetch("/models");
+  if (!response.ok) throw new ApiError(response.status, "The model list is unavailable.");
+  const body = (await response.json()) as { models?: unknown; default?: unknown };
+  const models = Array.isArray(body.models) ? body.models.filter(isString) : [];
+  return { models, default: isString(body.default) ? body.default : models[0] ?? "" };
+}
+
+/** POST /conversations: registers a thread titled with the first user message. */
+export async function createConversation(title: string): Promise<Thread> {
+  const response = await apiFetch("/conversations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!response.ok) throw new ApiError(response.status, "Could not start a conversation.");
+  return (await response.json()) as Thread;
+}
+
+/**
+ * POST /chat: the SSE response with its body still unread. The caller streams it through
+ * `lib/sse.ts`; this module only opens it and turns a refusal into an ApiError.
+ */
+export async function openChatStream(request: ChatRequest): Promise<Response> {
+  const response = await apiFetch("/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) throw new ApiError(response.status, chatFailure(response.status));
+  return response;
+}
+
+function chatFailure(status: number): string {
+  if (status === 400) return "The selected model is not available on the endpoint any more.";
+  if (status === 404) return "This conversation no longer exists. Start a new one.";
+  if (status === 502) return "The model endpoint is unavailable.";
+  return "The chat request failed. Try again.";
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
 }
 
 /** Authenticated fetch: attaches the Bearer token, turns a 401 into a logout. */
