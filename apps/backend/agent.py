@@ -46,6 +46,24 @@ Trace invariant. Every `tool_call` this module announces is closed by exactly on
 per announced call, `execute_tool` one outcome per pending call, and `audit` one event per
 outcome. Because `_run` cannot raise, that chain cannot break halfway and leave a step running.
 
+Per-turn bounds (ADR 0011 as amended; OWASP LLM10, unbounded consumption). The retry budget
+bounds one call, not the turn: without more, a model that never decides to stop consumes the
+endpoint for as long as it likes. Four bounds close that, all `runtime.json` knobs. Two sit on
+the model client, set by the app wiring that owns it: `agent.max_output_tokens` and
+`agent.context_window` (Ollama's `num_predict` and `num_ctx`). Two live here:
+`agent.turn_deadline_s`, a wall-clock budget read off the same `perf_counter` start the duration is
+measured from and checked both inside the model stream - the only place a runaway generation can be
+interrupted - and again at `audit`; and `agent.max_tool_iterations`, how many tool rounds one turn
+may take at all, which is a different question from how often one call may be retried.
+LangGraph's own step budget is derived from that cap, so the cap is what stops a looping turn and
+the recursion limit cannot fire first.
+
+A bound that trips ends the turn at `respond` with status `cut_short` and a reason naming which
+bound it was. Neither trace invariant bends for it: a turn cut inside the model stream has
+announced no call yet (and the calls that model turn was writing are dropped rather than run, so
+the stored history keeps no call without a result), and a turn cut at `audit` has already settled
+every call of the round it finished.
+
 A missing note index is neither a model error nor a security refusal: `search_notes` states that
 retrieval is unavailable as its own tool result (ADR 0010 as amended), so the model can report it
 in the same turn instead of the turn spending its retry budget on an operator condition.
@@ -62,11 +80,12 @@ stands, and `app.py` serializes them onto the SSE stream verbatim:
      "reason": str}
     {"type": "retry", "id": str, "tool": str, "layer": str, "kind": str, "attempt": int,
      "max_attempts": int, "reason": str}
-    {"type": "done", "status": "ok|blocked|gave_up|failed", "answer": str, "model": str,
-     "input_tokens": int, "output_tokens": int, "duration_s": float}
+    {"type": "done", "status": "ok|blocked|gave_up|cut_short|failed", "answer": str,
+     "model": str, "input_tokens": int, "output_tokens": int, "duration_s": float}
 
 `token` carries user-visible text exactly once: the model's own output as it streams out of
-`reason`, or the deterministic refusal composed by `respond` when no model produced it. Control
+`reason`, or the deterministic text `respond` composes - a refusal, a give-up, the notice that a
+bound cut the turn short, which is the one piece that can follow words the model said. Control
 markup a model writes as plain text is never output as prose: a `<tool_call>` region is parsed
 into a real call instead of shown, and a `<think>` region is reasoning, which leaves on its own
 event (ADR 0012 as amended).
@@ -81,9 +100,9 @@ belongs to the live trace exactly like a tool call does.
 this turn made (`stream_mode="custom"` means the raw chunks never leave this module, so usage is
 read off the message `reason` accumulated) and the wall-clock seconds `run_turn` measured.
 
-Of the four `done` statuses this graph composes three - `ok`, `blocked`, `gave_up`. `failed` is
-the API layer's terminal frame for a run that broke before `respond` (ADR 0012 as amended); it
-never originates here, and its name is exported so both sides share one vocabulary.
+Of the five `done` statuses this graph composes four - `ok`, `blocked`, `gave_up`, `cut_short`.
+`failed` is the API layer's terminal frame for a run that broke before `respond` (ADR 0012 as
+amended); it never originates here, and its name is exported so both sides share one vocabulary.
 
 `data` on a `tool_result` is keyed by what the tool returns - `generated_sql` (query_db only,
 next to the `executed_sql` the scoped rewrite produced), `columns`, `rows`, `total_count`,
@@ -97,10 +116,10 @@ an engine control such as the query timeout - and "scoped execution" for a `Secu
 raised by the scoping, egress or retrieval checks. `kind` mirrors `db.py`'s own audit verdict
 for the same failure, so a trace event and its audit row can be read side by side.
 
-A stream that raises rather than ending in `done` is a transport failure - an unreachable
-model endpoint, or LangGraph's recursion limit tripping on a model that loops - and is the
-caller's to render; this module does not dress a broken run up as an answer. A failing tool is
-no longer one of those cases: it is a retry inside the turn.
+A stream that raises rather than ending in `done` is a transport failure - an unreachable model
+endpoint - and is the caller's to render; this module does not dress a broken run up as an answer.
+Two cases that used to belong here no longer do: a failing tool is a retry inside the turn, and a
+model that loops or never stops is a `cut_short` turn rather than a tripped recursion limit.
 
 Replay (`thread_messages`). The checkpointer that gives the graph its multi-turn memory is
 also the transcript store: this module owns the knowledge of what it holds, so reading it back
@@ -158,6 +177,7 @@ EVENT_DONE = "done"
 STATUS_OK = "ok"
 STATUS_BLOCKED = "blocked"
 STATUS_GAVE_UP = "gave_up"
+STATUS_CUT_SHORT = "cut_short"
 STATUS_FAILED = "failed"
 
 ROLE_USER = "user"
@@ -197,6 +217,11 @@ _PARSED_CALL_PREFIX = "parsed-"
 _CALL_NAME = "name"
 _CALL_ARGS = ("arguments", "args")
 
+# One tool round costs four super-steps: reason, validate, execute_tool, audit.
+_STEPS_PER_ROUND = 4
+# A turn closes with the model turn that answers and the respond node that reports it.
+_CLOSING_STEPS = 2
+
 _ERROR_PREFIX = "error: "
 _NO_ROWS = "no rows matched"
 _NO_ANOMALIES = "no rows lie beyond their group's Tukey fences"
@@ -225,6 +250,12 @@ _REFUSAL = (
 _GAVE_UP = (
     "I could not complete that after {attempts} attempts. The last error was: {reason}. Try "
     "narrowing the question or asking it a different way."
+)
+_DEADLINE_SPENT = "the turn reached its {seconds:g}s time limit"
+_ROUNDS_SPENT = "the turn used all {rounds} of its tool rounds"
+_CUT_SHORT = (
+    "I stopped this turn early: {reason}. Nothing is left running and the conversation is "
+    "unaffected - ask again, or narrow the question so it takes fewer steps."
 )
 
 _PROMPT = """You are the data analyst for the {tenant} tenant. You answer questions about one \
@@ -402,6 +433,7 @@ class AgentState(TypedDict):
 
     messages: Annotated[list[AnyMessage], add_messages]
     attempts: int
+    iterations: int
     status: str
     halt_reason: str
     halt_layer: str
@@ -410,6 +442,14 @@ class AgentState(TypedDict):
     started: float
     input_tokens: int
     output_tokens: int
+
+
+@dataclass(frozen=True)
+class _ModelTurn:
+    """One model response: the message the graph stores, and whether a bound cut it short."""
+
+    message: AIMessage
+    cut: bool
 
 
 @dataclass(frozen=True)
@@ -520,11 +560,15 @@ def run_turn(graph: CompiledStateGraph, question: str, thread_id: str) -> Iterat
     """Run one turn on thread_id, yielding the trace events in the order they happen.
 
     The turn's clock starts here, in the state: this is the only place that knows where one turn
-    begins, and `respond` reads it back to report the duration on the terminal `done` event.
+    begins, `respond` reads it back to report the duration on the terminal `done` event, and the
+    wall-clock deadline of ADR 0011 is measured from the same reading rather than from a second
+    clock. The tool-round counter starts here for the same reason - both bounds are per turn, not
+    per thread, so a long conversation never inherits an exhausted budget.
     """
     state = AgentState(
         messages=[HumanMessage(content=question)],
         attempts=0,
+        iterations=0,
         status=STATUS_OK,
         halt_reason="",
         halt_layer="",
@@ -534,7 +578,7 @@ def run_turn(graph: CompiledStateGraph, question: str, thread_id: str) -> Iterat
         input_tokens=0,
         output_tokens=0,
     )
-    yield from graph.stream(state, _thread_config(thread_id), stream_mode="custom")
+    yield from graph.stream(state, _turn_config(thread_id), stream_mode="custom")
 
 
 def thread_messages(checkpointer: BaseCheckpointSaver, thread_id: str) -> list[Message]:
@@ -583,6 +627,21 @@ def _thread_config(thread_id: str) -> dict[str, dict[str, str]]:
     return {"configurable": {"thread_id": thread_id}}
 
 
+def _turn_config(thread_id: str) -> dict[str, object]:
+    """The config one turn runs under: its thread, and a step budget the iteration cap sets."""
+    return {**_thread_config(thread_id), "recursion_limit": _recursion_limit()}
+
+
+def _recursion_limit() -> int:
+    """LangGraph's step budget for one turn, sized so the tool-iteration cap always trips first.
+
+    Left at its default, the recursion limit is a second, hidden bound: it would raise on a
+    looping model before the cap could end the turn cleanly, and a raise is a `failed` frame with
+    no answer rather than the `cut_short` one this graph composes.
+    """
+    return runtime().agent.max_tool_iterations * _STEPS_PER_ROUND + _CLOSING_STEPS
+
+
 def _replay_role(message: AnyMessage) -> str:
     """The transcript role of a stored message, or "" for the internals replay leaves out."""
     if isinstance(message, HumanMessage):
@@ -605,20 +664,33 @@ class _Nodes:
         """Ask the model what to do next, streaming its reasoning and its text as they arrive.
 
         A turn can enter this node several times - once per tool round - so what the calls cost
-        is summed in the state rather than read off the last one.
+        is summed in the state rather than read off the last one. A model that streams past the
+        turn's deadline is cut off here and the turn is marked `cut_short`: the generation is the
+        one thing no later node can interrupt, so the bound has to be enforced where it runs.
         """
         writer = get_stream_writer()
         writer(NodeStartEvent(type="node_start", node=REASON))
-        message = self._call_model(state["messages"], writer)
-        spent_in, spent_out = _tokens(message)
-        return {
-            "messages": [message],
+        bounds = runtime().agent
+        turn = self._call_model(
+            state["messages"], writer, state["started"] + bounds.turn_deadline_s
+        )
+        spent_in, spent_out = _tokens(turn.message)
+        update: dict[str, object] = {
+            "messages": [turn.message],
             "input_tokens": state["input_tokens"] + spent_in,
             "output_tokens": state["output_tokens"] + spent_out,
         }
+        if turn.cut:
+            update["status"] = STATUS_CUT_SHORT
+            update["halt_reason"] = _DEADLINE_SPENT.format(seconds=bounds.turn_deadline_s)
+        return update
 
     def validate(self, state: AgentState) -> dict[str, object]:
-        """Announce every tool call the model wrote and judge its arguments before anything runs."""
+        """Announce every tool call the model wrote and judge its arguments before anything runs.
+
+        This node runs once per tool round, so it is where the round is counted against the
+        turn's iteration cap - one round however many calls the model asked for at once.
+        """
         writer = get_stream_writer()
         writer(NodeStartEvent(type="node_start", node=VALIDATE))
         pending = []
@@ -627,7 +699,7 @@ class _Nodes:
             args = dict(call.get("args") or {})
             writer(ToolCallEvent(type="tool_call", id=identifier, tool=call["name"], args=args))
             pending.append(self._check(identifier, call["name"], args))
-        return {"pending": pending}
+        return {"pending": pending, "iterations": state["iterations"] + 1}
 
     def execute_tool(self, state: AgentState) -> dict[str, object]:
         """Run the approved calls and answer every one of them, so the history stays well formed."""
@@ -643,7 +715,13 @@ class _Nodes:
         return {"messages": messages, "outcomes": outcomes, "pending": []}
 
     def audit(self, state: AgentState) -> dict[str, object]:
-        """Record every outcome and apply the two-tier retry policy (ADR 0011)."""
+        """Record every outcome, apply the retry policy, then check the turn's bounds (ADR 0011).
+
+        The order is the precedence: a security refusal and a spent retry budget say more about
+        the turn than a bound does, so they keep their statuses, and a turn that merely ran out of
+        time or tool rounds ends `cut_short`. Every outcome of this round is recorded either way -
+        the bounds are checked after the trace is complete, never instead of it.
+        """
         writer = get_stream_writer()
         writer(NodeStartEvent(type="node_start", node=AUDIT))
         limit = runtime().agent.max_tool_retries
@@ -659,24 +737,34 @@ class _Nodes:
             return _halt(attempts, STATUS_BLOCKED, halted["error"], halted["layer"])
         if retryable and attempts >= limit:
             return _halt(attempts, STATUS_GAVE_UP, retryable[0]["error"], retryable[0]["layer"])
+        spent = _spent_bound(state)
+        if spent:
+            return _halt(attempts, STATUS_CUT_SHORT, spent, "")
         return _halt(attempts, STATUS_OK, "", "")
 
     def respond(self, state: AgentState) -> dict[str, object]:
         """Close the turn: the model's answer, or the text this graph composes when there is none.
 
-        Text this node composes - a refusal, a give-up after a spent budget, an empty model turn -
-        is streamed as a token and written to the history as a plain `AIMessage`, so the turn is
-        persisted and replays like any other instead of leaving the thread ending on a tool call.
+        Text this node composes - a refusal, a give-up after a spent budget, a cut-short notice,
+        an empty model turn - is streamed as a token and written to the history as a plain
+        `AIMessage`, so the turn is persisted and replays like any other instead of leaving the
+        thread ending on a tool call.
+
+        A cut-short turn is the one case where composed text follows words the model did say: the
+        answer stops mid-sentence, and a reader who reopens the thread would otherwise have to
+        guess why. So the notice is added rather than substituted, and the separator between them
+        is streamed too, or the notice would arrive glued to the last word.
         """
         writer = get_stream_writer()
         writer(NodeStartEvent(type="node_start", node=RESPOND))
         status = state["status"]
-        spoken = state["messages"][-1].text if status == STATUS_OK else ""
-        answer = spoken or _fallback(state)
+        spoken = _spoken(state)
+        composed = _composed(state, spoken)
+        answer = "\n\n".join(part for part in (spoken, composed) if part)
         messages = []
-        if not spoken:
-            writer(TokenEvent(type="token", text=answer))
-            messages = [AIMessage(content=answer)]
+        if composed:
+            writer(TokenEvent(type="token", text=f"\n\n{composed}" if spoken else composed))
+            messages = [AIMessage(content=composed)]
         writer(
             DoneEvent(
                 type="done",
@@ -691,24 +779,35 @@ class _Nodes:
         return {"messages": messages}
 
     def _call_model(
-        self, history: Sequence[AnyMessage], writer: Callable[[object], None]
-    ) -> BaseMessage:
+        self, history: Sequence[AnyMessage], writer: Callable[[object], None], deadline: float
+    ) -> _ModelTurn:
         """Stream one model response, split into the reasoning it shows and the prose it says.
 
         Both channels a model can reason on end up in the same split: the `reasoning_content` a
         thinking-capable endpoint streams beside the answer, and a `<think>` region a smaller
         model writes into the text. Only prose is accumulated as the answer.
+
+        The loop is also where the turn's deadline is enforced: a model still generating past it
+        is left after the chunk that crossed it, with everything it had already said kept. Reading
+        the clock per chunk is what makes the bound real - a check anywhere else would only run
+        once the generation it is meant to stop had finished.
         """
         markup = _Markup()
         accumulated: BaseMessage | None = None
         prose = ""
+        cut = False
         for chunk in self.llm.stream([self.system, *history]):
             _emit(_thought(chunk), writer)
             if chunk.text:
                 prose += _emit(markup.feed(chunk.text), writer)
             accumulated = chunk if accumulated is None else accumulated + chunk
+            if perf_counter() >= deadline:
+                cut = True
+                break
         prose += _emit(markup.flush(), writer)
-        return _assistant(accumulated, prose.strip(), markup.calls)
+        return _ModelTurn(
+            message=_assistant(accumulated, prose.strip(), markup.calls, cut), cut=cut
+        )
 
     def _check(self, identifier: str, name: str, args: dict[str, object]) -> _PendingCall:
         """Judge one call: a known tool, and arguments its schema accepts as written."""
@@ -763,13 +862,30 @@ class _Nodes:
 
 
 def _route_after_reason(state: AgentState) -> str:
-    """A model turn either asks for tools or is the answer."""
+    """A model turn either asks for tools or is the answer; a turn the deadline cut answers."""
+    if state["status"] != STATUS_OK:
+        return RESPOND
     return VALIDATE if getattr(state["messages"][-1], "tool_calls", None) else RESPOND
 
 
 def _route_after_audit(state: AgentState) -> str:
-    """Go back to the model unless this turn was halted by a refusal or a spent budget."""
+    """Go back to the model unless a refusal, a spent budget or a spent bound halted the turn."""
     return REASON if state["status"] == STATUS_OK else RESPOND
+
+
+def _spent_bound(state: AgentState) -> str:
+    """Which per-turn bound this turn has reached, or "" while it still has room (ADR 0011).
+
+    The rounds are counted in the state and the deadline is read off the same `perf_counter`
+    start the turn is timed from, so both bounds are answered from one place instead of being
+    re-derived by every node that might want to stop.
+    """
+    bounds = runtime().agent
+    if state["iterations"] >= bounds.max_tool_iterations:
+        return _ROUNDS_SPENT.format(rounds=bounds.max_tool_iterations)
+    if perf_counter() >= state["started"] + bounds.turn_deadline_s:
+        return _DEADLINE_SPENT.format(seconds=bounds.turn_deadline_s)
+    return ""
 
 
 def _halt(attempts: int, status: str, reason: str, layer: str) -> dict[str, object]:
@@ -837,6 +953,30 @@ def _failed(
         layer=layer,
         kind=kind,
     )
+
+
+def _spoken(state: AgentState) -> str:
+    """What the model itself said this turn, when the turn ends on a model turn at all.
+
+    A turn the deadline cut mid-answer keeps the words it already streamed - the reader watched
+    those tokens arrive, so composing over them would contradict the screen. A turn a bound cut
+    between rounds ends on a tool message instead, which is not an answer and never becomes one.
+    """
+    if state["status"] not in (STATUS_OK, STATUS_CUT_SHORT):
+        return ""
+    last = state["messages"][-1]
+    return last.text if isinstance(last, AIMessage) else ""
+
+
+def _composed(state: AgentState, spoken: str) -> str:
+    """The text `respond` adds itself, or "" when the model's own answer stands on its own.
+
+    A cut-short turn always gets its notice, whether or not the model got words out first: the
+    bound that stopped the turn is the one thing the model cannot have said.
+    """
+    if state["status"] == STATUS_CUT_SHORT:
+        return _CUT_SHORT.format(reason=state["halt_reason"])
+    return "" if spoken else _fallback(state)
 
 
 def _fallback(state: AgentState) -> str:
@@ -956,16 +1096,22 @@ def _elapsed(started: float) -> float:
     return round(perf_counter() - started, runtime().agent.duration_decimals)
 
 
-def _assistant(streamed: BaseMessage | None, prose: str, payloads: Sequence[str]) -> AIMessage:
+def _assistant(
+    streamed: BaseMessage | None, prose: str, payloads: Sequence[str], cut: bool
+) -> AIMessage:
     """The model turn as the graph stores it: prose without markup, and the calls it asked for.
 
     What the call cost travels with the message, because the node that made it is not the node
     that reports it; the reasoning does not, because the trace owns it and the history does not.
+
+    A turn the deadline cut keeps its words and drops its calls. They were never announced, so
+    running them anyway would be work past the bound, and storing them would leave an assistant
+    message whose calls have no results - a history the next turn would read as malformed.
     """
-    calls = list(getattr(streamed, "tool_calls", None) or [])
+    calls = [] if cut else list(getattr(streamed, "tool_calls", None) or [])
     return AIMessage(
         content=prose,
-        tool_calls=calls or _parsed_calls(payloads),
+        tool_calls=calls or ([] if cut else _parsed_calls(payloads)),
         usage_metadata=getattr(streamed, "usage_metadata", None),
     )
 

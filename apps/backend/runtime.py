@@ -42,11 +42,21 @@ class AnalyticsConfig:
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Agent and model knobs (ADRs 0005, 0011, 0012)."""
+    """Agent and model knobs (ADRs 0005, 0011, 0012).
+
+    Four of them bound one turn (ADR 0011 as amended, OWASP LLM10). `max_tool_retries` bounds
+    the retries of a single call and `max_tool_iterations` the number of tool rounds the turn may
+    take at all; `turn_deadline_s` is its wall-clock budget; `max_output_tokens` and
+    `context_window` are the model client's own generation bounds (`num_predict` / `num_ctx`).
+    """
 
     model: str
     embed_model: str
     max_tool_retries: int
+    max_tool_iterations: int
+    max_output_tokens: int
+    context_window: int
+    turn_deadline_s: float
     thinking: bool
     duration_decimals: int
 

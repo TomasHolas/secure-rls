@@ -321,6 +321,22 @@ describe("edge cases", () => {
     expect(turn).toMatchObject({ phase: "gave_up", answer: "I gave up." });
   });
 
+  it("keeps the partial answer of a turn a per-turn bound cut short", () => {
+    const notice = "I stopped this turn early: the turn reached its 120s time limit.";
+    const turn = fold([
+      { type: "node_start", node: "reason" },
+      { type: "token", text: "Engineering averages " },
+      { type: "token", text: `\n\n${notice}` },
+      done("cut_short", `Engineering averages\n\n${notice}`),
+    ]);
+
+    expect(turn).toMatchObject({
+      phase: "cut_short",
+      answer: `Engineering averages \n\n${notice}`,
+      error: null,
+    });
+  });
+
   it("states the backend's own diagnosis when the turn ends in a failed frame", () => {
     const diagnosis = "The turn ended in a server-side failure before an answer was composed.";
     const turn = fold([

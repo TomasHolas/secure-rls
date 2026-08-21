@@ -65,12 +65,24 @@ SPA inventing its own explanation for a failure it was never told about.
   announced, whatever the tool did (ADR 0011 as amended), so no step can be
   left running and no outcome can be attributed to the wrong call.
 - **Every stream ends in exactly one `done` frame.** Its `status` vocabulary is
-  binding: `ok | blocked | gave_up | failed`. The agent composes the first
-  three; `failed` is the API layer's own terminal frame for a run that broke
-  before the graph could answer — an unreachable model endpoint, a recursion
-  limit — with the reason in `answer` and the exception left in the server log,
-  never on the wire (OWASP generic-error guidance). A body that simply stops is
-  therefore a client-side error path, not a server behavior the SPA must model.
+  binding: `ok | blocked | gave_up | cut_short | failed` (`cut_short` added with
+  issue #83). The agent composes the first four; `failed` is the API layer's own
+  terminal frame for a run that broke before the graph could answer — an
+  unreachable model endpoint — with the reason in `answer` and the exception left
+  in the server log, never on the wire (OWASP generic-error guidance). A body
+  that simply stops is therefore a client-side error path, not a server behavior
+  the SPA must model.
+
+**`cut_short`: a turn one of its own bounds stopped (added with issue #83).**
+A per-turn wall-clock deadline or the tool-round cap of ADR 0011 ended the turn.
+It is deliberately not `failed`: nothing broke, the server is not in an unknown
+state, and the turn may well carry a partial answer — a runaway generation is cut
+after the words it already streamed, and those tokens stay the answer with the
+notice appended (streamed as its own token, so the reader sees it arrive, and
+persisted, so a reopened thread still explains why the answer stops
+mid-sentence). It is not `gave_up` either: no retry budget was spent and the
+model made no error. The SPA renders it as a warn pill, "stopped at its turn
+limit", beside the answer it did get.
 
 ### Conversations: full history sidebar, tenant-scoped
 
@@ -195,6 +207,10 @@ place that attaches the bearer token.
   claimed.
 - **Truncation chip**: the ADR 0007 truncation signal renders as a visible
   notice on the result table.
+- **Bound visibility (added with issue #83)**: a `cut_short` turn says so on a
+  pill and in the notice appended to its answer, naming which bound it hit. A
+  resource limit the product chose is stated as such, never rendered as a
+  failure or as an answer that merely happens to stop.
 - **Failure visibility (added with issue #66)**: a `failed` turn renders the
   reason the backend sent, not a fallback string the SPA made up. A frontend
   guess reads as a diagnosis to the viewer and cannot be right; the backend is

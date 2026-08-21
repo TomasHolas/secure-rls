@@ -53,10 +53,11 @@ export interface OrphanItem {
 export type TraceItem = NodeItem | CallItem | OrphanItem;
 
 /**
- * `streaming` until a `done` event lands. `failed` is a turn that never reached an answer -
- * the backend saying so in its terminal frame, or a stream this client could not read.
+ * `streaming` until a `done` event lands. `cut_short` is a turn a per-turn bound stopped, which
+ * may still carry the words the model got out before it. `failed` is a turn that never reached an
+ * answer - the backend saying so in its terminal frame, or a stream this client could not read.
  */
-export type TurnPhase = "streaming" | "ok" | "blocked" | "gave_up" | "failed";
+export type TurnPhase = "streaming" | "ok" | "blocked" | "gave_up" | "cut_short" | "failed";
 
 /** What the turn cost: the summed usage of its model calls and the seconds it ran. */
 export interface TurnUsage {

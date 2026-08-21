@@ -38,6 +38,59 @@ instead of callbacks around a black box.
   nothing is silently swallowed. Security exceptions keep their terminal
   classification: the catch-all sits after them, never in front.
 
+### Per-turn bounds (added after issue #83)
+
+The retry policy bounds one call. Nothing bounded the **turn**, and the M5 eval
+run (#29) showed what that costs: an injection prompt made the model generate
+more tokens in one turn than the first eighty questions combined, streaming for
+roughly forty minutes until its context filled. The data path was bounded all
+along — query timeout, `sqlite3_limit` caps, result-row cap (ADRs 0002/0007) —
+but the model path had no budget at all: no cap on what one call may generate,
+no wall-clock deadline, no cap on how many tool rounds a turn may take.
+
+This is **OWASP LLM10, unbounded consumption**, reached through **LLM01, prompt
+injection**. Worth saying plainly, including in the demo: nothing leaked. The
+four RLS layers held throughout the incident, zero foreign rows were returned,
+and no refusal was bypassed. It was a resource bound we had not set, never a
+failure of isolation — which is also why it belongs in this ADR as an
+availability decision rather than in ADR 0002 as a layer.
+
+Four bounds, all `runtime.json` knobs under `agent`, and each one answering a
+question the others cannot:
+
+| Knob | Value | Where it acts | Why this value |
+|---|---|---|---|
+| `max_output_tokens` | 4096 | Ollama `num_predict` on the model client | Roughly an order of magnitude above the longest answer the eval set needs, two orders below the runaway. Unset, the option is simply absent from the request and the endpoint's own default applies — which is what the incident ran under. |
+| `context_window` | 16384 | Ollama `num_ctx` on the model client | The value the M5 harness already runs with, where it is a *confirmed* mitigation: the same injection prompt terminates when the context fills instead of streaming on. It also fixes a quieter problem — langchain-ollama leaves `num_ctx` unset, so the endpoint default (2048) silently truncated the schema card plus tool results plus multi-turn memory. |
+| `turn_deadline_s` | 120 | The graph: inside the model stream, and again at `audit` | A normal turn on this endpoint is seconds to tens of seconds. Two minutes leaves room for a cold model load plus a few tool rounds, and bounds dead air in a live demo to about the length of one slide. |
+| `max_tool_iterations` | 6 | The graph: counted in `validate`, checked in `audit` | Real questions in the eval set need one to three rounds; six leaves headroom for a retry or two and still stops a model that has started looping. Distinct from `max_tool_retries` (3), which bounds retries **of one call** — a turn can burn rounds without a single retry. |
+
+Three properties make these defensible rather than arbitrary:
+
+- **The deadline is enforced where the generation runs.** The clock is read once
+  per streamed chunk inside the model call, because that generator is the one
+  thing no later node can interrupt: a check in a routing function would only
+  run after the runaway it is meant to stop had finished. It is read off the
+  same `perf_counter` start the turn's `duration_s` is measured from, so there
+  is one clock per turn, not two.
+- **LangGraph's recursion limit is derived from the iteration cap**, not left at
+  its default. Otherwise the recursion limit is a second, hidden bound that
+  raises first, and a raise is a `failed` frame with no answer instead of the
+  clean terminal frame the cap produces.
+- **A bound that trips is a first-class outcome, not a failure.** The turn ends
+  at `respond` with status `cut_short` (ADR 0012's vocabulary, amended) and a
+  reason naming which bound it was; the notice is *added* to whatever the model
+  had already said rather than replacing it, so a reader who reopens the thread
+  sees why the answer stops mid-sentence. Both ADR 0012 termination invariants
+  hold unchanged: a turn cut inside the model stream has announced no tool call
+  yet (and the calls that model turn was drafting are dropped rather than run,
+  so no stored call is left without a result), and a turn cut at `audit` has
+  already settled every call of the round it finished.
+
+Precedence when more than one thing ends a turn: a security refusal, then a
+spent retry budget, then a bound. A refusal and a give-up say more about the
+turn than "it ran out of room" does.
+
 ### Multi-turn memory
 
 LangGraph checkpointer keyed by a `thread_id` derived server-side from the
@@ -106,6 +159,13 @@ renderer.
 
 - The graph nodes give natural places for the audit log, the retry counter,
   and the security-event short-circuit.
+- A turn now has a worst case a reader can state: at most
+  `max_tool_iterations` tool rounds, at most `turn_deadline_s` seconds, at most
+  `max_output_tokens` generated per model call. A hostile prompt can waste that
+  budget and nothing beyond it.
+- The bounds are cheap in the normal case and only visible in the abnormal one,
+  but they are real limits: a genuinely long analytical answer can be cut, and
+  the fix for that is to raise the knob, not to remove the bound.
 - Structured tools (`get_stats`, `plot`, `detect_anomalies`) answer most demo
   questions with no generated SQL at all; `query_db` remains for free-form
   analytics — a defensible two-lane design.
@@ -115,6 +175,18 @@ renderer.
 
 - **Prebuilt ReAct agent** — one line, but audit hooks become callbacks and
   the LangGraph skill signal is weak.
+- **A context bound alone** (`num_ctx`, as the M5 harness runs it) — rejected as
+  insufficient, though it is the one mitigation already proven on this stack. It
+  bounds how far a single generation can run, but it is not a deadline and not
+  an iteration cap: a turn can still be slow inside its context, and a model
+  that keeps asking for tools never fills one.
+- **Killing the turn on the deadline** (close the stream, no terminal frame) —
+  rejected: it breaks the ADR 0012 termination invariants and leaves the SPA
+  inventing an explanation, which is exactly the failure issue #66 fixed.
+- **Leaving LangGraph's `recursion_limit` as the iteration bound** — rejected:
+  it raises rather than terminating cleanly, it counts super-steps rather than
+  tool rounds (so its meaning shifts whenever the graph gains a node), and it is
+  not a `runtime.json` knob.
 - **Model passes data to `plot`** — rejected: every charted number would be an
   LLM transcription, a correctness and trust regression.
 - **Z-score anomalies** — rejected for skewed salaries (normality assumption);
@@ -129,6 +201,18 @@ renderer.
   https://www.itl.nist.gov/div898/handbook/prc/section1/prc16.htm
 - OWASP LLM01 (deterministic validation of model output; treat the model as
   untrusted) — https://genai.owasp.org/llmrisk/llm01-prompt-injection/
+- OWASP LLM10, Unbounded Consumption (per-request resource limits, timeouts and
+  throttling as the mitigation) —
+  https://genai.owasp.org/llmrisk/llm102025-unbounded-consumption/
+- Ollama API options `num_predict` and `num_ctx` (the two generation bounds, and
+  their defaults when unset) —
+  https://github.com/ollama/ollama/blob/main/docs/modelfile.md#parameter
+- langchain-ollama `ChatOllama` (the parameter names verified empirically against
+  the installed 1.1.0: both are forwarded in the request `options`) —
+  https://python.langchain.com/docs/integrations/chat/ollama/
+- LangGraph `recursion_limit` (the step budget, and why it is derived here rather
+  than relied on) —
+  https://docs.langchain.com/oss/python/langgraph/graph-api#recursion-limit
 - OWASP Error Handling Cheat Sheet (generic messages outward, detail to the log
   only) —
   https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html
