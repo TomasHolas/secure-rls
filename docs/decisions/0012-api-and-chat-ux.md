@@ -20,6 +20,23 @@ log: `token`, `node_start`, `tool_call` (generated SQL / tool args),
 ReadableStream (browser `EventSource` cannot POST). Each event is rendered as
 it arrives — the live trace IS the transport, not a replay.
 
+**Two termination invariants (amended after issue #66).** The live pass showed
+what their absence costs: one tool raising an unexpected exception killed the
+response mid-flight, leaving every announced step at "running" forever and the
+SPA inventing its own explanation for a failure it was never told about.
+
+- **Every `tool_call` id is closed by exactly one of `tool_result`, `retry` or
+  `security_event`.** The agent guarantees it by answering for every call it
+  announced, whatever the tool did (ADR 0011 as amended), so no step can be
+  left running and no outcome can be attributed to the wrong call.
+- **Every stream ends in exactly one `done` frame.** Its `status` vocabulary is
+  binding: `ok | blocked | gave_up | failed`. The agent composes the first
+  three; `failed` is the API layer's own terminal frame for a run that broke
+  before the graph could answer — an unreachable model endpoint, a recursion
+  limit — with the reason in `answer` and the exception left in the server log,
+  never on the wire (OWASP generic-error guidance). A body that simply stops is
+  therefore a client-side error path, not a server behavior the SPA must model.
+
 ### Conversations: full history sidebar, tenant-scoped
 
 - Conversations persist server-side: a registry table (thread_id, user,
@@ -30,13 +47,19 @@ it arrives — the live trace IS the transport, not a replay.
   `DELETE /conversations/{id}`. Every access verifies the thread belongs to
   the authenticated user+tenant — the conversation store is a fifth
   tenant-scoped data path under the same identity layer (ADR 0002 L1).
-- Replay serves the exchanges only: the user's questions and the assistant's
-  answers, read back from the checkpointer in order. The tool-call internals a
-  turn streamed live (generated vs executed SQL, results, security events,
-  retries) are not replayable — consistent with the live trace being the
-  transport of that turn rather than stored content. Reopening a thread
-  therefore restores the conversation the server still remembers, never a
-  re-run of the reasoning behind it.
+- Replay serves what was said: the user's questions and the assistant's text,
+  read back from the checkpointer in order. The tool-call internals a turn
+  streamed live (generated vs executed SQL, results, security events, retries)
+  are not replayable — consistent with the live trace being the transport of
+  that turn rather than stored content. Reopening a thread therefore restores
+  the conversation the server still remembers, never a re-run of the reasoning
+  behind it.
+- **Amended after issue #66**: the text of an assistant turn that also asked
+  for tools is part of what was said and is replayed. Dropping the whole
+  message hid every partial and failed turn from the transcript while it stayed
+  in the graph's memory — so the model could refer to a turn the reader could
+  not see, which is exactly the information gap the model then filled with a
+  confident, false explanation. The calls themselves stay out; only the words do.
 
 ### Model picker (amended per ADR 0005)
 
@@ -89,6 +112,10 @@ place that attaches the bearer token.
   claimed.
 - **Truncation chip**: the ADR 0007 truncation signal renders as a visible
   notice on the result table.
+- **Failure visibility (added with issue #66)**: a `failed` turn renders the
+  reason the backend sent, not a fallback string the SPA made up. A frontend
+  guess reads as a diagnosis to the viewer and cannot be right; the backend is
+  the only party that knows what happened.
 - Generated vs executed SQL are displayed side by side in the trace — the
   layer-3 rewrite made visible.
 

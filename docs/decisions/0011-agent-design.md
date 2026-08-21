@@ -27,6 +27,16 @@ instead of callbacks around a black box.
   column, execution errors, malformed tool arguments. The error reason is fed
   back to the model so it can correct. Attempt budget is a `runtime.json`
   tunable.
+- **Unexpected tool failures retry too, on the same budget (amended after
+  issue #66)**: the tool invocation is wrapped in a catch-all, so an exception
+  no layer anticipated becomes a retry on a `tool execution` layer with kind
+  `tool_error` instead of escaping the graph and killing the turn. Two rules
+  keep it honest: the reason handed to the model names the failing tool and
+  nothing else — no path, no stack frame, no exception class (OWASP error
+  handling: no internal detail into an untrusted context, and the model is
+  untrusted by ADR 0002) — and the exception itself is logged server-side, so
+  nothing is silently swallowed. Security exceptions keep their terminal
+  classification: the catch-all sits after them, never in front.
 
 ### Multi-turn memory
 
@@ -94,5 +104,8 @@ renderer.
   https://www.itl.nist.gov/div898/handbook/prc/section1/prc16.htm
 - OWASP LLM01 (deterministic validation of model output; treat the model as
   untrusted) — https://genai.owasp.org/llmrisk/llm01-prompt-injection/
+- OWASP Error Handling Cheat Sheet (generic messages outward, detail to the log
+  only) —
+  https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html
 - ADRs 0002 (layers, audit), 0004 (evals), 0007 (result-size), 0008 (dataset
   distributions), 0010 (retrieval) in this repo
