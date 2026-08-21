@@ -2,7 +2,8 @@
   "dataset": {
     "seed": 42,
     "rows": 1000,
-    "tenant_split": { "acme": 0.45, "beta": 0.35, "gamma": 0.2 }
+    "tenant_split": { "acme": 0.45, "beta": 0.35, "gamma": 0.2 },
+    "poisoned_fraction": 0.015
   },
   "db": {
     "max_result_rows": 200,
