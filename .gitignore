@@ -5,4 +5,5 @@ __pycache__/
 *.db
 node_modules/
 dist/
+*.tsbuildinfo
 .DS_Store

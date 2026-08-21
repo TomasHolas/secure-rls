@@ -1,0 +1,160 @@
+/* =============================================================
+   Design tokens — copied VERBATIM from the knowledgebase repo
+   (knowledgebase/apps/frontend/src/styles/tokens.css), which stays
+   the tracking source of truth: KB's copy wins on divergence, and
+   changes belong there first (ADR 0006).
+
+   knowledgebase — design tokens
+   Dark only. Ink-on-black with the TH anteater brand green accent.
+   Locked choices baked in: accent #34a86a, multi category colours,
+   sans headings (--font-display = --font-body). No Fraunces, no
+   light theme, no theme toggling.
+   ============================================================= */
+
+/* ---------- Fonts (self-hosted) ---------- */
+@font-face { font-family:"Geist"; src:url("/fonts/Geist-400.woff2") format("woff2"); font-weight:400; font-style:normal; font-display:swap; }
+@font-face { font-family:"Geist"; src:url("/fonts/Geist-500.woff2") format("woff2"); font-weight:500; font-style:normal; font-display:swap; }
+@font-face { font-family:"Geist"; src:url("/fonts/Geist-600.woff2") format("woff2"); font-weight:600; font-style:normal; font-display:swap; }
+@font-face { font-family:"Geist"; src:url("/fonts/Geist-700.woff2") format("woff2"); font-weight:700; font-style:normal; font-display:swap; }
+@font-face { font-family:"Geist Mono"; src:url("/fonts/GeistMono-400.woff2") format("woff2"); font-weight:400; font-style:normal; font-display:swap; }
+@font-face { font-family:"Geist Mono"; src:url("/fonts/GeistMono-500.woff2") format("woff2"); font-weight:500; font-style:normal; font-display:swap; }
+/* Google Material Symbols (Outlined) — self-hosted subset of just the icons we use
+   (see components/Icon.tsx MATERIAL_SYMBOLS). Regenerate the woff2 when adding icons. */
+@font-face { font-family:"Material Symbols Outlined"; src:url("/fonts/material-symbols-subset.v2.woff2") format("woff2"); font-weight:400; font-style:normal; font-display:block; }
+.material-symbols-outlined {
+  font-family:"Material Symbols Outlined"; font-weight:normal; font-style:normal;
+  line-height:1; letter-spacing:normal; text-transform:none; display:inline-block;
+  white-space:nowrap; word-wrap:normal; direction:ltr; -webkit-font-feature-settings:"liga";
+  -webkit-font-smoothing:antialiased; flex-shrink:0;
+}
+
+:root {
+  /* ---------- Typography ---------- */
+  --font-body:    "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono:    "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* Locked choice: SANS headings — display maps to the body font. */
+  --font-display: var(--font-body);
+
+  --text-2xs:11px; --text-xs:12px; --text-sm:14px; --text-md:16px; --text-lg:19px;
+  --text-xl:23px; --text-2xl:28px; --text-3xl:34px; --text-4xl:44px; --text-5xl:58px; --text-6xl:76px;
+
+  --leading-tight:1.08; --leading-snug:1.24; --leading-normal:1.55; --leading-loose:1.7;
+  --tracking-tight:-0.02em; --tracking-snug:-0.01em; --tracking-normal:0; --tracking-wide:0.04em; --tracking-caps:0.13em;
+
+  /* ---------- Spacing (4px base) ---------- */
+  --space-0:0; --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px;
+  --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px; --space-16:64px; --space-20:80px;
+
+  /* ---------- Radii ---------- */
+  --radius-xs:3px; --radius-sm:5px; --radius-md:7px; --radius-lg:11px; --radius-xl:16px; --radius-pill:999px;
+
+  /* ---------- Motion ---------- */
+  --ease-out:cubic-bezier(0.22,1,0.36,1);
+  --ease-in-out:cubic-bezier(0.65,0,0.35,1);
+  --dur-instant:80ms; --dur-fast:140ms; --dur-base:220ms; --dur-slow:380ms;
+
+  /* ---------- Accent (brand green) ---------- */
+  --accent-300:#62cf93;
+  --accent-500:#34a86a;
+  --accent-600:#2b9159;
+  --accent-700:#1f6e43;
+
+  /* ---------- Dark theme surface + ink ---------- */
+  color-scheme: dark;
+
+  --bg-page:      #0d0f0e;
+  --bg-surface:   #16191a;   /* cards — lift off the page */
+  --bg-surface-2: #1d2122;   /* inputs, wells, nested */
+  --bg-hover:     #232829;
+  --bg-active:    #2a3031;
+  --bg-inverse:   #eef1ee;
+
+  --fg-1:        #eef1ee;    /* primary */
+  --fg-2:        #c1c7c3;    /* body */
+  --fg-3:        #8d948e;    /* secondary */
+  --fg-4:        #686f69;    /* tertiary / captions */
+  --fg-disabled: #474d48;
+  --fg-on-accent:#07140d;
+  --fg-on-inverse:#0d0f0e;
+  --fg-brand:    var(--accent-300);
+
+  --border-subtle:  #23282a;
+  --border-default: #2f3537;
+  --border-strong:  #444c4d;
+  --border-accent:  var(--accent-500);
+
+  --accent-bg:   color-mix(in srgb, var(--accent-500) 16%, var(--bg-surface));
+  --accent-soft: color-mix(in srgb, var(--accent-500) 26%, transparent);
+
+  /* state */
+  --positive-500:#4caa78; --positive-bg:#13251c;
+  --caution-500:#c79a3f;  --caution-bg:#272013;
+  --critical-500:#ef4444; --critical-bg:#2a1714;
+
+  /* per-category identity colours (10 topic categories) */
+  --cat-claude-code:           #EC8A6A;
+  --cat-agent-skills-plugins:  #A8C257;
+  --cat-coding-agents:         #DDA94E;
+  --cat-agent-orchestration:   #B08CF0;
+  --cat-mcp-integrations:      #33C2C8;
+  --cat-models-inference:      #6FA4F2;
+  --cat-knowledge-memory:      #45C58D;
+  --cat-browser-web-access:    #4FB3C0;
+  --cat-dev-tools:             #EC84C0;
+  --cat-design-ui-media:       #E0648E;
+
+  /* categorical chart palette (RankedBars multi mode) — the default register */
+  --chart-1: #6FA4F2; --chart-2: #45C58D; --chart-3: #DDA94E; --chart-4: #EC8A6A;
+  --chart-5: #33C2C8; --chart-6: #B08CF0; --chart-7: #EC84C0; --chart-8: #A8C257;
+  --chart-9: #5FB3C4; --chart-10: #C98AD8;
+
+  --shadow-xs: 0 1px 0 rgba(0,0,0,0.4);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.025);
+  --shadow-md: 0 8px 24px -8px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
+  --shadow-lg: 0 20px 44px -14px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.05);
+  --shadow-xl: 0 32px 64px -16px rgba(0,0,0,0.8);
+  --shadow-inset: inset 0 1px 0 rgba(255,255,255,0.04);
+
+  --focus-ring: 0 0 0 2px var(--bg-page), 0 0 0 4px var(--accent-500);
+  --scrim: rgba(5,7,6,0.6);
+}
+
+/* Colorblind-safe categorical palette (opt-in via data-palette="cvd").
+   Okabe-Ito (Okabe & Ito 2008) for 7 hues + 3 Paul-Tol "muted" hues to cover all 10
+   sections — distinguishable under deuteranopia / protanopia / tritanopia. Color is never
+   the only channel: category dots/pills carry their icon too. Re-resolved on the canvas
+   graph at runtime. Category icons remain the non-color reinforcement. */
+:root[data-palette="cvd"] {
+  --cat-claude-code:           #0072B2; /* blue */
+  --cat-agent-skills-plugins:  #E69F00; /* orange */
+  --cat-coding-agents:         #009E73; /* bluish green */
+  --cat-agent-orchestration:   #CC79A7; /* reddish purple */
+  --cat-mcp-integrations:      #56B4E9; /* sky blue */
+  --cat-models-inference:      #D55E00; /* vermillion */
+  --cat-knowledge-memory:      #F0E442; /* yellow */
+  --cat-browser-web-access:    #44AA99; /* teal (Tol) */
+  --cat-dev-tools:             #882255; /* wine (Tol) */
+  --cat-design-ui-media:       #999933; /* olive (Tol) */
+
+  --chart-1: #0072B2; --chart-2: #E69F00; --chart-3: #009E73; --chart-4: #CC79A7;
+  --chart-5: #56B4E9; --chart-6: #D55E00; --chart-7: #F0E442; --chart-8: #44AA99;
+  --chart-9: #882255; --chart-10: #999933;
+}
+
+/* ---------- element defaults ---------- */
+* { box-sizing: border-box; }
+html { -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; text-rendering:optimizeLegibility; }
+body {
+  margin:0; background:var(--bg-page); color:var(--fg-1);
+  font-family:var(--font-body); font-size:var(--text-md); line-height:var(--leading-normal);
+  font-feature-settings:"ss01","cv11";
+}
+::selection { background:var(--accent-soft); color:var(--fg-1); }
+:focus-visible { outline:none; box-shadow:var(--focus-ring); border-radius:var(--radius-sm); }
+::-webkit-scrollbar { width:11px; height:11px; }
+::-webkit-scrollbar-thumb { background:var(--border-default); border-radius:99px; border:3px solid var(--bg-page); }
+::-webkit-scrollbar-thumb:hover { background:var(--border-strong); }
+::-webkit-scrollbar-track { background:transparent; }
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration:0.01ms !important; transition-duration:0.01ms !important; }
+}

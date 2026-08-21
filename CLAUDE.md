@@ -86,7 +86,7 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   an SSE stream of typed trace events, `/conversations` JWT-scoped CRUD,
   `/health` — ADR 0012), `auth.py` (hardcoded tenant users, JWT with tenant
   claim, ADR 0009).
-- `[ ]` **M4 — Frontend.** React SPA on the KB design system: login, streaming
+- `[~]` **M4 — Frontend.** React SPA on the KB design system: login, streaming
   chat with live trace (generated vs executed SQL side by side), conversation
   history sidebar, tenant badge, charts, transparent security-refusal and
   truncation states, cross-tenant isolation demo via login switch (ADR 0012).
@@ -138,7 +138,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Eval harness | `apps/backend/evals/` |
 | Tests | `apps/backend/tests/` |
 | Tunable knob | `apps/backend/runtime.json` (typed view in `runtime.py`) — no magic values in code |
-| Frontend UI | `apps/frontend/src/` — compose the design bricks; never hand-roll a table/pill/button |
+| Frontend UI | `apps/frontend/src/` — compose the design bricks (catalogue: `src/components/README.md`); never hand-roll a table/pill/button |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
 | CI | `.github/workflows/ci.yml` |
 | A design decision | `docs/decisions/` — new ADR, linked from `docs/INDEX.md` |
