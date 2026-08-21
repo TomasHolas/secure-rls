@@ -419,11 +419,21 @@ class _PlotArgs(_ToolArgs):
     kind: str = Field(description=f"One of: {sorted(analytics.CHART_KINDS)}.")
     column: str = Field(description=f"One of: {sorted(analytics.NUMERIC_COLUMNS)}.")
     metric: str | None = Field(
-        default=None, description=f"Bar and line only, one of: {sorted(analytics.METRICS)}."
+        default=None,
+        description=f"Bar, line and grouped_bar only, one of: {sorted(analytics.METRICS)}.",
     )
     group_by: str | None = Field(
         default=None,
-        description=f"Bar and line only, one of: {sorted(analytics.GROUP_BY_COLUMNS)}.",
+        description=(
+            f"Bar, line, grouped_bar and box only, one of: {sorted(analytics.GROUP_BY_COLUMNS)}."
+        ),
+    )
+    series_by: str | None = Field(
+        default=None,
+        description=(
+            "Grouped_bar only: split each bar group by a second dimension, one of: "
+            f"{sorted(analytics.GROUP_BY_COLUMNS)}."
+        ),
     )
     bins: int | None = Field(default=None, description="Histogram only: how many bins.")
 
@@ -910,6 +920,7 @@ def _build_tools(
         column: str,
         metric: str | None = None,
         group_by: str | None = None,
+        series_by: str | None = None,
         bins: int | None = None,
     ) -> _ToolOutcome:
         """Draw a chart for the user.
@@ -919,7 +930,14 @@ def _build_tools(
         user sees the chart itself. Reference it in your answer instead of listing numbers.
         """
         spec = analytics.plot_data(
-            kind, column, tenant_id, metric=metric, group_by=group_by, bins=bins, db_path=db_path
+            kind,
+            column,
+            tenant_id,
+            metric=metric,
+            group_by=group_by,
+            series_by=series_by,
+            bins=bins,
+            db_path=db_path,
         )
         content = _CHART_READY.format(
             title=spec["title"], kind=spec["kind"], points=len(spec["data"])

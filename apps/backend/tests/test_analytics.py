@@ -133,6 +133,12 @@ def test_get_stats_groups_by_hire_year_chronologically(db_path):
     assert result.rows == [("2019", 122.0), ("2020", 1208.0), ("2021", 910.0)]
 
 
+def test_get_stats_groups_by_the_truncated_score_band(db_path):
+    result = get_stats("count", "salary", "score_band", ACME, db_path=db_path)
+    assert result.columns == ("score_band", "count_salary")
+    assert result.rows == [(2, 1), (3, 13), (4, 1)]
+
+
 def test_get_stats_reads_the_second_numeric_column(db_path):
     result = get_stats("avg", "performance_score", "department", ACME, db_path=db_path)
     assert result.rows == [("Engineering", 3.0), ("Sales", 3.0)]
@@ -147,17 +153,25 @@ def test_get_stats_sees_only_its_own_tenant(db_path):
 
 def test_stats_sql_is_a_fixed_template_over_allowlisted_names():
     assert (
-        analytics._stats_sql("avg", "salary", None)
+        analytics._stats_sql("avg", "salary", ())
         == "SELECT AVG(salary) AS avg_salary FROM employees"
     )
-    assert analytics._stats_sql("count", "salary", "department") == (
+    assert analytics._stats_sql("count", "salary", ("department",)) == (
         "SELECT department AS department, COUNT(salary) AS count_salary "
         "FROM employees GROUP BY department ORDER BY department"
     )
-    assert analytics._stats_sql("max", "performance_score", "hire_year") == (
+    assert analytics._stats_sql("max", "performance_score", ("hire_year",)) == (
         "SELECT SUBSTRING(hire_date, 1, 4) AS hire_year, "
         "MAX(performance_score) AS max_performance_score "
         "FROM employees GROUP BY hire_year ORDER BY hire_year"
+    )
+
+
+def test_stats_sql_takes_two_dimensions_from_the_same_one_allowlist():
+    assert analytics._stats_sql("avg", "salary", ("department", "score_band")) == (
+        "SELECT department AS department, CAST(performance_score AS INTEGER) AS score_band, "
+        "AVG(salary) AS avg_salary FROM employees "
+        "GROUP BY department, score_band ORDER BY department, score_band"
     )
 
 
@@ -305,10 +319,10 @@ def test_plot_data_histogram_bin_edges_and_counts_are_exact(db_path):
         "x_label": "salary",
         "y_label": "employees",
         "data": [
-            {"x": "100-1325", "y": 14},
-            {"x": "1325-2550", "y": 0},
-            {"x": "2550-3775", "y": 0},
-            {"x": "3775-5000", "y": 1},
+            {"x_low": 100.0, "x_high": 1325.0, "y": 14},
+            {"x_low": 1325.0, "x_high": 2550.0, "y": 0},
+            {"x_low": 2550.0, "x_high": 3775.0, "y": 0},
+            {"x_low": 3775.0, "x_high": 5000.0, "y": 1},
         ],
     }
 
@@ -322,7 +336,10 @@ def test_plot_data_histogram_bins_default_to_the_runtime_value(db_path):
 def test_plot_data_histogram_bins_the_second_numeric_column(db_path):
     spec = plot_data("histogram", "performance_score", ACME, bins=2, db_path=db_path)
     assert spec["x_label"] == "performance score"
-    assert spec["data"] == [{"x": "2-3", "y": 1}, {"x": "3-4", "y": 14}]
+    assert spec["data"] == [
+        {"x_low": 2.0, "x_high": 3.0, "y": 1},
+        {"x_low": 3.0, "x_high": 4.0, "y": 14},
+    ]
 
 
 @pytest.mark.parametrize("bins", [0, -1, 51, 2.5, "4", True])
@@ -332,7 +349,7 @@ def test_plot_data_refuses_a_bin_count_outside_the_configured_range(db_path, bin
     assert rejection.value.retryable is True
 
 
-@pytest.mark.parametrize("kind", ["pie", "scatter", "bar; DROP TABLE employees"])
+@pytest.mark.parametrize("kind", ["pie", "violin", "bar; DROP TABLE employees"])
 def test_plot_data_refuses_a_chart_kind_outside_the_allowlist(db_path, kind):
     with pytest.raises(QueryRejected, match="kind must be one of") as rejection:
         plot_data(kind, "salary", ACME, db_path=db_path)
@@ -344,8 +361,19 @@ def test_plot_data_refuses_a_chart_kind_outside_the_allowlist(db_path, kind):
     [
         ("histogram", {"metric": "avg"}, "metric does not apply"),
         ("histogram", {"group_by": "department"}, "group_by does not apply"),
+        ("histogram", {"series_by": "score_band"}, "series_by does not apply"),
         ("bar", {"bins": 5}, "bins does not apply"),
+        ("bar", {"series_by": "score_band"}, "series_by does not apply"),
         ("line", {"bins": 5}, "bins does not apply"),
+        ("line", {"series_by": "score_band"}, "series_by does not apply"),
+        ("grouped_bar", {"bins": 5}, "bins does not apply"),
+        ("scatter", {"metric": "avg"}, "metric does not apply"),
+        ("scatter", {"group_by": "department"}, "group_by does not apply"),
+        ("scatter", {"series_by": "score_band"}, "series_by does not apply"),
+        ("scatter", {"bins": 5}, "bins does not apply"),
+        ("box", {"metric": "avg"}, "metric does not apply"),
+        ("box", {"series_by": "score_band"}, "series_by does not apply"),
+        ("box", {"bins": 5}, "bins does not apply"),
     ],
 )
 def test_plot_data_refuses_an_argument_the_chart_kind_cannot_use(db_path, kind, kwargs, message):
@@ -361,3 +389,151 @@ def test_plot_data_charts_only_its_own_tenants_values(db_path):
         {"x": "Finance", "y": 7.0},
         {"x": "Sales", "y": 50000.0},
     ]
+
+
+def test_plot_data_grouped_bar_splits_each_group_by_the_second_dimension(db_path):
+    assert plot_data("grouped_bar", "salary", ACME, db_path=db_path) == {
+        "kind": "grouped_bar",
+        "title": "avg salary by department and score band",
+        "x_label": "department",
+        "y_label": "avg salary",
+        "series_label": "score band",
+        "data": [
+            {"x": "Engineering", "series": "2", "y": 5000.0},
+            {"x": "Engineering", "series": "3", "y": 193.75},
+            {"x": "Engineering", "series": "4", "y": 100.0},
+            {"x": "Sales", "series": "3", "y": _SALES_AVG},
+        ],
+    }
+
+
+def test_plot_data_grouped_bar_reaches_the_engine_tenant_scoped(db_path):
+    plot_data("grouped_bar", "salary", ACME, metric="count", db_path=db_path)
+    assert db.audit_entries(db_path)[-1].executed_sql == (
+        "SELECT department AS department, CAST(performance_score AS INTEGER) AS score_band, "
+        f"COUNT(salary) AS count_salary FROM {_SCOPED} AS employees "
+        "GROUP BY department, score_band ORDER BY department, score_band"
+    )
+
+
+def test_plot_data_grouped_bar_takes_both_dimensions_from_the_caller(db_path):
+    spec = plot_data(
+        "grouped_bar",
+        "salary",
+        ACME,
+        metric="count",
+        group_by="hire_year",
+        series_by="department",
+        db_path=db_path,
+    )
+    assert spec["title"] == "count salary by hire year and department"
+    assert spec["series_label"] == "department"
+    assert spec["data"] == [
+        {"x": "2019", "series": "Engineering", "y": 5.0},
+        {"x": "2020", "series": "Engineering", "y": 5.0},
+        {"x": "2021", "series": "Sales", "y": 5.0},
+    ]
+
+
+def test_plot_data_grouped_bar_charts_only_its_own_tenants_values(db_path):
+    spec = plot_data("grouped_bar", "salary", BETA, metric="max", db_path=db_path)
+    assert spec["data"] == [
+        {"x": "Engineering", "series": "4", "y": 99999.0},
+        {"x": "Finance", "series": "4", "y": 7.0},
+        {"x": "Sales", "series": "4", "y": 50000.0},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"metric": "median"}, "metric must be one of"),
+        ({"group_by": "name"}, "group_by must be one of"),
+        ({"series_by": "notes"}, "series_by must be one of"),
+        ({"series_by": "department"}, "series_by must name a different dimension"),
+    ],
+)
+def test_plot_data_grouped_bar_refuses_anything_outside_the_allowlists(db_path, kwargs, message):
+    with pytest.raises(QueryRejected, match=message) as rejection:
+        plot_data("grouped_bar", "salary", ACME, db_path=db_path, **kwargs)
+    assert rejection.value.retryable is True
+
+
+def test_plot_data_scatter_pairs_the_two_numeric_columns_row_by_row(db_path):
+    spec = plot_data("scatter", "performance_score", ACME, db_path=db_path)
+    assert spec["kind"] == "scatter"
+    assert spec["title"] == "performance score against salary"
+    assert spec["x_label"] == "salary"
+    assert spec["y_label"] == "performance score"
+    assert len(spec["data"]) == _ACME_ROWS
+    assert spec["data"][0] == {"x": "Ada", "x_value": 100.0, "y": 4.0}
+    assert spec["data"][-1] == {"x": "Arno", "x_value": 1200.0, "y": 3.0}
+
+
+def test_plot_data_scatter_puts_the_named_column_on_the_value_axis(db_path):
+    spec = plot_data("scatter", "salary", ACME, db_path=db_path)
+    assert spec["title"] == "salary against performance score"
+    assert spec["data"][0] == {"x": "Ada", "x_value": 4.0, "y": 100.0}
+
+
+def test_plot_data_scatter_plots_only_its_own_tenants_rows(db_path):
+    spec = plot_data("scatter", "salary", BETA, db_path=db_path)
+    assert [point["x"] for point in spec["data"]] == ["Bo", "Bea", "Ben", "Bibi", "Bram"]
+    assert max(point["y"] for point in spec["data"]) == 99999.0
+
+
+def test_plot_data_scatter_pages_the_scan_without_dropping_a_row(db_path, tuned):
+    tuned(page_size=4)
+    spec = plot_data("scatter", "salary", ACME, db_path=db_path)
+    assert len(spec["data"]) == _ACME_ROWS
+
+
+def test_plot_data_box_is_the_quartiles_the_anomaly_fences_are_built_from(db_path):
+    assert plot_data("box", "salary", ACME, db_path=db_path) == {
+        "kind": "box",
+        "title": "salary spread by department",
+        "x_label": "department",
+        "y_label": "salary",
+        "data": [
+            {
+                "x": "Engineering",
+                "y": 165.0,
+                "q1": 122.5,
+                "q3": 280.0,
+                "low": 100.0,
+                "high": _SMOOTH_TAIL_TOP,
+            },
+            {"x": "Sales", "y": 1050.0, "q1": 1000.0, "q3": 1100.0, "low": 1000.0, "high": 1200.0},
+        ],
+    }
+
+
+def test_plot_data_box_whiskers_stop_at_the_fences_detect_anomalies_flags_against(db_path):
+    spec = plot_data("box", "salary", ACME, db_path=db_path)
+    boxes = {point["x"]: point for point in spec["data"]}
+    flagged = {found.group: found for found in detect_anomalies("salary", ACME, db_path=db_path)}
+    lower, upper = analytics._fences(boxes["Engineering"]["q1"], boxes["Engineering"]["q3"])
+    assert (lower, upper) == _ENGINEERING_FENCES
+    assert boxes["Engineering"]["high"] < flagged["Engineering"].value
+    assert boxes["Sales"]["low"] > flagged["Sales"].value
+
+
+def test_plot_data_box_groups_by_a_dimension_the_caller_names(db_path):
+    spec = plot_data("box", "performance_score", ACME, group_by="hire_year", db_path=db_path)
+    assert spec["title"] == "performance score spread by hire year"
+    assert [point["x"] for point in spec["data"]] == ["2019", "2020", "2021"]
+    assert spec["data"][2] == {"x": "2021", "y": 3.0, "q1": 3.0, "q3": 3.0, "low": 3.0, "high": 3.0}
+
+
+def test_plot_data_box_summarises_only_its_own_tenants_spread(db_path):
+    spec = plot_data("box", "salary", BETA, db_path=db_path)
+    assert [point["x"] for point in spec["data"]] == ["Engineering", "Finance", "Sales"]
+    finance = {"x": "Finance", "y": 7.0, "q1": 7.0, "q3": 7.0, "low": 7.0, "high": 7.0}
+    assert spec["data"][1] == finance
+
+
+@pytest.mark.parametrize("group_by", ["name", "salary; --"])
+def test_plot_data_box_refuses_a_grouping_outside_the_allowlist(db_path, group_by):
+    with pytest.raises(QueryRejected, match="group_by must be one of") as rejection:
+        plot_data("box", "salary", ACME, group_by=group_by, db_path=db_path)
+    assert rejection.value.retryable is True

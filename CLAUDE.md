@@ -155,6 +155,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Frontend HTTP calls (Bearer header, `X-Refreshed-Token` adoption, 401 -> login) | `apps/frontend/src/lib/api.ts` — the only module that calls `fetch` |
 | Frontend chat stream (SSE frames -> typed trace events -> one turn's state) | `apps/frontend/src/lib/sse.ts` + `lib/trace.ts`; rendered by `views/ChatView.tsx` over the `components/chat/` bricks |
 | Frontend conversation state (thread list, which thread is open, its replay) | `apps/frontend/src/lib/conversations.ts` — the one owner the rail (`views/ConversationsSidebar.tsx`) and the chat view share |
+| Number formatting a reader sees (axis ticks, bin edges, table cells) | `apps/frontend/src/lib/format.ts` — the only formatter; the backend emits raw numbers and never a locale-specific string |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
 | CI / CD | `.github/workflows/ci.yml` |
 | Images / the deployment unit | `apps/backend/Dockerfile`, `apps/frontend/Dockerfile` + `nginx.conf`, `docker-compose.yml` |

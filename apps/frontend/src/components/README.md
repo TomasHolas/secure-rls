@@ -36,8 +36,9 @@ components/
 Views live beside them in `src/views/` (`LoginView`, `SessionBadge`, `ChatView`,
 `ConversationsSidebar`); the non-visual bricks they compose are `src/auth.ts` (the
 session), `src/lib/api.ts` (the one HTTP client), `src/lib/sse.ts` (the SSE stream to
-typed trace events), `src/lib/trace.ts` (those events folded into one turn's state) and
-`src/lib/conversations.ts` (which thread is open, and the thread list around it).
+typed trace events), `src/lib/trace.ts` (those events folded into one turn's state),
+`src/lib/conversations.ts` (which thread is open, and the thread list around it) and
+`src/lib/format.ts` (the one number formatter every reader-facing number goes through).
 
 CSS for every brick lives in `styles/app.css`; colors, spacing, radii, motion and
 fonts come from `styles/tokens.css`.
@@ -120,7 +121,8 @@ Assistant answers are its only caller today.
 Backend rows as a compact table inside a horizontal scroll wrapper. `maxRows` (default
 8) is a **visual** cap only, with a footer stating how many of the returned rows are
 hidden; the server-side cap of ADR 0007 is reported separately by the truncation `Pill`.
-`null` renders as `-`, numbers right-align in mono.
+`null` renders as `-`, numbers right-align in mono and print through `lib/format.ts`, the
+same formatter the chart axes use.
 
 ### Brand mark
 
@@ -276,23 +278,42 @@ returns through the chat trace — and dispatches on `kind`:
 ```
 
 ```ts
-{ kind: "bar" | "line" | "histogram", title, x_label, y_label, data: [{ x: string, y: number }] }
+{
+  kind: "bar" | "line" | "grouped_bar" | "histogram" | "scatter" | "box",
+  title, x_label, y_label,
+  series_label?,                 // grouped_bar only: the legend's caption
+  data: [{ y, x?, series?, x_value?, x_low?, x_high?, low?, q1?, q3?, high? }]
+}
 ```
 
-`bar` and `histogram` render bars (bins sit nearly flush, categories breathe and cap at
-KB's 38px column width); `line` renders a polyline with a filled area underneath and a dot
-per point. `x` is always a category label, so all three kinds share one band scale — the
-x axis carries the point labels (thinned to at most 8 so they never collide), the y axis
-three gridded ticks in compact notation, plus `x_label`/`y_label` as axis titles. Bars and
-dots carry a `<title>` tooltip with the exact value. An empty `data` array renders the
-`EmptyState` brick under the title instead of an axis-less plot.
+Every point carries `y`; which further keys it carries is fixed per kind by the backend, and
+each kind reads only its own:
+
+| kind | mark | the point's other keys |
+|---|---|---|
+| `bar`, `histogram` | bars — bins sit nearly flush, categories breathe and cap at KB's 38px column | `x` / `x_low`+`x_high` |
+| `line` | polyline with a filled area underneath and a dot per point | `x` |
+| `grouped_bar` | one bar per series inside each category's band, coloured from `--chart-1..10` with a legend under the plot | `x`, `series` |
+| `scatter` | one dot per row on a **linear** x axis (the only kind that is not a band scale) | `x` (the row's name), `x_value` |
+| `box` | quartile box, median rule and whiskers at the extremes inside the group's Tukey fences | `x`, `q1`, `q3`, `low`, `high` |
+
+Band kinds label the x axis with their point labels (thinned to at most 8 so they never
+collide); a histogram labels the **boundary** with the bin's lower edge and keeps the whole
+range for the hover. `scatter` and `box` scale to their own spread; the bar and area kinds
+keep zero in the domain so the baseline stays on the plot. Every mark carries a `<title>`
+tooltip with its exact values. An empty `data` array renders the `EmptyState` brick under
+the title instead of an axis-less plot.
+
+**Numbers are never formatted here** — axis ticks, bin edges and hover values all go through
+`lib/format.ts` (grouped thousands, at most two decimals), the same formatter `DataTable`
+uses, so a salary reads identically as a row and as a bar.
 
 The brick **reserves `height`** whether it plots or reports no data, and measures its own
 width before the first paint rather than after it: a chart lands in the middle of a stream,
 so a chart-shaped hole that then resizes would shift the transcript under the reader.
 
 Charts are **hand-rolled SVG, no chart library** — matching the KB, which has none
-either. Fixtures for all three kinds live in `charts/Chart.test.tsx` (`npm test`).
+either. Fixtures for every kind live in `charts/Chart.test.tsx` (`npm test`).
 
 ### chat/ChatMessage
 
@@ -417,9 +438,11 @@ back to the text the model itself read, so no result ever renders as nothing.
 - `charts/Chart` is one brick where KB has four (`AreaTrend`, `BarTimeline`,
   `RankedBars`, `MonthDrill`), because a single backend contract feeds it: it keeps
   AreaTrend's measured-width SVG scaffolding and `.chart-grid`/`.chart-axis` chrome
-  and BarTimeline's bar register, and drops KB's per-series legend, click-to-drill
-  and multi-color palette — a ChartSpec is one unnamed series, so there is nothing
-  to legend, drill into, or color by.
+  and BarTimeline's bar register, and drops KB's click-to-drill — a ChartSpec is
+  one chart, not an entry point into another one. KB's per-series legend and its
+  `--chart-1..10` categorical palette **are** used, by the one kind that has real
+  series (`grouped_bar`); every other kind is a single series in the accent register.
+  The box, whisker and scatter marks have no KB counterpart and are new.
 - Toolchain: Vite 7 + `@vitejs/plugin-react` 5 rather than KB's Vite 5 line, which
   still carries dev-server advisories (`npm audit` reports one high, one moderate on
   Vite 5). The design-system port itself is version-independent.

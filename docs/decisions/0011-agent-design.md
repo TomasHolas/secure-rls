@@ -53,9 +53,34 @@ multi-turn adversarial evals (ADR 0004).
 |---|---|---|
 | `query_db(sql)` | Generated SQL through layers 2-4; capped + truncation signal (ADR 0007). | Model output fully validated |
 | `get_stats(metric, column, group_by?)` | Typed args from allowlists (`avg/sum/count/min/max`; numeric/grouping column lists); the tool builds a fixed parameterized query. | Zero generated SQL |
-| `plot(kind, column, metric?, group_by?)` | Kinds: `bar`, `line`, `histogram`. **The tool fetches its own data** via the scoped executor and returns `{chart_spec, data}` to the frontend through the trace. | Charted values are database ground truth — they never pass through the model |
+| `plot(kind, column, metric?, group_by?, series_by?, bins?)` | Kinds: `bar`, `line`, `grouped_bar`, `histogram`, `scatter`, `box`. **The tool fetches its own data** via the scoped executor and returns one `chart_spec` to the frontend through the trace — the values ride inside that spec, so there is no second `data` payload beside it. | Charted values are database ground truth — they never pass through the model |
 | `detect_anomalies(column, group_by?)` | Tukey IQR fences (outlier beyond 1.5x IQR from the quartiles), computed within each group (default: department). Chosen over z-scores because salaries are lognormal by design (ADR 0008) and z-scores assume normality — they would flag the healthy right tail. | Deterministic statistics on scoped rows |
 | `search_notes(query)` | Tenant-partitioned KNN over embedded notes (ADR 0010). | Fixed parameterized shape, pre-filtered |
+
+### Chart kinds, and what `plot` does not send (amended after issue #70)
+
+Six kinds, each one an allowlisted fixed template in `analytics.py` — the arguments are
+names checked against an allowlist, never SQL the model writes — and each one answering a
+question this dataset actually poses:
+
+- `bar` / `line`: one metric per named dimension; `line` defaults to the `hire_year` axis.
+- `grouped_bar`: the same aggregate over **two** allowlisted dimensions, so a demo can ask
+  whether pay tracks rating *within* each department. The second dimension needs to be
+  low-cardinality to be readable, which is why `score_band` (a fixed
+  `CAST(performance_score AS INTEGER)`, the rating truncated to its whole star) joins
+  `department` and `hire_year` in the one dimension allowlist.
+- `scatter`: `salary` against `performance_score`. These are the schema's only two numeric
+  columns, so this is its only genuine two-variable relationship; the pairing is a fixed
+  map, not an argument the model chooses freely.
+- `box`: each group's quartiles, with whiskers at the extreme values still inside the
+  group's Tukey fences. It shares one quartile/fence computation with `detect_anomalies`
+  (`_quartiles`, `_fences`), so the box plot is a picture of exactly the fences the anomaly
+  tool flags against — the same statistic told twice, never computed twice.
+
+The tool returns numbers, never rendered text: a histogram's bins travel as numeric edges
+(`x_low`, `x_high`) rather than as a `"155230-174165"` label. Grouping digits for a reader is
+a locale decision and belongs to the one frontend formatter (`src/lib/format.ts`, ADR 0006),
+so the backend never formats and the product never grows a second formatter to drift.
 
 ### System prompt
 

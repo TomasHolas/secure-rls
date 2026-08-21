@@ -96,7 +96,7 @@ prompt-injection payloads in `notes`, openly listed in `poisoned_manifest.json`
 |---|---|---|
 | `query_db` | LLM-generated SQL, validated then executed. Results hard-capped with an explicit truncation signal (ADR 0007). | Layers 2+2.5+3+4; SQL shown in the UI trace |
 | `get_stats` | Typed args (metric/column/group_by from allowlists); fixed parameterized query — zero generated SQL. | Built on the scoped executor |
-| `plot` | Fetches its own data via the scoped executor; returns `{chart_spec, data}` to the SPA — charted values never pass through the model. | Built on the scoped executor |
+| `plot` | Fetches its own data via the scoped executor; returns one `chart_spec` (bar, line, grouped bar, histogram, scatter or box) to the SPA — charted values never pass through the model. | Built on the scoped executor |
 | `detect_anomalies` | Tukey IQR fences per group (default: department); robust to the lognormal salary shape (bonus). | Built on the scoped executor |
 | `search_notes` | Semantic search over embedded `notes` (ADR 0010): sqlite-vec `vec0` table with `tenant_id` as partition key — the KNN pre-filter runs before any vector comparison; neutral "no matching notes found" on empty results. | L1 closure + partition-key pre-filter + egress check |
 
