@@ -74,7 +74,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done. Work is fil
 as GitHub issues (one per milestone); every change lands via branch → PR → merge.
 
 - `[x]` **M0 — Design & docs.** Architecture, ADRs, this file. (What you are reading.)
-- `[ ]` **M1 — Dataset + RLS core.** `scripts/generate_dataset.py` →
+- `[x]` **M1 — Dataset + RLS core.** `scripts/generate_dataset.py` →
   `employees.csv`; `db.py` (load + tenant-scoped executor); `security.py`
   (sqlglot validator); the adversarial test suite proving isolation, red → green.
 - `[ ]` **M2 — Agent.** `agent.py`: explicit LangGraph graph on Ollama with
@@ -82,7 +82,7 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   `detect_anomalies`); multi-turn memory; two-tier retry policy (ADR 0011);
   tenant-filtered RAG via `rag.py` (ADR 0010); schema card + sample rows in
   the prompt; empirical model pick (ADR 0005).
-- `[ ]` **M3 — REST API + auth.** `app.py` (thin handlers: `/login`, `/chat` as
+- `[~]` **M3 — REST API + auth.** `app.py` (thin handlers: `/login`, `/chat` as
   an SSE stream of typed trace events, `/conversations` JWT-scoped CRUD,
   `/health` — ADR 0012), `auth.py` (hardcoded tenant users, JWT with tenant
   claim, ADR 0009).
