@@ -14,6 +14,11 @@
     "max_vdbe_ops": 25000,
     "max_like_pattern_length": 1000
   },
+  "analytics": {
+    "histogram_bins": 10,
+    "max_histogram_bins": 50,
+    "max_scan_rows": 5000
+  },
   "agent": {
     "model": "",
     "embed_model": "nomic-embed-text",

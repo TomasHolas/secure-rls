@@ -132,6 +132,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Auth / JWT / tenant users | `apps/backend/auth.py` |
 | Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection |
 | SQL validation (allowlist) | `apps/backend/security.py` |
+| Structured analytics (aggregates, Tukey IQR anomalies, chart data) | `apps/backend/analytics.py` — allowlisted args into fixed query templates through `db.py`; never generated SQL |
 | Agent, tools, prompts, retry policy, memory | `apps/backend/agent.py` |
 | Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`) |
 | Dataset generator | `apps/backend/scripts/generate_dataset.py` |
