@@ -1,0 +1,37 @@
+[project]
+name = "secure-rls-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "faker==40.36.0",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "langchain-core>=1.6.0",
+    "langchain-ollama>=1.1.0",
+    "langgraph>=1.2.11",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "pyjwt>=2.13.0",
+    "sqlglot>=30.17.0",
+    "sqlite-vec==0.1.9",
+    "uvicorn>=0.52.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.4",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]

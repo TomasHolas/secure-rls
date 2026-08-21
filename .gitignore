@@ -7,3 +7,5 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
+uv.lock.orig
+*.egg-info/
