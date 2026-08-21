@@ -68,9 +68,20 @@ class AuthConfig:
 
 @dataclass(frozen=True)
 class ConversationsConfig:
-    """Conversation registry knobs (ADR 0012)."""
+    """Conversation registry and titling knobs (ADR 0012 as amended).
+
+    `title_max_chars` caps every stored title. The generated ones are held tighter: the word
+    count is what the titling prompt asks the model for (guidance), `generated_title_max_chars`
+    is what the sanitizer enforces, and output longer than `generated_title_reject_chars` is
+    prose rather than a label, so it is rejected in favor of the first-message fallback.
+    `title_timeout_s` bounds the titling call - it runs outside the turn, but not forever.
+    """
 
     title_max_chars: int
+    generated_title_max_words: int
+    generated_title_max_chars: int
+    generated_title_reject_chars: int
+    title_timeout_s: float
 
 
 @dataclass(frozen=True)

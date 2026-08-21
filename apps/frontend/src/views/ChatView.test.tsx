@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
 }));
 
 const onStart = vi.fn();
+const onTitled = vi.fn();
 
 vi.mock("../lib/api", () => ({
   ApiError: class ApiError extends Error {
@@ -134,6 +135,7 @@ function renderChat(props: Partial<ChatViewProps> = {}) {
     replay: [],
     chatKey: 0,
     onStart,
+    onTitled,
     ...props,
   };
   const view = render(<ChatView {...merged} />);
@@ -180,6 +182,31 @@ describe("the chat view", () => {
       message: QUESTION,
       model: MODEL,
     });
+  });
+
+  it("has the owner title the thread it registered, once the turn is over", async () => {
+    await renderReady();
+    ask();
+
+    expect(await screen.findByText("Engineering leads at 91000.")).toBeTruthy();
+    await waitFor(() => expect(onTitled).toHaveBeenCalledWith("t1"));
+    expect(onTitled).toHaveBeenCalledTimes(1);
+  });
+
+  it("titles a registered thread even when its first turn never answered", async () => {
+    api.openChatStream.mockRejectedValue(new Error("the endpoint is down"));
+    await renderReady();
+    ask();
+
+    await waitFor(() => expect(onTitled).toHaveBeenCalledWith("t1"));
+  });
+
+  it("does not retitle a thread that was already titled by an earlier turn", async () => {
+    await renderReady({ threadId: "t7" });
+    ask();
+
+    expect(await screen.findByText("Engineering leads at 91000.")).toBeTruthy();
+    expect(onTitled).not.toHaveBeenCalled();
   });
 
   it("asks on the thread it was handed without registering another", async () => {

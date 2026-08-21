@@ -8,9 +8,13 @@
  * `sub` and `tenant_id` server-side (ADR 0012): a re-login as another identity lists that
  * identity's threads because the API says so, not because this view filters anything.
  *
- * New chat opens an empty draft rather than posting a thread straight away - the title is
- * the first question (ADR 0012) and the registry has no title update, so a thread created
- * before there is a question could only ever carry the placeholder title.
+ * New chat opens an empty draft rather than posting a thread straight away: a thread created
+ * before there is a question would sit in this rail under the placeholder title.
+ *
+ * A title is text, rendered as text. It starts as the first question and is replaced by the
+ * label the model generated for the thread (ADR 0012 as amended), which makes it model output:
+ * it goes into the DOM as a text node here and in the delete dialog, never through Markdown
+ * and never as markup, and the server has already stripped it down to one displayable line.
  */
 
 import { useState } from "react";

@@ -7,6 +7,12 @@
  * event folds into that turn as it arrives (`lib/sse.ts` frames, `lib/trace.ts` folds).
  * A draft thread is registered lazily: the first question titles it through `onStart`.
  *
+ * `onTitled` fires once that first turn is over, whatever it ended as, and is what asks the
+ * server for the generated label (ADR 0012 as amended). It runs after the stream, never during
+ * it: titling is an LLM call, and one that hangs must not be able to hold up a token or the
+ * turn's terminal frame. Whether the turn answered, was blocked or failed does not change it -
+ * the label describes the conversation, and the server falls back to the first message.
+ *
  * `replay` is what the server remembers of a reopened thread - the exchanges only. Those
  * render as plain bubbles with no trace panel: the trace is the transport of the turn that
  * produced it and is never re-served (ADR 0012), so only turns streamed in this session
@@ -53,11 +59,13 @@ export function ChatView({
   replay,
   chatKey,
   onStart,
+  onTitled,
 }: {
   threadId: string | null;
   replay: Message[];
   chatKey: number;
   onStart: (title: string) => Promise<string>;
+  onTitled: (threadId: string) => void;
 }) {
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState("");
@@ -109,12 +117,15 @@ export function ChatView({
   async function send(message: string): Promise<void> {
     const key = chatKey;
     const mine = () => openKey.current === key;
+    // Set only for a thread registered by this send: its first turn is the one that titles it.
+    let drafted: string | null = null;
     // Asking is the explicit request to come back down, whatever the reader was reading.
     following.current = true;
     setTurns((previous) => [...previous, startTurn(message)]);
     setStreaming(true);
     try {
       const thread = threadId ?? (await onStart(message));
+      if (threadId === null) drafted = thread;
       const response = await openChatStream({
         thread_id: thread,
         message,
@@ -136,6 +147,8 @@ export function ChatView({
       setTurns((previous) => updateLast(previous, (turn) => failTurn(turn, reason)));
     } finally {
       if (mine()) setStreaming(false);
+      // Off the stream on purpose, and independent of the thread the reader moved to since.
+      if (drafted) onTitled(drafted);
     }
   }
 

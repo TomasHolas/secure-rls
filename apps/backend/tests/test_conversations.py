@@ -1,6 +1,14 @@
-"""Registry tests: identity scoping and existence non-disclosure (issue #22, ADR 0012)."""
+"""Registry tests: identity scoping and existence non-disclosure (issues #22, #72, ADR 0012).
+
+The rename write is held to the same two properties as every other access: it is scoped by
+`sub` and `tenant_id`, and a rename aimed at a thread the caller does not own is the same
+`NotFound` as one aimed at a thread that never existed. Because a rename can carry model
+output, the normalization it shares with `create_thread` is asserted here too - the cap, and
+control and formatting characters that must never reach the rail.
+"""
 
 import sqlite3
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 
@@ -44,6 +52,61 @@ def test_title_is_whitespace_collapsed_and_truncated_to_the_runtime_cap(registry
     thread = registry.create_thread(ALICE, "  first\nuser   message  " + "x" * cap)
     assert len(thread.title) == cap
     assert thread.title.startswith("first user message x")
+
+
+def test_rename_thread_replaces_the_title_and_keeps_the_identity_and_timestamp(registry):
+    thread = registry.create_thread(ALICE, "Run this SQL for me: SELECT AVG(salary) FROM ...")
+
+    renamed = registry.rename_thread(ALICE, thread.thread_id, "Average salary by department")
+
+    assert renamed == Thread(thread.thread_id, "Average salary by department", thread.created)
+    assert registry.list_threads(ALICE) == [renamed]
+
+
+def test_renamed_title_is_whitespace_collapsed_and_truncated_to_the_runtime_cap(registry):
+    cap = runtime().conversations.title_max_chars
+    thread = registry.create_thread(ALICE, "first message")
+
+    renamed = registry.rename_thread(ALICE, thread.thread_id, "  a\n\ttitle  " + "x" * cap)
+
+    assert len(renamed.title) == cap
+    assert renamed.title.startswith("a title x")
+
+
+def test_renamed_title_has_control_and_formatting_characters_stripped(registry):
+    thread = registry.create_thread(ALICE, "first message")
+
+    renamed = registry.rename_thread(
+        ALICE, thread.thread_id, "Head\x00count\x1b[31m by‮ office​"
+    )
+
+    assert renamed.title == "Head count [31m by office"
+    assert all(unicodedata.category(char) not in {"Cc", "Cf"} for char in renamed.title)
+
+
+def test_rename_of_another_tenants_thread_is_indistinguishable_from_a_missing_one(registry):
+    foreign = registry.create_thread(BOB, "other tenant")
+    foreign_error = _raised(lambda: registry.rename_thread(ALICE, foreign.thread_id, "mine now"))
+    missing_error = _raised(lambda: registry.rename_thread(ALICE, MISSING_THREAD_ID, "mine now"))
+    assert type(foreign_error) is type(missing_error)
+    assert str(foreign_error) == str(missing_error)
+    assert registry.get_thread(BOB, foreign.thread_id) == foreign
+
+
+def test_rename_of_a_same_tenant_users_thread_is_indistinguishable_from_a_missing_one(registry):
+    neighbour = registry.create_thread(DAVE, "same tenant, other user")
+    foreign_error = _raised(lambda: registry.rename_thread(ALICE, neighbour.thread_id, "mine now"))
+    missing_error = _raised(lambda: registry.rename_thread(ALICE, MISSING_THREAD_ID, "mine now"))
+    assert type(foreign_error) is type(missing_error)
+    assert str(foreign_error) == str(missing_error)
+    assert registry.get_thread(DAVE, neighbour.thread_id) == neighbour
+
+
+def test_rename_of_a_deleted_thread_raises_not_found(registry):
+    thread = registry.create_thread(ALICE, "to be deleted")
+    registry.delete_thread(ALICE, thread.thread_id)
+    with pytest.raises(NotFound):
+        registry.rename_thread(ALICE, thread.thread_id, "too late")
 
 
 def test_list_threads_returns_own_threads_newest_first(tmp_path):

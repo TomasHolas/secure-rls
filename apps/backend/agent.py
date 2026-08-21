@@ -518,6 +518,18 @@ def thread_messages(checkpointer: BaseCheckpointSaver, thread_id: str) -> list[M
     return replayed
 
 
+def visible_text(text: str) -> str:
+    """The prose in a complete model answer: `<think>` and `<tool_call>` regions stay behind.
+
+    The streaming path strips the same markup chunk by chunk (`_Markup`); this is the one-shot
+    door onto it, for a caller that holds a whole model turn at once - `titles.py` asking for a
+    conversation label. One module owns what counts as prose, so a `<think>` block can never be
+    presented as content on one path and stripped on the other.
+    """
+    markup = _Markup()
+    return markup.feed(text) + markup.flush()
+
+
 def _thread_config(thread_id: str) -> dict[str, dict[str, str]]:
     """The LangGraph config that keys graph state and checkpoints to one conversation."""
     return {"configurable": {"thread_id": thread_id}}

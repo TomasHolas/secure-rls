@@ -138,7 +138,8 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 |---|---|
 | Assignment-required deliverables | `apps/backend/app.py`, `db.py`, `agent.py`, `employees.csv`, `requirements.txt` (exported from `pyproject.toml` via `uv export`) |
 | REST endpoint | `apps/backend/app.py` — thin handler, one service call, no logic |
-| Conversation registry (scoped threads, titles) | `apps/backend/conversations.py` (own app-state store `state.db`, beside the LangGraph checkpointer; access always verified against the JWT identity) |
+| Conversation registry (scoped threads, titles, rename) | `apps/backend/conversations.py` (own app-state store `state.db`, beside the LangGraph checkpointer; access always verified against the JWT identity) |
+| Generated thread titles | `apps/backend/titles.py` — the model's few-word label for a thread, sanitized, with the first-message fallback; called by `PATCH /conversations/{id}`, never from the `/chat` stream (ADR 0012 as amended) |
 | Auth / JWT / tenant users | `apps/backend/auth.py` |
 | Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection |
 | SQL validation (allowlist) | `apps/backend/security.py` |

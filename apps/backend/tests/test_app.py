@@ -1,12 +1,12 @@
-"""Suite for the REST edge (issue #23, ADR 0012).
+"""Suite for the REST edge (issues #23, #72, ADR 0012).
 
 Network-free by construction: the app factory takes the turn runner, the model lister, the
-capability checker, the registry, the note indexer and the checkpointer cleanup as arguments, so
-no test reaches Ollama, the employee database or the real state files. `FakeRunner` records the
-keyword arguments it was called with - which is how the tenant-in-body tests prove the agent was
-built for the token's tenant and not the body's - and replays a fixed ADR 0012 event sequence so
-the SSE framing assertions are exact. `BreakingRunner` is its opposite number: it yields part of
-a turn and then raises, which is what the stream-termination contract exists for.
+capability checker, the titler, the registry, the note indexer and the checkpointer cleanup as
+arguments, so no test reaches Ollama, the employee database or the real state files. `FakeRunner`
+records the keyword arguments it was called with - which is how the tenant-in-body tests prove the
+agent was built for the token's tenant and not the body's - and replays a fixed ADR 0012 event
+sequence so the SSE framing assertions are exact. `BreakingRunner` is its opposite number: it
+yields part of a turn and then raises, which is what the stream-termination contract exists for.
 
 The model list the endpoint reports includes the embedding model this app itself uses for RAG,
 because that is the live situation the filter exists for; `FakeCapabilities` answers `/api/show`
@@ -23,6 +23,12 @@ security property under test, so faking it would test nothing. The transcript se
 holding canned exchanges per thread and recording every thread it was asked for - what belongs
 here is that the endpoint serves the transcript in order and never reads one for a thread the
 caller does not own; reconstructing it from a real checkpoint is `test_agent.py`'s job.
+
+`FakeTitler` is the titling seam (`PATCH /conversations/{id}`, ADR 0012 as amended): it answers
+with a canned title or raises like a dead endpoint, which is how "a titling failure leaves the
+thread with the title it had" is asserted without a model. What belongs here rather than in
+`test_titles.py` is the endpoint's own contract - the identity check happens before the
+transcript is read and before the model is called, and the response carries the stored row.
 """
 
 import json
@@ -74,6 +80,7 @@ STARTED = ({"type": "node_start", "node": "reason"}, {"type": "token", "text": "
 # What a failing run must not put on the wire, whatever the exception carrying it says.
 SECRET_HOST = "http://ollama.internal:11434"
 INDEXED = "note index built"
+GENERATED_TITLE = "Headcount by department"
 
 PROTECTED_ROUTES = [
     ("GET", "/models"),
@@ -81,6 +88,7 @@ PROTECTED_ROUTES = [
     ("GET", "/conversations"),
     ("POST", "/conversations"),
     ("GET", "/conversations/whatever"),
+    ("PATCH", "/conversations/whatever"),
     ("DELETE", "/conversations/whatever"),
 ]
 
@@ -138,6 +146,22 @@ class FakeTranscripts:
 
 
 @dataclass
+class FakeTitler:
+    """The titling seam: answers with the canned title, or fails the way a dead endpoint does."""
+
+    answer: str = GENERATED_TITLE
+    error: Exception | None = None
+    prompts: list[str] = field(default_factory=list)
+
+    def __call__(self, prompt: str) -> str:
+        """Record the prompt, then answer as scripted or raise as scripted."""
+        self.prompts.append(prompt)
+        if self.error is not None:
+            raise self.error
+        return self.answer
+
+
+@dataclass
 class FakeCapabilities:
     """The `/api/show` seam: canned capabilities per model id, counting every lookup."""
 
@@ -173,6 +197,7 @@ class Wiring:
     runner: FakeRunner
     transcripts: FakeTranscripts
     capabilities: FakeCapabilities
+    titler: FakeTitler
     deleted: list[str]
     indexed: list[str]
 
@@ -189,12 +214,14 @@ def wiring(tmp_path) -> Wiring:
     runner = FakeRunner()
     transcripts = FakeTranscripts()
     capabilities = FakeCapabilities()
+    titler = FakeTitler()
     deleted: list[str] = []
     indexed: list[str] = []
     app = create_app(
         chat_runner=runner,
         model_lister=lambda: list(SERVED_MODELS),
         capability_checker=capabilities,
+        titler=titler,
         registry=ConversationRegistry(tmp_path / "state.db"),
         transcript=transcripts,
         cleanup=deleted.append,
@@ -205,13 +232,21 @@ def wiring(tmp_path) -> Wiring:
         runner=runner,
         transcripts=transcripts,
         capabilities=capabilities,
+        titler=titler,
         deleted=deleted,
         indexed=indexed,
     )
 
 
 def _client(
-    tmp_path, *, model_lister=None, capability_checker=None, chat_runner=None, note_index=None
+    tmp_path,
+    *,
+    model_lister=None,
+    capability_checker=None,
+    chat_runner=None,
+    note_index=None,
+    titler=None,
+    transcript=None,
 ) -> TestClient:
     """A client wired like the fixture but with the seams a single test wants to vary."""
     return TestClient(
@@ -219,7 +254,9 @@ def _client(
             chat_runner=chat_runner or FakeRunner(),
             model_lister=model_lister or (lambda: list(SERVED_MODELS)),
             capability_checker=capability_checker or FakeCapabilities(),
+            titler=titler or FakeTitler(),
             registry=ConversationRegistry(tmp_path / "state.db"),
+            transcript=transcript or FakeTranscripts(),
             cleanup=lambda thread_id: None,
             note_index=note_index or (lambda: None),
         )
@@ -501,6 +538,78 @@ def test_get_conversation_replays_a_thread_never_chatted_in_as_empty(wiring):
     response = wiring.client.get(f"/conversations/{thread_id}", headers=headers)
     assert response.status_code == 200
     assert response.json()["messages"] == []
+
+
+def test_patch_conversation_retitles_the_thread_from_its_first_exchange(wiring):
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers, title=QUESTION)
+    wiring.transcripts.stored[thread_id] = list(TRANSCRIPT)
+
+    response = wiring.client.patch(f"/conversations/{thread_id}", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["title"] == GENERATED_TITLE
+    assert response.json()["thread_id"] == thread_id
+    assert QUESTION in wiring.titler.prompts[0]
+    listed = wiring.client.get("/conversations", headers=headers).json()
+    assert listed[0]["title"] == GENERATED_TITLE
+
+
+def test_patch_conversation_on_a_foreign_thread_is_a_404_that_titles_nothing(wiring):
+    alice_headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, alice_headers, title=QUESTION)
+    wiring.transcripts.stored[thread_id] = list(TRANSCRIPT)
+    bob_headers = _headers(wiring.client, BOB)
+
+    foreign = wiring.client.patch(f"/conversations/{thread_id}", headers=bob_headers)
+    missing = wiring.client.patch("/conversations/no-such-thread", headers=bob_headers)
+
+    assert foreign.status_code == missing.status_code == 404
+    assert foreign.json() == missing.json()
+    assert wiring.titler.prompts == []
+    assert wiring.transcripts.asked == []
+    kept = wiring.client.get(f"/conversations/{thread_id}", headers=alice_headers)
+    assert kept.json()["title"] == QUESTION
+
+
+def test_patch_conversation_keeps_the_first_message_title_when_titling_fails(tmp_path):
+    transcripts = FakeTranscripts()
+    titler = FakeTitler(error=RuntimeError(f"connect timeout to {SECRET_HOST}"))
+    client = _client(tmp_path, titler=titler, transcript=transcripts)
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers, title=QUESTION)
+    transcripts.stored[thread_id] = list(TRANSCRIPT)
+
+    response = client.patch(f"/conversations/{thread_id}", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["title"] == QUESTION
+    assert SECRET_HOST not in response.text
+
+
+def test_patch_conversation_keeps_the_title_of_a_thread_never_chatted_in(wiring):
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers, title=QUESTION)
+
+    response = wiring.client.patch(f"/conversations/{thread_id}", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["title"] == QUESTION
+    assert wiring.titler.prompts == []
+
+
+def test_a_generated_title_is_stored_stripped_of_control_characters(tmp_path):
+    transcripts = FakeTranscripts()
+    client = _client(
+        tmp_path, titler=FakeTitler(answer="Head\x00count\nby office"), transcript=transcripts
+    )
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers, title=QUESTION)
+    transcripts.stored[thread_id] = list(TRANSCRIPT)
+
+    response = client.patch(f"/conversations/{thread_id}", headers=headers)
+
+    assert response.json()["title"] == "Head count by office"
 
 
 def test_conversation_lists_are_scoped_to_the_identity(wiring):
