@@ -61,9 +61,11 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
 - `[ ]` **M1 — Dataset + RLS core.** `scripts/generate_dataset.py` →
   `employees.csv`; `db.py` (load + tenant-scoped executor); `security.py`
   (sqlglot validator); the adversarial test suite proving isolation, red → green.
-- `[ ]` **M2 — Agent.** `agent.py`: LangGraph agent on Ollama with RLS-enforced
-  tools (`query_db`, `get_stats`, `plot`, bonus `detect_anomalies`); schema card
-  + sample rows in the prompt; empirical model pick (ADR 0005).
+- `[ ]` **M2 — Agent.** `agent.py`: explicit LangGraph graph on Ollama with
+  RLS-enforced tools (`query_db`, `get_stats`, `plot`, `search_notes`, bonus
+  `detect_anomalies`); multi-turn memory; two-tier retry policy (ADR 0011);
+  tenant-filtered RAG via `rag.py` (ADR 0010); schema card + sample rows in
+  the prompt; empirical model pick (ADR 0005).
 - `[ ]` **M3 — REST API + auth.** `app.py` (thin handlers: `/login`, `/chat`,
   `/health`), `auth.py` (hardcoded tenant users, JWT with tenant claim).
 - `[ ]` **M4 — Frontend.** React SPA on the KB design system: login, chat with
@@ -106,7 +108,8 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Auth / JWT / tenant users | `apps/backend/auth.py` |
 | Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection |
 | SQL validation (allowlist) | `apps/backend/security.py` |
-| Agent, tools, prompts | `apps/backend/agent.py` |
+| Agent, tools, prompts, retry policy, memory | `apps/backend/agent.py` |
+| Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`) |
 | Dataset generator | `apps/backend/scripts/generate_dataset.py` |
 | Eval harness | `apps/backend/evals/` |
 | Tests | `apps/backend/tests/` |

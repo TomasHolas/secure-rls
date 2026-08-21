@@ -66,7 +66,8 @@ and tenant context — which also feeds the UI trace and the eval leakage checks
 |---|---|
 | `apps/backend/app.py` | FastAPI edge: `/login`, `/chat`, `/health`. Thin handlers, no logic. |
 | `apps/backend/auth.py` | Hardcoded demo users (one+ per tenant), password check, JWT issue/verify with `tenant_id` claim. |
-| `apps/backend/agent.py` | LangGraph agent: system prompt with schema card + per-tenant sample rows, tool definitions, reasoning loop, trace collection. |
+| `apps/backend/agent.py` | Explicit LangGraph graph: system prompt with schema card + per-tenant sample rows, tool definitions, retry policy, multi-turn checkpointer, trace collection. |
+| `apps/backend/rag.py` | Note embedding (Ollama `/api/embed`) and tenant-partitioned vector search (ADR 0010); storage and queries go through `db.py`. |
 | `apps/backend/security.py` | The SQL validator brick (layer 2). Pure function: SQL text in, validated AST or a typed rejection out. |
 | `apps/backend/db.py` | CSV load, schema, the scoped executor (layers 3+4). The only module that opens a SQLite connection. |
 | `apps/backend/evals/` | Correctness + adversarial suites over the same bricks (ADR 0004). |
@@ -94,14 +95,18 @@ prompt-injection payloads in `notes`, openly listed in `poisoned_manifest.json`
 | Tool | Description | RLS enforcement |
 |---|---|---|
 | `query_db` | LLM-generated SQL, validated then executed. Results hard-capped with an explicit truncation signal (ADR 0007). | Layers 2+2.5+3+4; SQL shown in the UI trace |
-| `get_stats` | Named aggregates (avg/count/min/max by group). | Built on the scoped executor |
-| `plot` | Returns chart data + spec; rendered by the SPA. | Data comes from `get_stats`/`query_db` paths only |
-| `detect_anomalies` | Salary/performance outliers (bonus). | Built on the scoped executor |
+| `get_stats` | Typed args (metric/column/group_by from allowlists); fixed parameterized query — zero generated SQL. | Built on the scoped executor |
+| `plot` | Fetches its own data via the scoped executor; returns `{chart_spec, data}` to the SPA — charted values never pass through the model. | Built on the scoped executor |
+| `detect_anomalies` | Tukey IQR fences per group (default: department); robust to the lognormal salary shape (bonus). | Built on the scoped executor |
+| `search_notes` | Semantic search over embedded `notes` (ADR 0010): sqlite-vec `vec0` table with `tenant_id` as partition key — the KNN pre-filter runs before any vector comparison; neutral "no matching notes found" on empty results. | L1 closure + partition-key pre-filter + egress check |
 
-Every tool receives `tenant_id` by closure at bind time. RAG is kept minimal and
-honest: the schema card plus a few sample rows of the caller's own tenant are
-embedded in the system prompt — no vector store, because retrieval over a
-1000-row single-table dataset would be ornamental (defended in the README).
+Every tool receives `tenant_id` by closure at bind time. The agent is an
+explicit LangGraph graph with multi-turn memory (checkpointer keyed by an
+identity-derived `thread_id`; a login switch starts a fresh thread) and a
+two-tier retry policy: security rejections are terminal, honest errors retry
+up to 3 times (ADR 0011). The system prompt embeds the schema card plus a few
+own-tenant sample rows; retrieval over `notes` is the RAG component
+(ADR 0010).
 
 ## Assignment compliance map
 

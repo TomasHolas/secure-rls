@@ -26,3 +26,5 @@ docs in the same change.
 - [0007 — Result-size handling: cap, truncation signal, aggregation push-down](decisions/0007-result-size-handling.md)
 - [0008 — Dataset generation: seeded, calibrated to sourced distributions](decisions/0008-dataset-generation.md)
 - [0009 — Auth implementation: PBKDF2 hashing, pinned-algorithm JWT](decisions/0009-auth-implementation.md)
+- [0010 — Tenant-filtered RAG over notes (sqlite-vec partition keys)](decisions/0010-tenant-filtered-rag.md)
+- [0011 — Agent design: explicit graph, retry policy, memory, tool contracts](decisions/0011-agent-design.md)
