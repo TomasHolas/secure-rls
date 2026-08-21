@@ -121,6 +121,9 @@ cd apps/frontend && npm test      # vitest + jsdom: bricks, session, HTTP client
 # Eval harness (M5+; needs a live Ollama model):
 cd apps/backend && uv run python -m evals
 
+# Model gate (M2+; needs a live Ollama model, --dry-run needs nothing):
+cd apps/backend && uv run python -m evals.model_gate --model <id>
+
 # Dataset regeneration (M1+; deterministic, seeded):
 cd apps/backend && uv run python scripts/generate_dataset.py
 ```
