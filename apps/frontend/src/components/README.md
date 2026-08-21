@@ -18,9 +18,15 @@ whole KB library.
 components/
   Button.tsx       the one button brick — variants primary/ghost
   Icon.tsx         <Icon name="..." /> — Google Material Symbols only
+  TenantPill.tsx   the identity chip (tenant + user) in the header slot
+  forms/           FormCard, TextField (+ index barrel)
   layout/          AppLayout, Header, Page, PageHeader, Section, EmptyState (+ index barrel)
   charts/          Chart — renders a backend ChartSpec (+ index barrel)
 ```
+
+Views live beside them in `src/views/` (`LoginView`, `SessionBadge`, `AnalystView`); the
+non-visual bricks they compose are `src/auth.ts` (the session) and `src/lib/api.ts` (the
+one HTTP client).
 
 CSS for every brick lives in `styles/app.css`; colors, spacing, radii, motion and
 fonts come from `styles/tokens.css`.
@@ -55,20 +61,52 @@ The version bump is the cache-bust: `public/` assets are not fingerprinted by th
 bundler, so reusing the filename makes browsers serve the stale font and new glyphs
 render as literal text. A name whose ligature is not in the subset renders as literal
 text, so keep the map and the subset in sync.
+### Brand mark
 
+There is no logo component: `Header` renders `public/anteater.png` through an `<img>`,
+exactly like the KB header does. `public/favicon.png` is the tab icon.
 
-The anteater brand mark as a `currentColor` SVG, sized by `size` (height in px).
-`public/anteater.png` is the same mark as a raster (used as the touch icon);
-`public/favicon.png` is the tab icon.
+### TenantPill
+
+```tsx
+<TenantPill tenant={session.tenantId} username={session.username} />
+```
+
+The identity chip in the header slot: tenant id (mono) plus the signed-in user. Both
+values come from `auth.ts`, which reads them out of the JWT payload **for display
+only** — the server derives the real tenant from the verified token.
+
+### forms/FormCard
+
+The card a standalone form sits in: title, optional subtitle, the fields as children
+(ending in a `btn-block` Button), and the error slot. `onSubmit` is wired to a real
+form submit, so Enter works from any field.
+
+```tsx
+<FormCard title="Sign in" subtitle="..." error={error} onSubmit={submit}>
+  <TextField id="login-username" label="Username" value={username} onChange={setUsername} />
+  <Button variant="primary" type="submit" className="btn-block" disabled={pending}>Sign in</Button>
+</FormCard>
+```
+
+### forms/TextField
+
+The labelled text input (`type="text" | "password"`). KB writes this label+input pair
+inline in its views; here it is a brick, so no view re-styles an input.
+
+```tsx
+<TextField id="login-password" label="Password" type="password" value={password}
+  onChange={setPassword} autoComplete="current-password" disabled={pending} />
+```
 
 ### layout/AppLayout
 
 The app shell: the sticky `Header` plus the scrolling `main` region.
-`tenantBadge` is the header slot the tenant badge fills once login lands (M4b) —
-it is passed straight through to `Header`.
+`tenantBadge` is the header slot the identity badge fills once logged in — it is
+passed straight through to `Header`, and stays empty on the login screen.
 
 ```tsx
-<AppLayout tenantBadge={<TenantBadge tenant={tenant} />}>{page}</AppLayout>
+<AppLayout tenantBadge={<SessionBadge session={session} />}>{page}</AppLayout>
 ```
 
 ### layout/Header
@@ -142,7 +180,13 @@ either. Fixtures for all three kinds live in `charts/Chart.test.tsx` (`npm test`
 - `Button` drops KB's `to` (react-router `<Link>`) variant — this app has no router
   yet, so the link branch would be dead code. Add it back with the router.
 - CSS renames for clarity outside KB's view names: `.api-inline` -> `.mono-inline`,
-  `.settings` (the section stack) -> `.section-stack`.
+  `.settings` (the section stack) -> `.section-stack`, `.capture-card` ->
+  `.form-card`, `.capture-error` -> `.form-error`.
+- `FormCard` / `TextField` have no KB counterpart component: KB writes the
+  `.capture-card` + `.field` + `.input` markup inline in each view. The CSS is ported
+  verbatim; the components are new so this app has one owner per form shape.
+- `TenantPill` is new (KB has no tenants); its visual is KB's `.category-pill` shape
+  with the accent color instead of the per-category one.
 - KB bricks not ported because nothing composes them yet (Modal, ConfirmDialog,
   tables, atoms, ...). Port from KB when a view needs one — never hand-roll
   an equivalent.
