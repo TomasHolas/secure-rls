@@ -32,6 +32,15 @@ class DbConfig:
 
 
 @dataclass(frozen=True)
+class AnalyticsConfig:
+    """Structured-analytics knobs: histogram binning and the in-Python scan budget (ADR 0011)."""
+
+    histogram_bins: int
+    max_histogram_bins: int
+    max_scan_rows: int
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     """Agent and model knobs (ADRs 0005, 0011)."""
 
@@ -60,6 +69,7 @@ class Runtime:
 
     dataset: DatasetConfig
     db: DbConfig
+    analytics: AnalyticsConfig
     agent: AgentConfig
     auth: AuthConfig
     conversations: ConversationsConfig
@@ -72,6 +82,7 @@ def runtime() -> Runtime:
     return Runtime(
         dataset=DatasetConfig(**raw["dataset"]),
         db=DbConfig(**raw["db"]),
+        analytics=AnalyticsConfig(**raw["analytics"]),
         agent=AgentConfig(**raw["agent"]),
         auth=AuthConfig(**raw["auth"]),
         conversations=ConversationsConfig(**raw["conversations"]),
