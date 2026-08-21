@@ -1,0 +1,123 @@
+"""Auth brick (ADR 0009).
+
+Demo users are stored as PBKDF2-HMAC-SHA256 digests - 600,000 iterations, per-user
+16-byte salt, `algorithm$iterations$salt$hash` - and tokens are HS256 JWTs whose
+algorithm list is pinned on decode.
+"""
+
+import hashlib
+import hmac
+import os
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+import jwt
+
+from runtime import runtime
+
+SECRET_ENV_VAR = "JWT_SECRET"
+
+_JWT_ALGORITHM = "HS256"
+_REQUIRED_CLAIMS = ["sub", "tenant_id", "exp", "iat"]
+_MIN_SECRET_BYTES = 32
+
+# username -> (tenant_id, stored PBKDF2 hash); plaintext demo passwords live only in the README.
+_DEMO_USERS: dict[str, tuple[str, str]] = {
+    "alice@acme": (
+        "acme",
+        "pbkdf2_sha256$600000$417244ce9f6e9feb891d4d97b893e1a1"
+        "$171b47b7341efaa3da642d00864fe1d59dba825f85616e8dbe20332f44c7d2f0",
+    ),
+    "bob@beta": (
+        "beta",
+        "pbkdf2_sha256$600000$70dcf225eba0585c19de6e1cf172c1ba"
+        "$b6fc7d8db4bfe599d428cb768afad03b4059109bf39913d65346e12c79acf6a2",
+    ),
+    "carol@gamma": (
+        "gamma",
+        "pbkdf2_sha256$600000$b58f0c96777c2186adf57082bd765d1b"
+        "$ffbfefb8ee191009d5f933f1507b4d0a515a83f45372402e4c2886bbb827c6b8",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class Identity:
+    """The verified caller: subject and the tenant every RLS layer scopes to."""
+
+    sub: str
+    tenant_id: str
+
+
+class AuthError(Exception):
+    """Raised when a token is invalid or expired, or the signing secret is unusable."""
+
+
+def jwt_secret() -> str:
+    """Return the HS256 signing secret from the environment, failing fast if unset or too weak."""
+    secret = os.environ.get(SECRET_ENV_VAR, "")
+    if not secret:
+        raise AuthError(f"{SECRET_ENV_VAR} is not set - generate one with: openssl rand -hex 32")
+    if _secret_bytes(secret) < _MIN_SECRET_BYTES:
+        raise AuthError(
+            f"{SECRET_ENV_VAR} is too short - HS256 needs at least {_MIN_SECRET_BYTES} bytes "
+            "(64 hex chars) - generate one with: openssl rand -hex 32"
+        )
+    return secret
+
+
+def verify_password(username: str, password: str) -> Identity | None:
+    """Return the identity behind valid credentials, or None for a bad password or unknown user."""
+    record = _DEMO_USERS.get(username)
+    if record is None:
+        return None
+    tenant_id, stored = record
+    if not _password_matches(password, stored):
+        return None
+    return Identity(sub=username, tenant_id=tenant_id)
+
+
+def create_token(identity: Identity) -> str:
+    """Sign a short-lived HS256 token carrying the identity's subject and tenant claim."""
+    issued_at = datetime.now(UTC)
+    claims = {
+        "sub": identity.sub,
+        "tenant_id": identity.tenant_id,
+        "iat": issued_at,
+        "exp": issued_at + timedelta(minutes=runtime().auth.token_ttl_minutes),
+    }
+    return jwt.encode(claims, jwt_secret(), algorithm=_JWT_ALGORITHM)
+
+
+def verify_token(token: str) -> Identity:
+    """Decode a token with the algorithm pinned (RFC 8725), raising AuthError on any failure."""
+    try:
+        claims = jwt.decode(
+            token,
+            jwt_secret(),
+            algorithms=[_JWT_ALGORITHM],
+            options={"require": _REQUIRED_CLAIMS},
+        )
+    except jwt.PyJWTError as exc:
+        raise AuthError(f"invalid or expired token: {exc}") from exc
+    return Identity(sub=claims["sub"], tenant_id=claims["tenant_id"])
+
+
+def _password_matches(password: str, stored: str) -> bool:
+    """Recompute the stored record's PBKDF2 digest and compare it in constant time."""
+    algorithm, iterations, salt_hex, digest_hex = stored.split("$")
+    computed = hashlib.pbkdf2_hmac(
+        algorithm.removeprefix("pbkdf2_"),
+        password.encode(),
+        bytes.fromhex(salt_hex),
+        int(iterations),
+    )
+    return hmac.compare_digest(computed, bytes.fromhex(digest_hex))
+
+
+def _secret_bytes(secret: str) -> int:
+    """Size of the secret in bytes, hex-decoded when it is a hex string."""
+    try:
+        return len(bytes.fromhex(secret))
+    except ValueError:
+        return len(secret.encode())
