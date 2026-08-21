@@ -82,10 +82,10 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   `detect_anomalies`); multi-turn memory; two-tier retry policy (ADR 0011);
   tenant-filtered RAG via `rag.py` (ADR 0010); schema card + sample rows in
   the prompt; empirical model pick (ADR 0005).
-- `[~]` **M3 — REST API + auth.** `app.py` (thin handlers: `/login`, `/chat` as
+- `[x]` **M3 — REST API + auth.** `app.py` (thin handlers: `/login`, `/chat` as
   an SSE stream of typed trace events, `/conversations` JWT-scoped CRUD,
-  `/health` — ADR 0012), `auth.py` (hardcoded tenant users, JWT with tenant
-  claim, ADR 0009).
+  `/health`, `/models` proxying the endpoint's model list — ADR 0012),
+  `auth.py` (hardcoded tenant users, JWT with tenant claim, ADR 0009).
 - `[~]` **M4 — Frontend.** React SPA on the KB design system: login, streaming
   chat with live trace (generated vs executed SQL side by side), conversation
   history sidebar, tenant badge, charts, transparent security-refusal and
@@ -103,7 +103,9 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
 
 > Target commands; each arrives with its milestone. Prerequisites: `uv`, Node 20+,
 > and a reachable Ollama endpoint (M2+ only — not needed for tests or CI):
-> `cp .env.example .env` and set `OLLAMA_BASE_URL` (Tailscale machine or localhost).
+> `cp .env.example .env`, set `OLLAMA_BASE_URL` (Tailscale machine or localhost)
+> and set `JWT_SECRET` (`openssl rand -hex 32`) — the API refuses to boot without
+> it (ADR 0009).
 
 ```bash
 # Backend dev (M3+):

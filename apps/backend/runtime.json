@@ -34,5 +34,9 @@
   },
   "conversations": {
     "title_max_chars": 80
+  },
+  "api": {
+    "models_timeout_s": 5.0,
+    "default_title": "New conversation"
   }
 }

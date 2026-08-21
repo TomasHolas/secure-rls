@@ -73,6 +73,14 @@ class ConversationsConfig:
 
 
 @dataclass(frozen=True)
+class ApiConfig:
+    """REST edge knobs (ADR 0012): the model-list proxy timeout and the untitled-thread title."""
+
+    models_timeout_s: float
+    default_title: str
+
+
+@dataclass(frozen=True)
 class Runtime:
     """The full typed runtime configuration."""
 
@@ -83,6 +91,7 @@ class Runtime:
     rag: RagConfig
     auth: AuthConfig
     conversations: ConversationsConfig
+    api: ApiConfig
 
 
 @lru_cache(maxsize=1)
@@ -97,4 +106,5 @@ def runtime() -> Runtime:
         rag=RagConfig(**raw["rag"]),
         auth=AuthConfig(**raw["auth"]),
         conversations=ConversationsConfig(**raw["conversations"]),
+        api=ApiConfig(**raw["api"]),
     )
