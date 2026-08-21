@@ -8,6 +8,10 @@
  * again with a fresh call) or a `security_event` (terminal refusal) - so a call item
  * holds one nullable outcome rather than three lists. An outcome whose id was never
  * announced still becomes its own item: nothing the backend said is dropped.
+ *
+ * Two things a turn carries besides its items: the reasoning streamed inside a step, which
+ * accumulates on that step and never on the answer, and what the turn cost, which arrives
+ * with the terminal frame (ADR 0012 as amended).
  */
 
 import type {
@@ -22,9 +26,14 @@ import type {
 /** The one event that closes a call: its result, the retry it triggered, or its refusal. */
 export type CallOutcome = ToolResultEvent | RetryEvent | SecurityEvent;
 
+/** The node the model reasons in; the fallback owner of reasoning that arrives before a step. */
+const REASON_NODE = "reason";
+
+/** A graph step, holding the reasoning streamed while the agent was inside it. */
 export interface NodeItem {
   kind: "node";
   node: string;
+  reasoning: string;
 }
 
 export interface CallItem {
@@ -49,17 +58,33 @@ export type TraceItem = NodeItem | CallItem | OrphanItem;
  */
 export type TurnPhase = "streaming" | "ok" | "blocked" | "gave_up" | "failed";
 
+/** What the turn cost: the summed usage of its model calls and the seconds it ran. */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  durationS: number;
+}
+
 export interface Turn {
   question: string;
   answer: string;
   items: TraceItem[];
   phase: TurnPhase;
   model: string | null;
+  usage: TurnUsage | null;
   error: string | null;
 }
 
 export function startTurn(question: string): Turn {
-  return { question, answer: "", items: [], phase: "streaming", model: null, error: null };
+  return {
+    question,
+    answer: "",
+    items: [],
+    phase: "streaming",
+    model: null,
+    usage: null,
+    error: null,
+  };
 }
 
 /** The turn after one trace event; the input turn is never mutated. */
@@ -69,6 +94,8 @@ export function applyEvent(turn: Turn, event: TraceEvent): Turn {
       return { ...turn, items: appendNode(turn.items, event.node) };
     case "token":
       return { ...turn, answer: turn.answer + event.text };
+    case "reasoning":
+      return { ...turn, items: appendReasoning(turn.items, event.text) };
     case "tool_call":
       return { ...turn, items: [...turn.items, callItem(event)] };
     case "tool_result":
@@ -97,8 +124,22 @@ function done(turn: Turn, event: DoneEvent): Turn {
     answer: failed ? turn.answer : turn.answer || event.answer,
     phase: event.status,
     model: event.model,
+    usage: {
+      inputTokens: event.input_tokens,
+      outputTokens: event.output_tokens,
+      durationS: event.duration_s,
+    },
     error: failed ? event.answer : turn.error,
   };
+}
+
+/**
+ * How fast the answer came out, or null when the turn produced nothing to divide - a refusal
+ * with no model output, or a duration too short to have been measured.
+ */
+export function tokensPerSecond(usage: TurnUsage | null): number | null {
+  if (!usage || usage.outputTokens <= 0 || usage.durationS <= 0) return null;
+  return usage.outputTokens / usage.durationS;
 }
 
 function callItem(event: ToolCallEvent): CallItem {
@@ -109,7 +150,22 @@ function callItem(event: ToolCallEvent): CallItem {
 function appendNode(items: TraceItem[], node: string): TraceItem[] {
   const last = items[items.length - 1];
   if (last && last.kind === "node" && last.node === node) return items;
-  return [...items, { kind: "node", node }];
+  return [...items, { kind: "node", node, reasoning: "" }];
+}
+
+/**
+ * Reasoning belongs to the step the agent was in when it thought it, so it accumulates on the
+ * trailing node item. The backend announces the node before it streams a word, so the tail is
+ * that step; reasoning that somehow arrives first opens the step it can only have come from.
+ */
+function appendReasoning(items: TraceItem[], text: string): TraceItem[] {
+  const last = items[items.length - 1];
+  if (!last || last.kind !== "node") {
+    return [...items, { kind: "node", node: REASON_NODE, reasoning: text }];
+  }
+  const next = [...items];
+  next[next.length - 1] = { ...last, reasoning: last.reasoning + text };
+  return next;
 }
 
 function attachOutcome(items: TraceItem[], outcome: CallOutcome): TraceItem[] {

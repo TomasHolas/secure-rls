@@ -7,6 +7,10 @@
  * (the disclosure is KB's `Collapsible`: a chevron, a caps label and a count chip). Each
  * item is one `TraceStep`; a call carries its arguments, then its result, its retry or
  * its refusal, so the failing statement and the reason it failed read as one card.
+ *
+ * A graph step whose node streamed reasoning shows it as that step's own disclosure, closed
+ * to start with: the label the panel used to invent ("Reasoning") now opens onto the model's
+ * actual thinking, and a reader who only wants the answer never has it in the way.
  */
 
 import { useState } from "react";
@@ -80,7 +84,10 @@ function TraceItemStep({ item }: { item: TraceItem }) {
         icon={NODE_ICONS[item.node] ?? "workflow"}
         title={NODE_LABELS[item.node] ?? item.node}
         tone="muted"
-      />
+        open={false}
+      >
+        {item.reasoning ? <p className="trace-reasoning">{item.reasoning}</p> : null}
+      </TraceStep>
     );
   }
   if (item.kind === "orphan") {

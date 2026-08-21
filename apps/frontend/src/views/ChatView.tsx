@@ -18,6 +18,10 @@
  * produced it and is never re-served (ADR 0012), so only turns streamed in this session
  * carry one. Switching threads (a new `chatKey`) drops the live turns with it.
  *
+ * A turn reads top down in the order it happened: the trace of the steps first, then the answer
+ * they produced, then what the turn cost beside the model that answered it. The reasoning inside
+ * a step is the model's own, streamed live and collapsed until the reader asks for it.
+ *
  * A turn that never reaches an answer is shown as failed, never dressed up as one. The reason
  * is the backend's whenever the backend has one: a `done` frame with status `failed` carries the
  * server's own diagnosis, which is what the reader sees. The strings below cover only what the
@@ -38,11 +42,13 @@ import { Pill } from "../components/Pill";
 import { ApiError, listModels, openChatStream } from "../lib/api";
 import type { Message } from "../lib/api";
 import { readTraceEvents } from "../lib/sse";
-import { applyEvent, failTurn, startTurn } from "../lib/trace";
-import type { Turn } from "../lib/trace";
+import { applyEvent, failTurn, startTurn, tokensPerSecond } from "../lib/trace";
+import type { Turn, TurnUsage } from "../lib/trace";
 
 const STREAM_CUT = "The stream ended before the turn finished.";
 const GENERIC_FAILURE = "The turn failed. Try again.";
+/** A generation rate reads as a speed, not a measurement: one decimal is all it carries. */
+const RATE_DECIMALS = 1;
 /** How far off the bottom still counts as "at the bottom": a rounding-error gap, not a scroll. */
 const BOTTOM_SLACK = 24;
 const PHASE_PILL = {
@@ -157,7 +163,7 @@ export function ChatView({
       <PageHeader
         eyebrow="secure-rls"
         title="Conversational data analyst"
-        subtitle="Ask about your tenant's HR data. Row-level security is enforced server-side in four layers, and every step the agent takes is in the trace below its answer."
+        subtitle="Ask about your tenant's HR data. Row-level security is enforced server-side in four layers, and every step the agent takes is in the trace above its answer."
         actions={
           <div className="chat-toolbar">
             <ModelPicker
@@ -215,6 +221,7 @@ function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
       <ChatMessage
         role="assistant"
         text={turn.answer || undefined}
+        lead={<TracePanel items={turn.items} streaming={live} />}
         footer={
           phase || turn.model ? (
             <>
@@ -224,6 +231,7 @@ function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
                   {turn.model}
                 </Pill>
               ) : null}
+              <TurnCost usage={turn.usage} />
             </>
           ) : null
         }
@@ -232,9 +240,32 @@ function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
           <p className="msg-pending">thinking</p>
         ) : null}
         {turn.error ? <p className="form-error">{turn.error}</p> : null}
-        <TracePanel items={turn.items} streaming={live} />
       </ChatMessage>
     </div>
+  );
+}
+
+/**
+ * What the turn cost, beside the model that spent it: prompt tokens in, generated tokens out,
+ * and the rate the answer came out at. A turn that reported no output has nothing to state.
+ */
+function TurnCost({ usage }: { usage: TurnUsage | null }) {
+  const rate = tokensPerSecond(usage);
+  if (!usage || usage.outputTokens <= 0) return null;
+  return (
+    <>
+      <Pill tone="neutral" title="Prompt tokens this turn sent to the model">
+        In {usage.inputTokens}
+      </Pill>
+      <Pill tone="neutral" title="Tokens the model generated this turn">
+        Out {usage.outputTokens}
+      </Pill>
+      {rate === null ? null : (
+        <Pill tone="neutral" icon="activity" title="Generated tokens per second">
+          {rate.toFixed(RATE_DECIMALS)} T/S
+        </Pill>
+      )}
+    </>
   );
 }
 
