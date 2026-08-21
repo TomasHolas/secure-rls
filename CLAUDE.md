@@ -79,7 +79,9 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   (sqlglot validator); the adversarial test suite proving isolation, red → green.
 - `[x]` **M2 — Agent.** `agent.py`: explicit LangGraph graph on Ollama with
   RLS-enforced tools (`query_db`, `get_stats`, `plot`, `search_notes`, bonus
-  `detect_anomalies`); multi-turn memory; two-tier retry policy (ADR 0011);
+  `detect_anomalies`); multi-turn memory; two-tier retry policy and the per-turn
+  bounds that stop a runaway turn — generation and context caps on the model
+  client, a wall-clock deadline, a tool-round cap (ADR 0011);
   tenant-filtered RAG via `rag.py` (ADR 0010); schema card + sample rows in
   the prompt; empirical model pick (ADR 0005).
 - `[x]` **M3 — REST API + auth.** `app.py` (thin handlers: `/login`, `/chat` as
