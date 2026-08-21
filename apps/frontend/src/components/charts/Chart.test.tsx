@@ -87,6 +87,15 @@ describe("Chart", () => {
     expect(container.querySelector("svg")).toBeNull();
   });
 
+  it("reserves its height whether it plots or reports no data", () => {
+    const plotted = render(<Chart spec={BAR} height={300} />);
+    expect((plotted.container.querySelector(".chart") as HTMLElement).style.minHeight).toBe("300px");
+    cleanup();
+
+    const empty = render(<Chart spec={{ ...BAR, data: [] }} height={300} />);
+    expect((empty.container.querySelector(".chart") as HTMLElement).style.minHeight).toBe("300px");
+  });
+
   it("scales bars against the largest value, so the tallest bar spans the plot", () => {
     const { container } = render(<Chart spec={BAR} />);
 

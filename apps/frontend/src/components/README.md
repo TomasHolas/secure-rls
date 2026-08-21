@@ -188,10 +188,16 @@ inline in its views; here it is a brick, so no view re-styles an input.
 
 ### layout/AppLayout
 
-The app shell: the sticky `Header` over a body row of the optional left rail plus the
-scrolling `main` region. `tenantBadge` is the header slot the identity badge fills once
-logged in — it is passed straight through to `Header`, and stays empty on the login screen.
-`sidebar` is the rail slot; empty on the login screen too, so the shell has one shape.
+The app shell: the `Header` over a body row of the optional left rail plus the `main`
+region. `tenantBadge` is the header slot the identity badge fills once logged in — it is
+passed straight through to `Header`, and stays empty on the login screen. `sidebar` is the
+rail slot; empty on the login screen too, so the shell has one shape.
+
+The shell is **exactly the viewport tall**, unlike KB's document-height one: header and rail
+are flex furniture measured by layout (so nothing has to guess a header height), and
+scrolling happens inside the region that owns it. `main` is a column that scrolls when a
+view is taller than the shell (the login card) and hands its full height to a view that
+claims it with `flex: 1` instead (the chat page, whose `.chat-log` is its own scroller).
 
 ```tsx
 <AppLayout
@@ -210,8 +216,9 @@ logged in — it is passed straight through to `Header`, and stays empty on the 
 </Sidebar>
 ```
 
-The shell's left rail: a caps title, an actions slot and the list itself, sticky under the
-header with its own scroll so a long list never scrolls the page beside it. It owns its
+The shell's left rail: a caps title, an actions slot and the list itself, a full-height
+column with its own scroll so a long list never scrolls the page beside it — and so its
+right border reads as the page's divider rather than stopping under the last row. It owns its
 collapse state the way KB's `Collapsible` owns its open flag — collapsed, the rail keeps
 only the reopen control and gives the width back to the main region — so no view threads
 that state through. The rows are `.rail-item` (+ `.active`): a `.rail-item-open` label over
@@ -280,6 +287,10 @@ three gridded ticks in compact notation, plus `x_label`/`y_label` as axis titles
 dots carry a `<title>` tooltip with the exact value. An empty `data` array renders the
 `EmptyState` brick under the title instead of an axis-less plot.
 
+The brick **reserves `height`** whether it plots or reports no data, and measures its own
+width before the first paint rather than after it: a chart lands in the middle of a stream,
+so a chart-shaped hole that then resizes would shift the transcript under the reader.
+
 Charts are **hand-rolled SVG, no chart library** — matching the KB, which has none
 either. Fixtures for all three kinds live in `charts/Chart.test.tsx` (`npm test`).
 
@@ -296,7 +307,9 @@ One turn's bubble: an icon + caps role header over the text, `user` a compact ti
 bubble and `assistant` the full-width card the trace and the status pills hang under.
 The **assistant** body goes through the `Markdown` brick (answers arrive in markdown, so
 `**bold**` must not show literally); the **user** body stays plain text with
-`white-space: pre-wrap` — it is what the person typed, never interpreted as markup.
+`white-space: pre-wrap` — it is what the person typed, never interpreted as markup. Those
+two are the whole rule: `pre-wrap` belongs to the typed question only, so the assistant's
+`.msg-text.markdown-body` drops it and the rendered blocks own their own whitespace.
 Structured output the model might describe (SQL, tables, charts) still has its own brick
 in the trace, where it is the real thing rather than model-written markup.
 
