@@ -30,6 +30,18 @@ it arrives — the live trace IS the transport, not a replay.
   `DELETE /conversations/{id}`. Every access verifies the thread belongs to
   the authenticated user+tenant — the conversation store is a fifth
   tenant-scoped data path under the same identity layer (ADR 0002 L1).
+
+### Model picker (amended per ADR 0005)
+
+- `GET /models` (JWT-protected) proxies the Ollama endpoint's `/api/tags` and
+  returns the live model list — the SPA never sees `OLLAMA_BASE_URL`, and the
+  list is never hardcoded.
+- `POST /chat` accepts an optional `model` field, honored only if the id is in
+  the live list at request time (allowlist over untrusted client input);
+  otherwise the request is rejected. Absent, `runtime.json` `agent.model`
+  applies.
+- The chat UI renders the picker (a brick) with the default preselected;
+  switching models mid-conversation is allowed and visible in the trace.
 - Logout invalidates nothing server-side (JWT is stateless) but the UI drops
   the token; a re-login lists only that identity's threads.
 
