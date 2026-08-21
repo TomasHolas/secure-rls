@@ -33,7 +33,7 @@ COLUMNS = (
     "hire_date",
     "notes",
 )
-USER_ID_TEMPLATE = "E{:05d}"
+FIRST_USER_ID = 1
 FAKER_LOCALE = "en_US"
 
 DEPARTMENTS = ("Engineering", "Sales", "Marketing", "HR", "Finance")
@@ -231,11 +231,11 @@ def build_dataset(config: DatasetConfig) -> tuple[list[dict[str, object]], dict[
     }
 
     rows: list[dict[str, object]] = []
-    manifest_records: list[dict[str, str]] = []
+    manifest_records: list[dict[str, object]] = []
     for index in range(config.rows):
         name = fake.name()
         notes = _review_note(scores[index], fake, rng)
-        user_id = USER_ID_TEMPLATE.format(index + 1)
+        user_id = FIRST_USER_ID + index
         payload = payload_by_row.get(index)
         if payload is not None:
             kind, marker, text = payload

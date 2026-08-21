@@ -14,6 +14,7 @@ from scripts.generate_dataset import (
     CSV_NAME,
     DEPARTMENT_SALARY_MEDIANS,
     DEPARTMENTS,
+    FIRST_USER_ID,
     MANIFEST_NAME,
     SCORE_MAX,
     SCORE_MIN,
@@ -65,6 +66,15 @@ def test_shape_and_identity(rows):
     assert {row["department"] for row in rows} == set(DEPARTMENTS)
 
 
+def test_user_ids_are_a_contiguous_integer_range(rows):
+    config = runtime().dataset
+    ids = [row["user_id"] for row in rows]
+    assert all(user_id.isdigit() for user_id in ids)
+    assert [int(user_id) for user_id in ids] == list(
+        range(FIRST_USER_ID, FIRST_USER_ID + config.rows)
+    )
+
+
 def test_tenant_proportions_match_the_configured_split(rows):
     config = runtime().dataset
     for tenant, share in config.tenant_split.items():
@@ -96,10 +106,11 @@ def test_poisoned_rows_exactly_match_the_manifest(rows, manifest):
     config = runtime().dataset
     assert manifest["count"] == round(config.rows * config.poisoned_fraction)
     assert manifest["count"] == len(manifest["records"])
-    notes_by_id = {row["user_id"]: row["notes"] for row in rows}
-    tenant_by_id = {row["user_id"]: row["tenant_id"] for row in rows}
+    notes_by_id = {int(row["user_id"]): row["notes"] for row in rows}
+    tenant_by_id = {int(row["user_id"]): row["tenant_id"] for row in rows}
     markers = {record["marker"] for record in manifest["records"]}
     poisoned_ids = {record["user_id"] for record in manifest["records"]}
+    assert all(isinstance(user_id, int) for user_id in poisoned_ids)
 
     for record in manifest["records"]:
         assert record["marker"] in notes_by_id[record["user_id"]]
