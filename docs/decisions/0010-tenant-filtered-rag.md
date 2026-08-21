@@ -61,6 +61,34 @@ pattern, with the same four layers as the SQL path:
   so it cannot pass vacuously - the only semantically-close note belongs to
   the foreign tenant.
 
+## Index lifecycle: built at startup (added after issue #66)
+
+The demo failed because nothing owned the question "when is the index built?".
+`search_notes` raised `FileNotFoundError("no vector store ...: index_notes has
+not run")` into the graph, which killed the turn. Two candidate answers existed
+— index at startup, or refuse cleanly forever — and the decision is **index at
+startup**, because a demo that answers note questions is the point of having the
+retrieval path at all.
+
+- **`create_app` builds the index before the API serves anything.** It runs
+  through an injected seam like every other dependency, so tests never embed.
+- **The build is idempotent**: it counts the rows the `vec0` table already holds
+  and only embeds when the store is missing or empty. A restart therefore costs
+  nothing, which is what makes "always at startup" affordable — the corpus is
+  ~1000 short notes, embedded in one batched pass.
+- **A failed build is never fatal to boot.** The embedding endpoint is a remote
+  machine (ADR 0005); if it is unreachable, the failure is logged and the API
+  starts anyway. Refusing to boot would take the whole demo down over one
+  optional data path — the availability trade-off standard guidance makes for a
+  dependency that is not on the critical path (Google SRE: graceful degradation).
+- **Until an index exists, `search_notes` states that retrieval is
+  unavailable** as its own tool result: not a retry (the model cannot fix an
+  operator condition, and three attempts would waste the turn's budget), and
+  not a `security_event` (nothing was refused; conflating the two would put a
+  false "blocked by a security layer" in front of the viewer). `rag` raises a
+  distinct `RetrievalUnavailable` so the tool layer can tell that condition
+  apart from a model error and from a defense firing.
+
 ## Consequences
 
 - The demo gains a third secured data path with zero new security code paths —
@@ -108,3 +136,6 @@ pattern, with the same four layers as the SQL path:
 - OWASP REST Security Cheat Sheet (generic error messages) —
   https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html
 - Ollama embedding models — https://ollama.com/blog/embedding-models
+- Google SRE book, Addressing Cascading Failures (graceful degradation: serve a
+  reduced feature set rather than fail the whole system on a non-critical
+  dependency) — https://sre.google/sre-book/addressing-cascading-failures/
