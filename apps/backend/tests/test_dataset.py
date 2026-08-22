@@ -2,6 +2,7 @@
 
 import csv
 import json
+from collections import Counter
 from datetime import date
 from pathlib import Path
 from statistics import median
@@ -16,10 +17,16 @@ from scripts.generate_dataset import (
     DEPARTMENTS,
     FIRST_USER_ID,
     MANIFEST_NAME,
+    NOTE_SHAPES,
+    NOTE_SLOT_POOLS,
+    SALARY_HIGH_RATIO,
+    SALARY_LOW_RATIO,
+    SALARY_ROUNDING,
     SCORE_MAX,
     SCORE_MIN,
     TENURE_CAP_YEARS,
     TENURE_REFERENCE_DATE,
+    note_band,
     write_dataset,
 )
 
@@ -29,6 +36,11 @@ SALARY_MEDIAN_TOLERANCE = 0.15
 SCORE_CLUSTER_LOW = 3.0
 SCORE_CLUSTER_HIGH = 4.5
 SCORE_CLUSTER_MIN_SHARE = 0.6
+# Truncated sampling leaves only chance collisions on a 10-wide grid; clipping used to stack 19.
+SALARY_MAX_REPEATS = 6
+SALARY_EXTREME_MAX_REPEATS = 2
+# Compositional notes are near-unique by construction; the floor leaves room for chance collisions.
+NOTE_DISTINCTNESS_FLOOR = 0.98
 
 
 @pytest.fixture(scope="module")
@@ -87,6 +99,50 @@ def test_department_salary_median_matches_the_anchor(rows, department):
     anchor = DEPARTMENT_SALARY_MEDIANS[department]
     salaries = [int(row["salary"]) for row in rows if row["department"] == department]
     assert abs(median(salaries) - anchor) / anchor <= SALARY_MEDIAN_TOLERANCE
+
+
+@pytest.mark.parametrize("department", DEPARTMENTS)
+def test_salaries_stay_inside_the_sourced_spread(rows, department):
+    """Truncated sampling, not clipping: in range by construction, up to the rounding step."""
+    anchor = DEPARTMENT_SALARY_MEDIANS[department]
+    salaries = [int(row["salary"]) for row in rows if row["department"] == department]
+    assert min(salaries) >= round(anchor * SALARY_LOW_RATIO) - SALARY_ROUNDING
+    assert max(salaries) <= round(anchor * SALARY_HIGH_RATIO) + SALARY_ROUNDING
+
+
+def test_no_salary_value_piles_up(rows):
+    """The clipping defect: out-of-range draws used to land exactly ON the bound, 19 deep."""
+    counts = Counter(int(row["salary"]) for row in rows)
+    assert max(counts.values()) <= SALARY_MAX_REPEATS
+
+
+@pytest.mark.parametrize("department", DEPARTMENTS)
+def test_no_department_extreme_is_a_mass_point(rows, department):
+    """What made the anomaly tool look fabricated: Tukey fences flagged a stack of equal pay."""
+    counts = Counter(int(row["salary"]) for row in rows if row["department"] == department)
+    for extreme in (min(counts), max(counts)):
+        assert counts[extreme] <= SALARY_EXTREME_MAX_REPEATS
+
+
+def test_notes_are_distinct_enough_for_semantic_search(rows):
+    """Compositional generation, not one template per row: near-identical hits undercut the RAG."""
+    notes = [row["notes"] for row in rows]
+    assert len(set(notes)) / len(notes) >= NOTE_DISTINCTNESS_FLOOR
+
+
+def test_every_note_opens_with_a_clause_from_its_own_score_band(rows):
+    """Band coherence is absolute (ADR 0008): a 4.7 must never read as underperformance."""
+    assert all(shape.startswith("{opening}") for shape in NOTE_SHAPES)
+    band_of = {
+        opening[0].upper() + opening[1:]: band
+        for band, pools in NOTE_SLOT_POOLS.items()
+        for opening in pools["opening"]
+    }
+    assert len(band_of) == sum(len(pools["opening"]) for pools in NOTE_SLOT_POOLS.values())
+
+    for row in rows:
+        matched = [band for opening, band in band_of.items() if row["notes"].startswith(opening)]
+        assert matched == [note_band(float(row["performance_score"]))], row["user_id"]
 
 
 def test_performance_scores_are_bounded_and_left_clustered(rows):
