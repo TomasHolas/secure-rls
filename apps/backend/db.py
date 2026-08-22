@@ -61,6 +61,10 @@ The retrieval path (ADR 0010) adds a second, narrow seam, because this module ow
 - `notes_for_indexing` reads every tenant's notes once at load time, over the same read-only
   connection and the same employees-only authorizer as a served query. It is a load-time
   admin read like `init_db`, not a serving path - nothing but `rag.index_notes` calls it.
+- `employee_rows` is the same kind of read, and the counterpart to `vector_store_rows`: it is
+  how startup tells a populated database from one that was never loaded (issue #96) without
+  paying for the CSV. `init_db` accepts `str` as well as `Path` because it is the one public
+  function a human invokes by hand.
 - `init_vector_store` creates `vectors.db`'s `vec0` table on a writable connection and stamps it
   with the digest of the corpus embedded; `vector_store_rows` and `vector_store_fingerprint`
   read that back over the same writable seam - together, the startup check that makes indexing
@@ -100,6 +104,7 @@ from security import ALLOWED_TABLE, FORBIDDEN_FUNCTIONS, QueryRejected, validate
 
 TENANT_COLUMN = "tenant_id"
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "employees.db"
+DEFAULT_CSV_PATH = Path(__file__).resolve().parent / "employees.csv"
 AUDIT_DB_NAME = "audit.db"
 VECTOR_DB_NAME = "vectors.db"
 VECTOR_TABLE = "note_vectors"
@@ -135,6 +140,7 @@ _INSERT = (
 _NOTES_SELECT = (
     f"SELECT {TENANT_COLUMN}, user_id, name, notes FROM {ALLOWED_TABLE} ORDER BY user_id"
 )
+_ROW_COUNT = f"SELECT COUNT(*) FROM {ALLOWED_TABLE}"
 # `partition key` shards per tenant; `+` columns are payload vec0 stores but cannot filter on.
 _VECTOR_SCHEMA = (
     f"CREATE VIRTUAL TABLE {VECTOR_TABLE} USING vec0("
@@ -306,8 +312,13 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def init_db(csv_path: Path, db_path: Path) -> None:
-    """Load csv_path into a fresh employees table at db_path and open its audit store."""
+def init_db(csv_path: str | Path, db_path: str | Path) -> None:
+    """Load csv_path into a fresh employees table at db_path and open its audit store.
+
+    Both paths are accepted as `str` too: this is the one public function invoked by hand - the
+    image build, the bootstrap check, a shell one-liner - and a string is what a hand types.
+    """
+    csv_path, db_path = Path(csv_path), Path(db_path)
     rows = _read_csv(csv_path)
     with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(f"DROP TABLE IF EXISTS {ALLOWED_TABLE}")
@@ -315,6 +326,24 @@ def init_db(csv_path: Path, db_path: Path) -> None:
         conn.execute(_INDEX)
         conn.executemany(_INSERT, rows)
     _open_audit(_audit_path(db_path)).close()
+
+
+def employee_rows(db_path: Path = DEFAULT_DB_PATH) -> int:
+    """How many employee rows db_path holds; 0 when it was never loaded (issue #96).
+
+    The counterpart to `vector_store_rows`: a load-time admin read, never a serving path, so
+    startup can tell a populated database from a missing one without re-reading the CSV. A file
+    that is absent, or present without the employees table, counts as 0.
+    """
+    if not db_path.exists():
+        return 0
+    config = runtime().db
+    with closing(_connect(db_path, _EngineGuard(config), config)) as conn:
+        try:
+            (count,) = conn.execute(_ROW_COUNT).fetchone()
+        except sqlite3.Error:
+            return 0
+    return int(count)
 
 
 def execute_scoped(

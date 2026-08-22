@@ -1,8 +1,11 @@
 """Suite for the REST edge (issues #23, #72, ADR 0012).
 
 Network-free by construction: the app factory takes the turn runner, the model lister, the
-capability checker, the titler, the registry, the note indexer and the checkpointer cleanup as
-arguments, so no test reaches Ollama, the employee database or the real state files. `FakeRunner`
+capability checker, the titler, the registry, the data-store loader, the note indexer, the note
+search and the checkpointer cleanup as arguments, plus the `db_path` they all read, so no test
+reaches Ollama, the committed dataset or the real state files. The two loader tests are the
+exception by necessity - they call the production loader itself, on a tmp database with a
+two-row CSV standing in for the committed one. `FakeRunner`
 records the keyword arguments it was called with - which is how the tenant-in-body tests prove the
 agent was built for the token's tenant and not the body's - and replays a fixed ADR 0012 event
 sequence so the SSE framing assertions are exact. `BreakingRunner` is its opposite number: it
@@ -57,6 +60,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import HumanMessage
 
 import app
+import db
 from agent import STATUS_FAILED, Message
 from app import (
     REFRESHED_TOKEN_HEADER,
@@ -130,7 +134,23 @@ PLOTTED = (
 )
 # What a failing run must not put on the wire, whatever the exception carrying it says.
 SECRET_HOST = "http://ollama.internal:11434"
+LOADED = "employee database loaded"
 INDEXED = "note index built"
+_DATA_UNREADABLE = "employees.db is unreadable"
+CSV_HEADER = (
+    "user_id",
+    "tenant_id",
+    "name",
+    "department",
+    "salary",
+    "performance_score",
+    "hire_date",
+    "notes",
+)
+CSV_ROWS = (
+    (1, "acme", "Ada", "Engineering", 100, 4.1, "2020-01-01", "solid quarter"),
+    (2, "beta", "Bo", "Engineering", 1000, 4.4, "2021-07-07", "beta secret"),
+)
 GENERATED_TITLE = "Headcount by department"
 
 BROWSE_HEADER = (
@@ -302,7 +322,24 @@ class Wiring:
     titler: FakeTitler
     notes: FakeNotes
     deleted: list[str]
+    loaded: list[str]
     indexed: list[str]
+
+
+@pytest.fixture
+def bootstrap_db(tmp_path, monkeypatch):
+    """A tmp database path for the loader, with a two-row CSV standing in for the committed one.
+
+    The database is an argument the loader takes; the CSV is the committed dataset, so pointing
+    the loader away from it is the one thing these tests patch.
+    """
+    csv_path = tmp_path / "employees.csv"
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(CSV_HEADER)
+        writer.writerows(CSV_ROWS)
+    monkeypatch.setattr(app, "DEFAULT_CSV_PATH", csv_path)
+    return tmp_path / "employees.db"
 
 
 @pytest.fixture(autouse=True)
@@ -333,6 +370,7 @@ def wiring(tmp_path, browse_db) -> Wiring:
     titler = FakeTitler()
     notes = FakeNotes()
     deleted: list[str] = []
+    loaded: list[str] = []
     indexed: list[str] = []
     app = create_app(
         chat_runner=runner,
@@ -342,6 +380,7 @@ def wiring(tmp_path, browse_db) -> Wiring:
         registry=ConversationRegistry(tmp_path / "state.db"),
         transcript=transcripts,
         cleanup=deleted.append,
+        data_store=lambda: loaded.append(LOADED),
         note_index=lambda: indexed.append(INDEXED),
         note_search=notes,
         db_path=browse_db,
@@ -354,6 +393,7 @@ def wiring(tmp_path, browse_db) -> Wiring:
         titler=titler,
         notes=notes,
         deleted=deleted,
+        loaded=loaded,
         indexed=indexed,
     )
 
@@ -364,6 +404,7 @@ def _client(
     model_lister=None,
     capability_checker=None,
     chat_runner=None,
+    data_store=None,
     note_index=None,
     titler=None,
     transcript=None,
@@ -380,6 +421,7 @@ def _client(
             registry=ConversationRegistry(tmp_path / "state.db"),
             transcript=transcript or FakeTranscripts(),
             cleanup=lambda thread_id: None,
+            data_store=data_store or (lambda: None),
             note_index=note_index or (lambda: None),
             note_search=note_search or FakeNotes(),
             **({} if db_path is None else {"db_path": db_path}),
@@ -791,6 +833,39 @@ def test_a_stream_that_breaks_after_its_done_frame_is_not_closed_twice(tmp_path)
     events = _sse_events(response.text)
     assert [event["type"] for event in events] == [event["type"] for event in EVENTS]
     assert events[-1]["status"] == "ok"
+
+
+def test_the_app_loads_the_employee_database_before_it_serves_anything(wiring):
+    """A fresh checkout has only the CSV, so loading it is a startup step (issue #96)."""
+    assert wiring.loaded == [LOADED]
+
+
+def test_an_employee_database_that_cannot_be_loaded_stops_the_app_from_booting(tmp_path):
+    """The data file is on the critical path: a half-working API is worse than no API."""
+
+    def broken() -> None:
+        raise RuntimeError(_DATA_UNREADABLE)
+
+    with pytest.raises(RuntimeError, match=_DATA_UNREADABLE):
+        _client(tmp_path, data_store=broken)
+
+
+def test_the_data_store_loader_builds_a_missing_database_from_the_committed_csv(bootstrap_db):
+    app.build_data_store(bootstrap_db)
+
+    assert db.employee_rows(bootstrap_db) == len(CSV_ROWS)
+
+
+def test_the_data_store_loader_leaves_a_populated_database_alone(bootstrap_db, monkeypatch):
+    """The idempotent half: a restart pays a row count, never the CSV again (issue #96)."""
+    app.build_data_store(bootstrap_db)
+    loads: list[tuple[object, object]] = []
+    monkeypatch.setattr(app, "init_db", lambda csv_path, db_path: loads.append((csv_path, db_path)))
+
+    app.build_data_store(bootstrap_db)
+
+    assert loads == []
+    assert db.employee_rows(bootstrap_db) == len(CSV_ROWS)
 
 
 def test_the_app_builds_the_note_index_before_it_serves_anything(wiring):
@@ -1214,6 +1289,7 @@ def test_a_turn_in_flight_is_not_killed_by_the_token_expiring(tmp_path):
             capability_checker=FakeCapabilities(),
             registry=ConversationRegistry(tmp_path / "state.db"),
             cleanup=lambda thread_id: None,
+            data_store=lambda: None,
             note_index=lambda: None,
         )
     )

@@ -118,16 +118,24 @@ module that owns the client - the graph is handed a model, never an endpoint - a
 resource half of the per-turn budget whose other half (the wall-clock deadline and the
 tool-round cap) the graph enforces.
 
+Startup data (issue #96). Nothing but the CSV is committed, so `create_app` loads the employee
+database from it before it serves anything - a fresh checkout starting with `uvicorn app:app`
+otherwise dies on the first read of a file no step ever created. The check is a row count on the
+existing file, so a database already there (a restart, or the image that bakes it at build time
+per ADR 0013) costs nothing and the CSV is not re-read. Unlike the note index this one IS on the
+critical path - every tool reads that file - so a failure to load it is raised and the process
+refuses to boot rather than serving a half-working API.
+
 Startup indexing (ADR 0010 as amended). `create_app` builds the note vector store before it
 serves anything, idempotently - a store that already holds notes is left alone, so only an empty
 or missing one costs embeddings. It needs the embedding endpoint, so a failure to reach it is
 logged and boot continues; `search_notes` then reports retrieval as offline rather than raising.
 
 Seams. `create_app` takes the turn runner, the model lister, the capability checker, the
-titler, the registry, the note indexer, the note search and the two checkpointer accesses -
-transcript replay and cleanup - as arguments, defaulting to the production wiring, plus the
-`db_path` every one of them reads the employee data from. Tests pass fakes and a tmp database,
-and never touch Ollama or the filesystem outside tmp_path.
+titler, the registry, the data-store loader, the note indexer, the note search and the two
+checkpointer accesses - transcript replay and cleanup - as arguments, defaulting to the
+production wiring, plus the `db_path` every one of them reads the employee data from. Tests
+pass fakes and a tmp database, and never touch Ollama or the filesystem outside tmp_path.
 
 Paths. All state files are resolved here, once: the employee database (`db.DEFAULT_DB_PATH`,
 beside which `db.py` derives its own `audit.db` and `vectors.db`), the registry's `state.db`
@@ -186,7 +194,7 @@ from browse import (
     flagged_user_ids,
 )
 from conversations import ConversationRegistry, NotFound, Thread, ToolResult
-from db import DEFAULT_DB_PATH, SecurityViolation
+from db import DEFAULT_CSV_PATH, DEFAULT_DB_PATH, SecurityViolation, employee_rows, init_db
 from rag import OllamaEmbed, RetrievalUnavailable, ensure_index, search_notes_scoped
 from runtime import runtime
 from security import QueryRejected
@@ -218,6 +226,8 @@ _TURN_FAILED = (
 _REFUSED = "the request was refused by a security layer"
 _INDEX_FAILED = "the note index could not be built at startup; search_notes will say it is offline"
 _INDEX_READY = "the note index holds %d notes"
+_DATA_READY = "the employee database holds %d rows"
+_DATA_LOADED = "loaded %d employee rows from the committed CSV"
 
 _LOG = logging.getLogger(__name__)
 _bearer = HTTPBearer(auto_error=False)
@@ -458,6 +468,16 @@ def thinking_checker(capabilities: CapabilityChecker) -> Callable[[str], bool]:
     return thinks
 
 
+def build_data_store(db_path: Path) -> None:
+    """The production loader: load the committed CSV unless the database holds rows (issue #96)."""
+    held = employee_rows(db_path)
+    if held:
+        _LOG.info(_DATA_READY, held)
+        return
+    init_db(DEFAULT_CSV_PATH, db_path)
+    _LOG.info(_DATA_LOADED, employee_rows(db_path))
+
+
 def build_note_index(base_url: str, db_path: Path) -> None:
     """The production indexer: embed the notes unless the store already holds them (ADR 0010)."""
     _LOG.info(_INDEX_READY, ensure_index(db_path, OllamaEmbed(base_url)))
@@ -494,18 +514,27 @@ def create_app(
     registry: ConversationRegistry | None = None,
     transcript: Callable[[str], list[Message]] | None = None,
     cleanup: Callable[[str], None] | None = None,
+    data_store: Callable[[], None] | None = None,
     note_index: Callable[[], None] | None = None,
     note_search: NoteSearch | None = None,
     db_path: Path = DB_PATH,
 ) -> FastAPI:
     """Build the API, refusing to start without a usable signing secret (ADR 0009).
 
-    The note index is built here, before anything is served (ADR 0010 as amended), and its
-    failure is not fatal: an unreachable embedding endpoint must not stop the API from booting,
-    so it is logged and `search_notes` reports retrieval as offline for as long as it is.
+    The employee database is loaded here first (issue #96), and a failure to load it IS fatal:
+    every tool reads that file, so a process that cannot open it has nothing to serve.
+
+    The note index is built next (ADR 0010 as amended), and its failure is not fatal: an
+    unreachable embedding endpoint must not stop the API from booting, so it is logged and
+    `search_notes` reports retrieval as offline for as long as it is.
+
+    `data_store` loads that database and `note_search` answers the Notes tab's retrieval; like
+    every other seam they default to a production builder reading the one `db_path` this factory
+    was given, so a test points the whole factory at a tmp database by passing that one argument.
     """
     jwt_secret()
     base_url = os.environ.get(OLLAMA_ENV_VAR, DEFAULT_OLLAMA_BASE_URL)
+    load_data = data_store or (lambda: build_data_store(db_path))
     index_notes = note_index or (lambda: build_note_index(base_url, db_path))
     capabilities = cached_capabilities(
         capability_checker or ollama_capability_checker(base_url)
@@ -519,6 +548,7 @@ def create_app(
     replay = transcript or read_transcript
     drop_checkpoints = cleanup or delete_checkpoints
     search_notes = note_search or ollama_note_search(base_url, db_path)
+    load_data()
     try:
         index_notes()
     except Exception:

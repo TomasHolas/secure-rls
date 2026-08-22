@@ -120,7 +120,8 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
 cp apps/backend/.env.example .env    # then fill both; compose refuses to run otherwise
 docker compose up --build            # backend :8002, frontend :3002
 
-# Backend dev (M3+):
+# Backend dev (M3+). The first start builds employees.db from the committed CSV and the note
+# index from those notes (ADR 0003 as amended, ADR 0010); later starts find both and are instant.
 cd apps/backend && uv sync && uv run uvicorn app:app --reload --port 8002
 
 # Frontend dev (M4+, talks to VITE_API_URL, default http://localhost:8002):
@@ -150,7 +151,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Conversation registry (scoped threads, titles, rename, per-turn tool evidence) | `apps/backend/conversations.py` (own app-state store `state.db`, beside the LangGraph checkpointer; access always verified against the JWT identity). Stores each turn's server-produced tool payloads so a reopened thread re-renders its charts, SQL pair and tables — capped and pruned per `runtime.json` (ADR 0012 as amended); the live trace's reasoning and retries stay session-only |
 | Generated thread titles | `apps/backend/titles.py` — the model's few-word label for a thread, sanitized, with the first-message fallback; called by `PATCH /conversations/{id}`, never from the `/chat` stream (ADR 0012 as amended) |
 | Auth / JWT / tenant users | `apps/backend/auth.py` |
-| Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection |
+| Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection. `init_db` loads the CSV (accepting `str` or `Path`) and `employee_rows` is how `create_app` tells a populated database from one that was never built (ADR 0003 as amended) |
 | SQL validation (allowlist) | `apps/backend/security.py` |
 | Records/Notes browsing (allowlisted filters, sorts, paging, the poison manifest) | `apps/backend/browse.py` — two fixed templates with bound filter values through `db.py`; sort and direction are allowlisted words, never bound values; the notes search delegates to `rag.py` (ADR 0014) |
 | Structured analytics (aggregates, Tukey IQR anomalies, chart data) | `apps/backend/analytics.py` — allowlisted args into fixed query templates through `db.py`; never generated SQL |

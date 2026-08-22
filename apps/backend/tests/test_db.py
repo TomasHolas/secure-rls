@@ -163,6 +163,31 @@ def test_init_db_creates_the_audit_store_as_a_separate_file(db_path):
     assert db.audit_entries(db_path) == []
 
 
+def test_init_db_accepts_string_paths_as_well_as_path_objects(tmp_path):
+    """The pinned contract (issue #96): a hand-typed string loads, it does not raise."""
+    csv_path = tmp_path / "employees.csv"
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(_HEADER)
+        writer.writerows(_ROWS)
+    path = tmp_path / "data.db"
+
+    db.init_db(str(csv_path), str(path))
+
+    assert db.employee_rows(path) == len(_ROWS)
+
+
+def test_employee_rows_counts_a_loaded_database(db_path):
+    assert db.employee_rows(db_path) == len(_ROWS)
+
+
+def test_employee_rows_is_zero_for_a_database_that_was_never_loaded(tmp_path):
+    empty = tmp_path / "empty.db"
+    empty.touch()
+    assert db.employee_rows(tmp_path / "missing.db") == 0
+    assert db.employee_rows(empty) == 0
+
+
 @pytest.mark.parametrize(
     ("sql", "expected"),
     [
