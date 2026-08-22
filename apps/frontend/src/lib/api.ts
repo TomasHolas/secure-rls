@@ -116,12 +116,19 @@ export interface DepartmentCount {
   employees: number;
 }
 
-/** One retrieved note with its distance — the agent's own retrieval result (ADR 0010). */
+/**
+ * One retrieved note with its distance — the agent's own retrieval result (ADR 0010), annotated
+ * server-side with the tenant, department and score of the row it came from so a reader can check
+ * the hit against the data rather than against the agent's account of it (ADR 0014).
+ */
 export interface NoteHit {
   user_id: number;
   name: string;
   note: string;
   distance: number;
+  tenant_id?: string;
+  department?: string;
+  performance_score?: number;
 }
 
 /** `GET /notes/search`: the query, how many hits it asked for, and what came back scored. */

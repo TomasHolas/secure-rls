@@ -181,11 +181,14 @@ the server's to decide. Without those props it is the plain table the chat trace
 ```
 
 Employee-written notes as quoted data, never as instructions — one card per note with its
-name, `#user_id` and, when retrieval produced one, the `distance` it scored. `flagged` is a
-`{user_id: payload_kind}` map (from `GET /notes/flagged`, the committed
-`poisoned_manifest.json`) and marks a planted injection payload with a warn `Pill`, which is
-what lets the demo point at a payload before the agent reads it (ADR 0014). The chat trace
-and the Notes tab share this brick, so a note reads identically wherever it is served.
+name, the `department` and `performance_score` of the row it belongs to (the note's tone is
+composed coherent with that score, ADR 0008, so the pair is a check a reader can make at a
+glance), `#user_id`, the `tenant_id` the row came from and, when retrieval produced one, the
+`distance` it scored. Every field but the name and the text is optional — the card shows what
+its caller has. `flagged` is a `{user_id: payload_kind}` map (from `GET /notes/flagged`, the
+committed `poisoned_manifest.json`) and marks a planted injection payload with a warn `Pill`,
+which is what lets the demo point at a payload before the agent reads it (ADR 0014). The chat
+trace and the Notes tab share this brick, so a note reads identically wherever it is served.
 
 ### Brand mark
 

@@ -188,6 +188,7 @@ from browse import (
     BrowsePage,
     Filters,
     Flagged,
+    annotate_note_hits,
     browse_notes,
     browse_records,
     departments,
@@ -677,12 +678,18 @@ def create_app(
 
         Not a second search: `rag.search_notes_scoped` is what the `search_notes` tool calls, so
         the hits and their distances are what the model would have been handed for that query.
+        Each hit is then annotated with its row's department and score through the scoped
+        executor, so a reader can check a retrieval claim against the data (ADR 0014).
         """
         wanted = _hit_count(k)
         return NoteHits(
             query=q,
             k=wanted,
-            hits=search_notes(query=q, tenant_id=identity.tenant_id, k=wanted),
+            hits=annotate_note_hits(
+                identity.tenant_id,
+                search_notes(query=q, tenant_id=identity.tenant_id, k=wanted),
+                db_path=db_path,
+            ),
         )
 
     @app.get("/notes/flagged")
