@@ -137,6 +137,55 @@ describe("the notes tab", () => {
     ).toBeTruthy();
   });
 
+  it("lets only the newest search write, whatever order the answers arrive in", async () => {
+    let landFirst: (hits: unknown) => void = () => {};
+    const stale = { user_id: 9, name: "Stale Hit", note: "older query", distance: 0.9 };
+    const fresh = { user_id: 2, name: "Fresh Hit", note: "newer query", distance: 0.1 };
+    api.searchNotes
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { landFirst = resolve as (hits: unknown) => void; }),
+      )
+      .mockImplementationOnce(() => Promise.resolve({ query: "second", k: 5, hits: [fresh] }));
+    const view = await show();
+    const form = view.container.querySelector(".search-row") as HTMLFormElement;
+
+    fireEvent.change(screen.getByLabelText("Query"), { target: { value: "first" } });
+    fireEvent.submit(form);
+    fireEvent.change(screen.getByLabelText("Query"), { target: { value: "second" } });
+    fireEvent.submit(form);
+    await screen.findByText("Fresh Hit");
+
+    landFirst({ query: "first", k: 5, hits: [stale] });
+
+    await waitFor(() => expect(api.searchNotes).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("Stale Hit")).toBeNull();
+    expect(screen.getByText("Fresh Hit")).toBeTruthy();
+  });
+
+  it("keeps a hit list a later failed search would otherwise have cleared", async () => {
+    const { ApiError } = await import("../lib/api");
+    let failFirst: (cause: unknown) => void = () => {};
+    api.searchNotes
+      .mockImplementationOnce(
+        () => new Promise((_, reject) => { failFirst = reject as (cause: unknown) => void; }),
+      )
+      .mockImplementationOnce(() => Promise.resolve(HITS));
+    const view = await show();
+    const form = view.container.querySelector(".search-row") as HTMLFormElement;
+
+    fireEvent.change(screen.getByLabelText("Query"), { target: { value: "first" } });
+    fireEvent.submit(form);
+    fireEvent.change(screen.getByLabelText("Query"), { target: { value: "compiler" } });
+    fireEvent.submit(form);
+    await screen.findByText(/distance 0.213/);
+
+    failFirst(new ApiError(503, "the note index has not been built on this server"));
+
+    await waitFor(() => expect(api.searchNotes).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("the note index has not been built on this server")).toBeNull();
+    expect(screen.getByText(/distance 0.213/)).toBeTruthy();
+  });
+
   it("pages the corpus server-side", async () => {
     await show();
 

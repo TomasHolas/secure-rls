@@ -10,9 +10,13 @@
  *
  * A missing note index is an operator condition, not a failure of the tab: the server answers
  * 503 with its own sentence and that sentence is what the reader is shown (ADR 0010 as amended).
+ *
+ * Every request here is guarded against its own staleness the same way - the corpus and the
+ * manifest by the effect's `live` flag, the search by a ticket - so a slower earlier answer can
+ * never overwrite a newer one and leave hits on screen for a query the reader has moved past.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "../components/Button";
 import { NoteList } from "../components/NoteList";
@@ -81,17 +85,27 @@ export function NotesView({ tenant }: { tenant: string }) {
     };
   }, [page]);
 
+  // Only the newest search may write: a slower earlier one must not overwrite it on arrival.
+  const latest = useRef(0);
+
   const search = useCallback(() => {
     if (!query.trim()) return;
+    const ticket = latest.current + 1;
+    latest.current = ticket;
     setSearching(true);
     setSearchError(null);
     searchNotes(query)
-      .then(setHits)
+      .then((found) => {
+        if (ticket === latest.current) setHits(found);
+      })
       .catch((cause) => {
+        if (ticket !== latest.current) return;
         setHits(null);
         setSearchError(cause instanceof ApiError ? cause.message : SEARCH_FAILURE);
       })
-      .finally(() => setSearching(false));
+      .finally(() => {
+        if (ticket === latest.current) setSearching(false);
+      });
   }, [query]);
 
   const pages = corpus ? Math.max(1, Math.ceil(corpus.total / corpus.page_size)) : 1;
