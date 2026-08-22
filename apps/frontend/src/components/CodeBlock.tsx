@@ -6,8 +6,14 @@
  *
  * `navigator.clipboard` is absent on insecure origins and in jsdom, so the control
  * hides itself rather than offering a button that cannot work.
+ *
+ * `children` is an optional marked-up rendering OF `code` - what `SqlRewrite` puts here to
+ * highlight the tenant scoping inside the statement - and `code` stays the plain text the copy
+ * control writes, so what a reader lifts out of the demo is never the markup. A caller that
+ * passes children owes it that they render the same statement.
  */
 
+import type { ReactNode } from "react";
 import { useState } from "react";
 
 import { Button } from "./Button";
@@ -18,10 +24,14 @@ export function CodeBlock({
   label,
   code,
   tone,
+  actions,
+  children,
 }: {
   label?: string;
   code: string;
   tone?: "accent";
+  actions?: ReactNode;
+  children?: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
   const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
@@ -35,9 +45,10 @@ export function CodeBlock({
 
   return (
     <div className={`code-block${tone ? ` code-block-${tone}` : ""}`}>
-      {label || clipboard ? (
+      {label || actions || clipboard ? (
         <div className="code-block-head">
           {label ? <span className="code-block-label">{label}</span> : null}
+          {actions}
           {clipboard ? (
             <Button className="btn-xs" onClick={() => void copy()}>
               {copied ? "copied" : "copy"}
@@ -45,7 +56,7 @@ export function CodeBlock({
           ) : null}
         </div>
       ) : null}
-      <pre className="code-block-body">{code}</pre>
+      <pre className="code-block-body">{children ?? code}</pre>
     </div>
   );
 }

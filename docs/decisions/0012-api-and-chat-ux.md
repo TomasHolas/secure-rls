@@ -342,6 +342,45 @@ mechanics instead of the analysis.
   reports what the turn cost, and a replayed turn still renders its stored
   evidence through these same bricks (one renderer, not two).
 
+### The rewrite marked in place, and thinking that says how long it took (amended after issue #91)
+
+A review pass over beautifului.dev, a pattern library for AI-native interfaces,
+against these screens (the adopt/reject table is
+[docs/ui-pattern-review.md](../ui-pattern-review.md)). Two of its patterns
+changed decisions taken above; everything else was rejected there with a reason.
+
+- **The generated/executed pair is one statement with the rewrite marked inside
+  it**, not two cards side by side. The executed statement *is* the generated one
+  plus what layer 3 wrapped around every `employees` reference, and saying that
+  by putting them in adjacent columns asked the reader to diff two
+  130-character statements by eye — which at demo distance does not happen.
+  `lib/sqldiff.ts` aligns the two token streams and `SqlRewrite` paints the
+  result: the tenant predicate and its bound parameter are marked, the model's
+  own words are not. Three properties earn their code:
+  - The diff is **token-level and case-insensitive**, because sqlglot renders the
+    scoped tree onto one flat line with uppercased keywords. A line diff reports
+    the whole statement as changed and communicates nothing.
+  - It minimises the number of edit **runs**, not the number of edited tokens
+    (an affine gap cost — Gotoh 1982). The injected subquery repeats the words
+    around it, so the alignment with the most matched tokens strands the model's
+    own words inside the insertion and renders the rewrite as confetti.
+  - Nothing is hidden: anything the rewrite replaced renders as a struck-through
+    deletion beside its replacement, a legend states what the highlight means
+    (colour is never the only signal, WCAG 1.4.1), the copy control still writes
+    plain SQL rather than the markup, and the two cards remain one click behind
+    `show both` — which is also the fallback for a statement too long to align.
+- **A thinking step is open while its thinking arrives and folds itself away when
+  it settles**, leaving `Thought for 2.8s` where the label was. The disclosure
+  decision above ("reasoning starts collapsed") was right about the settled state
+  and wrong about the live one: a reader watching a turn happen was shown a
+  closed row and a spinner while the interesting part streamed behind it. The
+  span is measured by **this client**, between the round's first reasoning chunk
+  and whatever the turn did next — the stream carries no timestamps, and the
+  measurement is honest about being the client's own. The reader's click still
+  wins from then on, so `TraceStep`'s `open` became the state a step is in rather
+  than the one it mounted in. A replayed turn stores no reasoning and is
+  unaffected.
+
 ## Consequences
 
 - M3 grows the conversation endpoints; M4 grows the sidebar; both covered by
@@ -389,3 +428,17 @@ mechanics instead of the analysis.
   https://www.unicode.org/reports/tr36/
 - RFC 5789, PATCH Method for HTTP — the partial-update semantics the retitle
   endpoint uses — https://www.rfc-editor.org/rfc/rfc5789
+- beautifului.dev, a free MIT-licensed pattern library for AI-native interfaces
+  (Turbo / Shane Levine) — the source of the mark-the-edit-in-place and
+  thinking-summary patterns adopted above; no code taken —
+  https://www.beautifului.dev (license: https://www.beautifului.dev/license)
+- O. Gotoh, "An improved algorithm for matching biological sequences", Journal of
+  Molecular Biology 162(3):705-708, 1982 — the affine gap cost that makes the SQL
+  alignment prefer whole runs — https://doi.org/10.1016/0022-2836(82)90398-9
+- WHATWG HTML, the `mark` and `del` elements — the semantics the diff renders
+  with, so the marking is not colour-only in the DOM either —
+  https://html.spec.whatwg.org/multipage/text-level-semantics.html#the-mark-element
+- WCAG 2.2, Understanding SC 1.4.1 Use of Color — why the highlight carries a
+  legend — https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html
+- Media Queries Level 5, `prefers-reduced-motion` — the guard on the shimmering
+  live label — https://www.w3.org/TR/mediaqueries-5/#prefers-reduced-motion

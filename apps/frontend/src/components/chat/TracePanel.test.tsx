@@ -56,8 +56,14 @@ const TWO_ROUNDS: TraceEvent[] = [
   { type: "node_start", node: "respond" },
 ];
 
+/** One scripted second per event, so a settled thinking step reports a round number of seconds. */
+const TICK = 1000;
+
 function fold(events: TraceEvent[]): Turn {
-  return events.reduce(applyEvent, startTurn("average salary per department?"));
+  return events.reduce(
+    (turn, event, index) => applyEvent(turn, event, index * TICK),
+    startTurn("average salary per department?"),
+  );
 }
 
 function panel(events: TraceEvent[], streaming = false) {
@@ -74,7 +80,7 @@ describe("the entries the panel renders", () => {
   it("reads thinking, tool card, thinking - and nothing else", () => {
     const { container } = panel(TWO_ROUNDS);
 
-    expect(titles(container)).toEqual(["Thinking", "query_db", "Thinking"]);
+    expect(titles(container)).toEqual(["Thought for 3.0s", "query_db", "Thinking"]);
   });
 
   it("names no graph node anywhere in the rendered trace", () => {
@@ -94,21 +100,37 @@ describe("the entries the panel renders", () => {
     expect(steps[1].querySelector(".trace-step-meta")?.textContent).toBe("round 2");
   });
 
-  it("keeps each round's thinking behind its own closed disclosure", () => {
+  it("keeps the round still thinking open and folds away the one that settled", () => {
     panel(TWO_ROUNDS);
-    const [first, second] = screen.getAllByRole("button", { name: /Thinking/ });
 
-    expect(first.getAttribute("aria-expanded")).toBe("false");
-    expect(second.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: /Thought for/ }).getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    expect(screen.getByRole("button", { name: /Thinking/ }).getAttribute("aria-expanded")).toBe(
+      "true",
+    );
     expect(screen.queryByText("an average per department")).toBeNull();
+    expect(screen.getByText("Engineering leads")).toBeTruthy();
   });
 
-  it("shows a round's whole thinking as one block when the reader opens it", () => {
+  it("shows a settled round's whole thinking as one block when the reader opens it", () => {
     panel(TWO_ROUNDS);
 
-    fireEvent.click(screen.getAllByRole("button", { name: /Thinking/ })[0]);
+    fireEvent.click(screen.getByRole("button", { name: /Thought for/ }));
 
     expect(screen.getByText("an average per department")).toBeTruthy();
+  });
+
+  it("keeps a step the reader folded closed while it is still working", () => {
+    const items = fold(TWO_ROUNDS).items;
+    const { rerender } = render(<TracePanel items={items} streaming open />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
+    rerender(<TracePanel items={[...items]} streaming open />);
+
+    expect(screen.getByRole("button", { name: /Thinking/ }).getAttribute("aria-expanded")).toBe(
+      "false",
+    );
   });
 
   it("renders nothing at all for a turn whose only events were graph nodes", () => {
@@ -150,8 +172,7 @@ describe("a tool card's own state", () => {
 
     expect(screen.queryByText("running")).toBeNull();
     expect(screen.getByText("3 rows")).toBeTruthy();
-    expect(screen.getByText(GENERATED)).toBeTruthy();
-    expect(screen.getByText(EXECUTED)).toBeTruthy();
+    expect(container.querySelector(".sql-rewrite")).not.toBeNull();
     expect(container.querySelectorAll("td")).toHaveLength(2);
   });
 

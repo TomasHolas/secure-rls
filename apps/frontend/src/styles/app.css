@@ -404,10 +404,29 @@
 .trace-arg dd { margin: 0; }
 /* The model's own thinking: prose, not output, so it reads quieter than the answer above it. */
 .trace-reasoning { margin: 0; font-size: var(--text-sm); line-height: var(--leading-loose); color: var(--fg-3); white-space: pre-wrap; }
+/* A label whose work is still arriving: a sweep through the text itself, so a step that is
+   thinking is legible as thinking without a spinner competing with the panel's own. */
+.trace-live { background: linear-gradient(90deg, var(--fg-4) 35%, var(--fg-1) 50%, var(--fg-4) 65%) 0 0 / 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer-text 1.6s linear infinite; }
+@keyframes shimmer-text { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .trace-live { animation: none; background: none; color: var(--fg-2); }
+  .loader-spin { animation: none; }
+}
 .trace-text { margin: 0; padding: var(--space-3); background: var(--bg-surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-3); white-space: pre-wrap; overflow-x: auto; }
 
-/* The demo's money shot: what the model wrote next to what the scoped executor ran
-   (KB's two-column .usage-grid, collapsing on a narrow viewport). */
+/* The demo's money shot: the tenant scoping marked inside the statement that ran, so the RLS
+   rewrite is one glance rather than a comparison across a gap (SqlRewrite). The model's words
+   keep the plain code register; what the scoped executor added takes the accent one, and
+   anything it replaced the critical one, struck through as a diff does. */
+.sql-rewrite { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.sql-add { background: color-mix(in srgb, var(--accent-500) 22%, transparent); color: var(--accent-300); border-radius: var(--radius-xs); }
+.sql-del { background: var(--critical-bg); color: var(--critical-500); border-radius: var(--radius-xs); text-decoration-color: color-mix(in srgb, var(--critical-500) 55%, transparent); }
+.sql-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; font-size: var(--text-2xs); }
+.sql-legend .sql-add, .sql-legend .sql-del { padding: 1px var(--space-2); }
+
+/* The pair the diff falls back to, and the reader can always switch back to: what the model
+   wrote next to what the scoped executor ran (KB's two-column .usage-grid, collapsing on a
+   narrow viewport). */
 /* Stretched cells plus a shared floor under the code: the two statements differ in length by
    the scoping rewrite, and a pair of unequal cards reads as two findings instead of one
    comparison. */

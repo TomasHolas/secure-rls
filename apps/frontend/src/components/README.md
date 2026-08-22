@@ -20,6 +20,7 @@ components/
   Icon.tsx         <Icon name="..." /> — Google Material Symbols only
   Pill.tsx         the status chip — tones neutral/accent/ok/warn/danger
   CodeBlock.tsx    labelled monospace block with a copy control (SQL lives here)
+  SqlRewrite.tsx   the generated/executed pair as one statement with the scoping marked
   Markdown.tsx     render a markdown string as sanitized GFM HTML
   DataTable.tsx    backend rows as a compact, visually capped table (optional server-side sort)
   NoteList.tsx     employee-written notes as quoted note cards
@@ -39,8 +40,9 @@ Views live beside them in `src/views/` (`LoginView`, `SessionBadge`, `ChatView`,
 are `src/auth.ts` (the
 session), `src/lib/api.ts` (the one HTTP client), `src/lib/sse.ts` (the SSE stream to
 typed trace events), `src/lib/trace.ts` (those events folded into one turn's state),
-`src/lib/conversations.ts` (which thread is open, and the thread list around it) and
-`src/lib/format.ts` (the one number formatter every reader-facing number goes through).
+`src/lib/conversations.ts` (which thread is open, and the thread list around it),
+`src/lib/format.ts` (the one formatter every reader-facing number, duration and count goes
+through) and `src/lib/sqldiff.ts` (the token alignment `SqlRewrite` paints).
 
 CSS for every brick lives in `styles/app.css`; colors, spacing, radii, motion and
 fonts come from `styles/tokens.css`.
@@ -96,10 +98,43 @@ tokens. `TenantPill` stays separate because it is the identity chip, not a statu
 ```
 
 A labelled monospace block with a copy control. All SQL in the app goes through it, so
-the generated and the executed statement are rendered by the same code in the same
-register — two of these in a `.sql-pair` grid IS the side-by-side money shot of the demo.
-The copy control hides itself where `navigator.clipboard` is unavailable (insecure
-origin, jsdom) instead of offering a button that cannot work.
+every statement is rendered by the same code in the same register. The copy control hides
+itself where `navigator.clipboard` is unavailable (insecure origin, jsdom) instead of
+offering a button that cannot work.
+
+Two optional slots: `actions` puts a control in the header beside `copy` (the
+`SqlRewrite` mode toggle), and `children` is a **marked-up rendering of the same
+`code`** — pass it and the body renders that instead of the plain string, while `code`
+stays what the copy control writes, so a reader never lifts markup out of the demo. A
+caller that passes children owes it that they render the same statement.
+
+### SqlRewrite
+
+```tsx
+<SqlRewrite generated={data.generated_sql} executed={data.executed_sql} />
+```
+
+**The demo's money shot.** The executed statement rendered once, with what the
+tenant-scoping layer added marked inside it: the model wrote everything unmarked, and
+`(SELECT * FROM employees WHERE employees.tenant_id = ?) AS` is the layer-3 rewrite with
+its bound parameter (ADR 0012 as amended after issue #91). Anything the rewrite *replaced*
+renders as a struck-through deletion beside its replacement, so nothing is hidden, and a
+legend states what the highlight means — colour is never the only signal.
+
+`lib/sqldiff.ts` owns the alignment and this brick only paints it. That module diffs
+**tokens**, case-insensitively (sqlglot re-renders the statement onto one flat line with
+uppercased keywords, so a line diff reports everything as changed), and minimises the
+number of edit **runs** rather than the number of edited tokens — the injected subquery
+repeats `employees`, `FROM` and `WHERE`, so the alignment with the most matched tokens
+strands the model's own words inside the insertion and renders the rewrite as confetti.
+
+The two `CodeBlock`s in a `.sql-pair` grid are one click behind `show both`, still the
+better read for lifting either statement out whole, and are the fallback for a statement
+too long to align (`diffSql` returns null past its token cap, and the toggle disappears).
+
+Pattern from [beautifului.dev](https://www.beautifului.dev) (MIT): its diff surfaces mark
+an edit in place rather than beside it. **Reimplemented, not copied** — its own diffs are
+line-granular with a `+`/`−` gutter, which cannot show a change that lives inside one line.
 
 ### Markdown
 
@@ -429,13 +464,16 @@ counter and fed-back reason, or a `security_event` as a red blocked state naming
 kind and reason (ADR 0012). Collapsible; `open` is the state it starts in and defaults to
 `streaming`. **The graph's own node transitions are not rows** (ADR 0012 as amended after
 issue #87): they stay in the stream and the audit trail, and here they only say which model
-round a thought belongs to. One thinking step per model round, closed to start with, chipped
-with `round n` from the second round on; a round that streamed no thinking is no row at all.
+round a thought belongs to. One thinking step per model round, chipped with `round n` from
+the second round on; a round that streamed no thinking is no row at all. A thinking step is
+**open and shimmering while its round's thinking is still arriving** and folds itself away
+once it settles, leaving `Thought for 2.8s` where the label was (ADR 0012 as amended after
+issue #91 — the span is this client's own clock, since the stream carries no timestamps).
 A call that has not settled says `running` on the card itself. An outcome whose call was never
 announced still renders, so nothing the backend said is dropped.
 The same panel renders a **replayed** turn (ADR 0012 as amended): `lib/trace.ts`'s
 `replayTurns` folds `GET /conversations/{id}`'s stored tool results into the same items, so a
-reopened thread shows its SQL pair, tables and charts through these bricks rather than a
+reopened thread shows its SQL rewrite, tables and charts through these bricks rather than a
 second renderer. Such a turn starts `open` — the evidence is why it is there — and carries no
 reasoning, retry or step timing, because none of those are stored.
 
@@ -443,15 +481,20 @@ reasoning, retry or step timing, because none of those are stored.
 
 ```tsx
 <TraceStep icon="database" title="query_db" meta={<Pill tone="ok">3 rows</Pill>} tone="blocked">
-<TraceStep icon="sparkles" title="Thinking" tone="muted" open={false}>
+<TraceStep icon="sparkles" title="Thinking" tone="muted" open={thinking}>
 ```
 
 One entry on the trace rail: icon, title, right-aligned chips, body. `tone` is `default |
 muted | warn | blocked`, carrying the state in a second channel next to the icon. A step
 with a body is its **own disclosure** — the head becomes a button with `aria-expanded` and
 the panel's chevron — so no reader is stuck with every SQL statement, table and chart open
-at once; `open` is the state it starts in (`false` for reasoning) and the reader's click
-wins from then on. A step with nothing to show stays a plain row with no control.
+at once. A step with nothing to show stays a plain row with no control.
+
+`open` is the state the step is **in** until the reader clicks, not merely the one it
+mounted in: a caller can hold a step open while it works and let it fold itself away once it
+settles, and the reader's click wins from then on whatever the caller does after
+(`choice ?? open` — the auto-state-plus-override idiom from
+[beautifului.dev](https://www.beautifului.dev)'s thinking traces).
 
 ### chat/ToolResultView
 
@@ -460,7 +503,7 @@ wins from then on. A step with nothing to show stays a plain row with no control
 ```
 
 A `tool_result` payload, each key through the brick that owns it: `generated_sql` +
-`executed_sql` side by side in the `.sql-pair` grid, `columns`/`rows` through `DataTable`,
+`executed_sql` through `SqlRewrite`, `columns`/`rows` through `DataTable`,
 `chart_spec` through `Chart` verbatim, `notes` as note cards (employee-written text,
 quoted as data), `anomalies` as a derived table. A payload with no structured keys falls
 back to the text the model itself read, so no result ever renders as nothing. A replayed
@@ -518,8 +561,10 @@ every stored payload has structured keys, so the fallback is a live-turn path on
   `.btn-xs` register (KB's smallest button is still card-sized).
 - `ModelPicker` uses a native `<select>`: **KB has no select, dropdown or listbox
   anywhere**, so it borrows `.cfg-input`'s metrics and its border-only focus instead.
-- The SQL pair is KB's two-column `.usage-grid` at `1fr 1fr`; KB's own diff
-  (`.prop-diff`) is inline before/after chips, which cannot hold two SQL statements.
+- The SQL pair `SqlRewrite` falls back to is KB's two-column `.usage-grid` at `1fr 1fr`;
+  KB's own diff (`.prop-diff`) is inline before/after chips, which cannot hold two SQL
+  statements, and it has no in-place marking of a changed run anywhere, so `.sql-add` /
+  `.sql-del` are new on our state tokens.
 - `charts/Chart` is one brick where KB has four (`AreaTrend`, `BarTimeline`,
   `RankedBars`, `MonthDrill`), because a single backend contract feeds it: it keeps
   AreaTrend's measured-width SVG scaffolding and `.chart-grid`/`.chart-axis` chrome

@@ -72,7 +72,7 @@ and tenant context — which also feeds the UI trace and the eval leakage checks
 | `apps/backend/db.py` | CSV load, schema, the scoped executor (layers 3+4). The only module that opens a SQLite connection. |
 | `apps/backend/browse.py` | The Records and Notes tabs' two fixed templates (ADR 0014): allowlisted filters bound as parameters, allowlisted sorts, paging on the ADR 0007 row cap - all through `db.py`, with the notes search delegating to `rag.py`. |
 | `apps/backend/evals/` | Correctness + adversarial suites over the same bricks, run per tenant, plus the M2 model gate; `harness.py` owns the plumbing they share and `report.md` is the committed scorecard (ADR 0004). |
-| `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, streaming chat with live reasoning/SQL trace (generated vs executed side by side), conversation history sidebar, tenant badge, charts, transparent security-refusal and truncation states (ADR 0012), and the Chat / Records / Notes tabs that make the isolation checkable without the agent (ADR 0014). |
+| `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, streaming chat with live reasoning/SQL trace (the tenant scoping marked inside the statement that ran), conversation history sidebar, tenant badge, charts, transparent security-refusal and truncation states (ADR 0012), and the Chat / Records / Notes tabs that make the isolation checkable without the agent (ADR 0014). |
 
 ## Data model
 

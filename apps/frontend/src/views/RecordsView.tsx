@@ -22,7 +22,7 @@ import { SelectField, TextField } from "../components/forms";
 import { EmptyState, Page, PageHeader, Section } from "../components/layout";
 import { ApiError, browseRecords, listDepartments } from "../lib/api";
 import type { BrowsePage, DepartmentCount } from "../lib/api";
-import { formatNumber } from "../lib/format";
+import { formatCount, formatNumber } from "../lib/format";
 
 const LOAD_FAILURE = "The rows could not be loaded.";
 const EXECUTED_LABEL = "executed after tenant scoping";
@@ -135,7 +135,7 @@ export function RecordsView({ tenant }: { tenant: string }) {
 
       <Section
         title="Filters"
-        aside={rows ? <Pill tone="accent">{formatNumber(rows.total)} matching rows</Pill> : null}
+        aside={rows ? <Pill tone="accent">{formatCount(rows.total, "matching row")}</Pill> : null}
       >
         <form
           className="filter-grid"
@@ -248,7 +248,7 @@ export function RecordsView({ tenant }: { tenant: string }) {
                 Previous
               </Button>
               <span className="pager-state">
-                showing {formatNumber(rows.rows.length)} of {formatNumber(rows.total)} rows
+                showing {formatNumber(rows.rows.length)} of {formatCount(rows.total, "row")}
               </span>
               <Button
                 onClick={() => setPage((current) => current + 1)}

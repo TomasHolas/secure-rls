@@ -10,9 +10,12 @@
  *
  * A step with something to show is a disclosure of its own (the same chevron the panel
  * head uses): its head is a button carrying `aria-expanded`, so a long step can be folded
- * away instead of every SQL statement, table and chart being open at once. `open` sets the
- * state it starts in - reasoning starts closed, an outcome open - and the reader's click
- * wins from then on. A step with nothing underneath stays a plain row with no control.
+ * away instead of every SQL statement, table and chart being open at once.
+ *
+ * `open` is the state the step is in until the reader says otherwise, not merely the one it
+ * mounted in, so a caller can open a step while it is working and let it fold itself away once
+ * it settles - and the reader's click wins from then on, whatever the caller does after
+ * (the auto-state-plus-override idiom beautifului.dev uses on its thinking traces).
  */
 
 import { useState } from "react";
@@ -37,7 +40,8 @@ export function TraceStep({
   open?: boolean;
   children?: ReactNode;
 }) {
-  const [expanded, setExpanded] = useState(open);
+  const [choice, setChoice] = useState<boolean | null>(null);
+  const expanded = choice ?? open;
   const head = (
     <>
       <span className="trace-step-icon">
@@ -57,7 +61,7 @@ export function TraceStep({
           type="button"
           className="trace-step-head trace-step-toggle"
           aria-expanded={expanded}
-          onClick={() => setExpanded(!expanded)}
+          onClick={() => setChoice(!expanded)}
         >
           {head}
         </button>

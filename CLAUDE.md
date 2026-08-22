@@ -89,7 +89,7 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   `/health`, `/models` proxying the endpoint's chat-capable model list — ADR 0012),
   `auth.py` (hardcoded tenant users, JWT with tenant claim, ADR 0009).
 - `[x]` **M4 — Frontend.** React SPA on the KB design system: login, streaming
-  chat with live trace (generated vs executed SQL side by side), conversation
+  chat with live trace (the tenant scoping marked inside the SQL that ran), conversation
   history sidebar, tenant badge, charts, transparent security-refusal and
   truncation states, cross-tenant isolation demo via login switch (ADR 0012).
   Three shell tabs (ADR 0014): **Chat**, **Records** (the tenant's rows, filtered,
@@ -167,7 +167,8 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Frontend chat stream (SSE frames -> typed trace events -> one turn's state) | `apps/frontend/src/lib/sse.ts` + `lib/trace.ts`; rendered by `views/ChatView.tsx` over the `components/chat/` bricks. `lib/trace.ts` also folds a reopened thread's replay payload into the same turns, so a past turn renders through the same bricks as a live one |
 | Frontend Records / Notes tabs | `apps/frontend/src/views/RecordsView.tsx`, `views/NotesView.tsx` — filters, sorts and pages are query parameters, never in-browser reordering; the tab strip is the `layout/Tabs` brick in the shell header and a visited tab stays mounted (ADR 0014) |
 | Frontend conversation state (thread list, which thread is open, its replay) | `apps/frontend/src/lib/conversations.ts` — the one owner the rail (`views/ConversationsSidebar.tsx`) and the chat view share; `replay` is the open thread's past turns, already folded |
-| Number formatting a reader sees (axis ticks, bin edges, table cells) | `apps/frontend/src/lib/format.ts` — the only formatter; the backend emits raw numbers and never a locale-specific string |
+| Number formatting a reader sees (axis ticks, bin edges, table cells, elapsed seconds, singularized counts) | `apps/frontend/src/lib/format.ts` — the only formatter; the backend emits raw numbers and never a locale-specific string |
+| The generated-versus-executed SQL money shot | `apps/frontend/src/components/SqlRewrite.tsx` paints it, `lib/sqldiff.ts` aligns it — the tenant scoping marked inside the statement that ran, with the two cards one click behind `show both` (ADR 0012 as amended, and `docs/ui-pattern-review.md`) |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
 | CI / CD | `.github/workflows/ci.yml` |
 | Images / the deployment unit | `apps/backend/Dockerfile`, `apps/frontend/Dockerfile` + `nginx.conf`, `docker-compose.yml` |
