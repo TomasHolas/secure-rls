@@ -92,6 +92,11 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   chat with live trace (generated vs executed SQL side by side), conversation
   history sidebar, tenant badge, charts, transparent security-refusal and
   truncation states, cross-tenant isolation demo via login switch (ADR 0012).
+  Three shell tabs (ADR 0014): **Chat**, **Records** (the tenant's rows, filtered,
+  sorted and paged server-side, with the executed scoped SQL shown) and **Notes**
+  (the corpus the agent retrieves over, plus a search that runs the agent's own
+  retrieval path and shows the distances). The tabs make the isolation checkable
+  without trusting the agent.
 - `[x]` **M5 — Evaluation harness.** `evals/`: 25 correctness questions vs
   pandas ground truth (1% tolerance) + 20 single-turn and 5 multi-turn
   adversarial cases + retrieval/poisoned-notes attacks, every suite run for
@@ -147,6 +152,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Auth / JWT / tenant users | `apps/backend/auth.py` |
 | Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection |
 | SQL validation (allowlist) | `apps/backend/security.py` |
+| Records/Notes browsing (allowlisted filters, sorts, paging, the poison manifest) | `apps/backend/browse.py` — two fixed templates with bound filter values through `db.py`; sort and direction are allowlisted words, never bound values; the notes search delegates to `rag.py` (ADR 0014) |
 | Structured analytics (aggregates, Tukey IQR anomalies, chart data) | `apps/backend/analytics.py` — allowlisted args into fixed query templates through `db.py`; never generated SQL |
 | Agent, tools, prompts, retry policy, memory, transcript replay | `apps/backend/agent.py` (`thread_messages` reads the checkpointer back; the API layer never parses checkpoints itself) |
 | Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`) |
@@ -158,6 +164,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Frontend session (token, display-only JWT claims, logout) | `apps/frontend/src/auth.ts` |
 | Frontend HTTP calls (Bearer header, `X-Refreshed-Token` adoption, 401 -> login) | `apps/frontend/src/lib/api.ts` — the only module that calls `fetch` |
 | Frontend chat stream (SSE frames -> typed trace events -> one turn's state) | `apps/frontend/src/lib/sse.ts` + `lib/trace.ts`; rendered by `views/ChatView.tsx` over the `components/chat/` bricks. `lib/trace.ts` also folds a reopened thread's replay payload into the same turns, so a past turn renders through the same bricks as a live one |
+| Frontend Records / Notes tabs | `apps/frontend/src/views/RecordsView.tsx`, `views/NotesView.tsx` — filters, sorts and pages are query parameters, never in-browser reordering; the tab strip is the `layout/Tabs` brick in the shell header and a visited tab stays mounted (ADR 0014) |
 | Frontend conversation state (thread list, which thread is open, its replay) | `apps/frontend/src/lib/conversations.ts` — the one owner the rail (`views/ConversationsSidebar.tsx`) and the chat view share; `replay` is the open thread's past turns, already folded |
 | Number formatting a reader sees (axis ticks, bin edges, table cells) | `apps/frontend/src/lib/format.ts` — the only formatter; the backend emits raw numbers and never a locale-specific string |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |

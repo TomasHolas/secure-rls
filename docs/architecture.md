@@ -64,14 +64,15 @@ and tenant context — which also feeds the UI trace and the eval leakage checks
 
 | Component | Responsibility |
 |---|---|
-| `apps/backend/app.py` | FastAPI edge: `/login`, `/chat` (SSE stream of typed trace events, ADR 0012), `/conversations` (JWT-scoped list/create/replay/delete), `/health`. Thin handlers, no logic. |
+| `apps/backend/app.py` | FastAPI edge: `/login`, `/chat` (SSE stream of typed trace events, ADR 0012), `/conversations` (JWT-scoped list/create/replay/delete), `/records` and `/notes` (the browse tabs, ADR 0014), `/health`. Thin handlers, no logic. |
 | `apps/backend/auth.py` | Hardcoded demo users (one+ per tenant), password check, JWT issue/verify with `tenant_id` claim. |
 | `apps/backend/agent.py` | Explicit LangGraph graph: system prompt with schema card + per-tenant sample rows, tool definitions, retry policy, multi-turn checkpointer, trace collection, transcript replay from the checkpointer. |
 | `apps/backend/rag.py` | Note embedding (Ollama `/api/embed`) and tenant-partitioned vector search (ADR 0010); storage and queries go through `db.py`. |
 | `apps/backend/security.py` | The SQL validator brick (layer 2). Pure function: SQL text in, validated AST or a typed rejection out. |
 | `apps/backend/db.py` | CSV load, schema, the scoped executor (layers 3+4). The only module that opens a SQLite connection. |
+| `apps/backend/browse.py` | The Records and Notes tabs' two fixed templates (ADR 0014): allowlisted filters bound as parameters, allowlisted sorts, paging on the ADR 0007 row cap - all through `db.py`, with the notes search delegating to `rag.py`. |
 | `apps/backend/evals/` | Correctness + adversarial suites over the same bricks, run per tenant, plus the M2 model gate; `harness.py` owns the plumbing they share and `report.md` is the committed scorecard (ADR 0004). |
-| `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, streaming chat with live reasoning/SQL trace (generated vs executed side by side), conversation history sidebar, tenant badge, charts, transparent security-refusal and truncation states (ADR 0012). |
+| `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, streaming chat with live reasoning/SQL trace (generated vs executed side by side), conversation history sidebar, tenant badge, charts, transparent security-refusal and truncation states (ADR 0012), and the Chat / Records / Notes tabs that make the isolation checkable without the agent (ADR 0014). |
 
 ## Data model
 
