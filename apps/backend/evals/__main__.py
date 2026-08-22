@@ -26,9 +26,9 @@ from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import median
 
 from langchain_core.language_models import BaseChatModel
-from langchain_ollama import ChatOllama
 
 import rag
 from evals import adversarial, correctness, harness, mocked
@@ -60,9 +60,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with harness.workspace(llm, embedder, tenants, model) as session:
         graded = _grade(session, tenants, suites)
         indexed = session.indexed
-    report = _render(
-        model, stamp, arguments.mocked, arguments.num_ctx, indexed, tenants, suites, *graded
-    )
+    report = _render(model, stamp, arguments.mocked, indexed, tenants, suites, *graded)
     arguments.out.write_text(f"{report}\n")
     print(f"wrote {arguments.out}", file=sys.stderr)
     return _verdict(arguments.mocked, *graded)
@@ -79,7 +77,6 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--suite", action="append", default=[], choices=SUITES, help="run only this suite"
     )
     parser.add_argument("--out", type=Path, default=DEFAULT_REPORT, help="report file to write")
-    parser.add_argument("--num-ctx", type=int, default=None, help="override the context window")
     parser.add_argument(
         "--mocked", action="store_true", help="scripted model and hashed embedder, no network"
     )
@@ -95,8 +92,11 @@ def _model(
         scripted = mocked.ScriptedModel(plans=mocked.plans(tenants))
         return scripted, mocked.HashEmbed(), mocked.MODEL_ID
     base_url = harness.require_base_url()
-    llm = ChatOllama(base_url=base_url, model=arguments.model, num_ctx=arguments.num_ctx)
-    return llm, rag.OllamaEmbed(base_url), arguments.model
+    return (
+        harness.live_model(base_url, arguments.model),
+        rag.OllamaEmbed(base_url),
+        arguments.model,
+    )
 
 
 def _grade(
@@ -186,7 +186,6 @@ def _render(
     model: str,
     stamp: str,
     is_mocked: bool,
-    num_ctx: int | None,
     indexed: int,
     tenants: Sequence[str],
     suites: Sequence[str],
@@ -194,9 +193,7 @@ def _render(
     attacked: Sequence[adversarial.Score],
 ) -> str:
     """The whole report: the headline, both suite sections, the findings, how to reproduce."""
-    blocks = [
-        _headline(model, stamp, is_mocked, num_ctx, indexed, tenants, suites, scored, attacked)
-    ]
+    blocks = [_headline(model, stamp, is_mocked, indexed, tenants, suites, scored, attacked)]
     if CORRECTNESS in suites:
         blocks.append(correctness.render(scored, tenants))
     if SECURITY in suites:
@@ -210,7 +207,6 @@ def _headline(
     model: str,
     stamp: str,
     is_mocked: bool,
-    num_ctx: int | None,
     indexed: int,
     tenants: Sequence[str],
     suites: Sequence[str],
@@ -225,7 +221,6 @@ def _headline(
         "",
         f"Model `{model}`, run {stamp}. Endpoint: "
         f"{_MOCKED_ENDPOINT if is_mocked else _LIVE_ENDPOINT}. "
-        f"Context window: {num_ctx if num_ctx else 'endpoint default'}. "
         f"Suites: {', '.join(suites)}. Tenants: {', '.join(f'`{name}`' for name in tenants)}. "
         f"Dataset: the committed `employees.csv`, {indexed} notes indexed with "
         f"{_MOCKED_EMBEDDER if is_mocked else f'`{runtime().agent.embed_model}`'}.",
@@ -235,10 +230,30 @@ def _headline(
         f"- **Leaks: {_leaks(scored, attacked)}** - foreign rows, anomalies or notes in any tool "
         f"result, plus foreign employee names in any answer, over {len(turns)} turns",
         f"- Turns that never reached `done`: {sum(1 for turn in turns if turn.broken)}",
+        f"- Turns a per-turn bound cut short: {sum(1 for turn in turns if turn.cut)} "
+        f"({_bounds()})",
         f"- Wall time: {seconds / 60:.1f} min over {len(turns)} turns "
         f"({seconds / max(len(turns), 1):.1f} s per turn)",
+        f"- Output tokens per turn: {_tokens(turns)}",
     ]
     return "\n".join(lines)
+
+
+def _tokens(turns: Sequence[Turn]) -> str:
+    """The generation the turns actually spent, or a note that the client reported none."""
+    counts = [turn.output_tokens for turn in turns]
+    if not any(counts):
+        return "not reported by this model client"
+    return f"median {median(counts):.0f}, max {max(counts)}"
+
+
+def _bounds() -> str:
+    """The per-turn bounds this run was subject to, read from runtime.json (ADR 0011 amended)."""
+    agent = runtime().agent
+    return (
+        f"{agent.max_output_tokens} output tokens, {agent.context_window} context, "
+        f"{agent.turn_deadline_s:g} s, {agent.max_tool_iterations} tool rounds"
+    )
 
 
 def _findings(

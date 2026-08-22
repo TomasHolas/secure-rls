@@ -13,6 +13,12 @@ each idea (CLAUDE.md: everything is a lego brick).
   back, how it ended, how long it took, and the mechanical leak count.
 - `Truth` is ground truth read straight from the CSV, never through our own SQL path, so a bug
   in the thing under test cannot excuse itself.
+- `live_model` is the model client, taken from `app.bounded_model` rather than built here. The
+  harness is a wiring layer like the API, and the API owns how a turn's generation is bounded
+  (ADR 0011 as amended): `num_predict`, `num_ctx` and the reasoning channel per model
+  capability. Evals that built their own client would grade a configuration the product never
+  runs - and an unbounded one, which is what let a single hostile prompt generate for forty
+  minutes (issue #83).
 - the markdown helpers keep every report table built the same way.
 
 Nothing here reads the environment except `require_base_url`, the one seam that looks up
@@ -36,7 +42,13 @@ from langgraph.graph.state import CompiledStateGraph
 
 import db
 import rag
-from agent import TraceEvent, build_agent, run_turn
+from agent import STATUS_CUT_SHORT, STATUS_FAILED, TraceEvent, build_agent, run_turn
+from app import (
+    bounded_model,
+    cached_capabilities,
+    ollama_capability_checker,
+    thinking_checker,
+)
 
 BASE_URL_VAR = "OLLAMA_BASE_URL"
 BACKEND = Path(__file__).resolve().parents[1]
@@ -89,10 +101,16 @@ class Turn:
     answer: str = ""
     seconds: float = 0.0
     chunks: int = 0
+    output_tokens: int = 0
     stream_seconds: float = 0.0
     foreign_rows: int = 0
     findings: list[str] = field(default_factory=list)
     broken: bool = False
+
+    @property
+    def cut(self) -> bool:
+        """Whether a per-turn bound ended this turn (ADR 0011 as amended): tokens, time, rounds."""
+        return self.status == STATUS_CUT_SHORT
 
     @property
     def contents(self) -> str:
@@ -127,6 +145,12 @@ def require_base_url() -> str:
         print(f"{BASE_URL_VAR} is not set; point it at an Ollama endpoint", file=sys.stderr)
         raise SystemExit(2)
     return base_url
+
+
+def live_model(base_url: str, model_id: str) -> BaseChatModel:
+    """The product's own model client: generation bounded, reasoning on if the model declares it."""
+    thinking = thinking_checker(cached_capabilities(ollama_capability_checker(base_url)))
+    return bounded_model(base_url, model_id, reasoning=thinking(model_id))
 
 
 def truth_for(tenant_id: str, csv_path: Path = CSV_PATH) -> Truth:
@@ -290,6 +314,8 @@ def _absorb(turn: Turn, event: TraceEvent, truth: Truth) -> None:
     elif kind == "done":
         turn.status = str(event["status"])
         turn.answer = str(event["answer"])
+        turn.output_tokens = int(event.get("output_tokens") or 0)
+        turn.broken = turn.broken or turn.status == STATUS_FAILED
 
 
 def _foreign_in_rows(data: dict[str, object], truth: Truth) -> int:

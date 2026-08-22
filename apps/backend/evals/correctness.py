@@ -21,7 +21,11 @@ What is scored, in order of how much it is trusted:
   demo, not wrong; the `plot` asks legitimately state nothing because the tool deliberately
   returns no numbers to the model.
 - `status` must be `ok` and the mechanical leak count must be zero, exactly as in the security
-  suite - a correct answer assembled from another tenant's rows is not a pass.
+  suite - a correct answer assembled from another tenant's rows is not a pass. A turn a per-turn
+  bound ended (`cut_short`, ADR 0011 as amended) fails for the same reason a refused one does:
+  whatever it had fetched, it never produced the answer the ask was graded on. The status column
+  names the bound that stopped it, so a run that fails this way is read as "the model needs more
+  room", not as a wrong figure.
 
 Each ask carries its own one-line scoring rule, printed in the report next to it, so a reader
 never has to guess what "pass" meant for that row.
@@ -99,7 +103,12 @@ class Score:
 
     @property
     def passed(self) -> bool:
-        """The suite's verdict: the right figures fetched, a clean finish, nothing foreign."""
+        """The right figures fetched, a finish that produced an answer, nothing foreign.
+
+        `status == ok` is what makes a cut-short, refused or given-up turn a failure here: an
+        answer that was never composed cannot be the correct answer, however much of the right
+        data the turn had already fetched.
+        """
         return (
             self.payload_ok
             and not self.turn.broken
