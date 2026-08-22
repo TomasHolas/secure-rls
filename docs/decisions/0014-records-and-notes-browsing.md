@@ -130,6 +130,64 @@ verification surface that omits the field a reader would verify against defeats 
 - **One card shape everywhere.** The `NoteList` brick renders every one of these fields when its
   caller has it, so the chat trace, the corpus listing and the search hits stay the same card.
 
+## Amendment (after issue #107): a listing says what it did not read, and the reader gets to try
+
+There is deliberately no tenant filter, and there will not be one: a caller holds exactly one
+tenant, and a control offering to pick one would advertise a capability the architecture does not
+have. That part was right. What was wrong was the silence around it. As `alice@acme`,
+`GET /records?tenant_id=beta` returned acme's 450 rows and said nothing at all about the
+parameter it discarded, and `?tenant=beta` behaved the same. A reader cannot tell "the parameter
+was refused" from "the other tenant happens to hold the same rows" - which is precisely the
+ambiguity a skeptical reviewer presses on, and the one this whole surface exists to remove.
+Meanwhile a *known* filter with a bad value already answers honestly: `sort=notes` is a 400
+naming the allowlist that refused it. An unknown parameter deserved the same honesty.
+
+- **Still a 200, with the caller's own rows.** RFC 9110 defines 400 as the status for a request
+  the server "cannot or will not process" - a stray query parameter does not prevent serving the
+  page, and a browsing surface that breaks over one is a worse product than one that keeps
+  answering. JSON:API takes the stricter line for its own document protocol (an unrecognized
+  query parameter MUST be 400); we deviate deliberately, because the value here is that the page
+  survives the attempt and can therefore *show* the attempt failing.
+- **The response reports what it did not read.** `browse.ignored_params` turns the request's raw
+  parameter names into an `ignored` list on `BrowsePage`, one entry per name the listing does not
+  read, each with the reason. The rows, the total, the sort and the executed statement are
+  untouched - the report is about the request, not the data.
+- **Names only, never values.** The report never echoes what a parameter carried. A response that
+  repeated `beta` back would put a tenant name the server never accepted into the server's own
+  output, and the property that no foreign tenant string appears in a response is one the suite
+  asserts. The name came from the reader's own request; the value is not repeated for them.
+- **`tenant_id` and `tenant` get their own sentence**, not a generic "unknown parameter": the
+  reason they cannot be parameters *is* the security claim (ADR 0002, layer 1 - the tenant is read
+  from the verified token and reaches the query by closure, so there is no request that can name
+  one), and this is the one place a reader is holding the keyboard when they need to read it. Any
+  casing of those two names earns that sentence, since no casing of either is accepted anywhere;
+  everything else is matched exactly, which is how the framework itself matches a parameter name.
+- **Nothing is added to the allowlist, and no refusal is softened.** The allowlist runs first and
+  terminally: a sort outside `SORT_COLUMNS`, a direction that is not one, a date that is not a
+  date, an over-long filter are the same 400s they were, even when the same request also carries
+  a tenant parameter. This amendment makes a refusal audible; it does not make one negotiable.
+
+**The interactive affordance: a parameter box, not a tenant button.** Issue #107 floated a
+deliberate "try to reach another tenant" control. Rejected, in that shape. A control named after
+another tenant implies the UI could select one and the server merely declines - it frames layer 1
+as a policy that could be relaxed rather than an input that does not exist, and it is the one
+thing this surface must not imply. It is also unconvincing: an outcome a button hard-codes is
+indistinguishable from a canned message, and a skeptic is right not to believe it.
+
+An always-on notice alone was the other option, and it is not sufficient on its own: nothing the
+SPA sends can be unaccepted, so the notice would be a component that never renders - dead code by
+this repo's own rule, and a demo that still requires curl to see the point.
+
+So the tab carries one control that is not a filter: a box that appends a query parameter of the
+reader's own choosing to the next request, and the notice that reports what came back. It implies
+nothing, because a query parameter is what an HTTP request already is; it lets a viewer type the
+attack themselves instead of watching a canned one; and it makes the notice a live surface rather
+than an unreachable one. It is labelled as a demonstration ("Attack it yourself"), and the box
+says in words what it is not: not a filter, and not a tenant picker. Typing `tenant_id=beta`
+returns the same 450 acme rows, the same total, and the server's own sentence about why no request
+can name a tenant. Typing `sort=notes` still gets the 400. Both tabs carry it, because both
+listings take the same filters and owe a reader the same account of them.
+
 ## Consequences
 
 - The isolation claim becomes checkable without trusting the agent, and the row
@@ -140,6 +198,9 @@ verification surface that omits the field a reader would verify against defeats 
 - Two scoped queries per page (the window and the count) instead of one. At this
   scale the count is trivial, and the alternative is a total that describes the
   page rather than the data.
+- A reader can now attempt the attack themselves and read the refusal, so the
+  isolation claim survives the one question the tabs could not answer before:
+  was that parameter refused, or did it simply not matter?
 - The audit log now also records what readers browsed, not only what the model
   asked. That is a feature: the trail is of data access, whoever caused it.
 - A demo that shows a planted payload before the agent reads it needs no
@@ -147,6 +208,15 @@ verification surface that omits the field a reader would verify against defeats 
 
 ## Alternatives
 
+- **A 400 for an unrecognized query parameter** (JSON:API's rule) - defensible for
+  a document protocol, wrong for a page: a stray parameter would break a listing
+  that could have served it, and the attempt would produce an error instead of a
+  demonstration.
+- **A "try to reach another tenant" button** - see the amendment above: it implies
+  the UI could pick a tenant, and a canned outcome convinces nobody.
+- **Reporting the value alongside the name** - it would print a tenant name the
+  server never accepted into the server's own response, for no gain: the reader
+  typed it.
 - **A generic filter DSL from the client** (`?where=salary>100`) — the
   parameterization rule and the whole point of layer 2 say no; it is
   user-supplied SQL by another name.
@@ -182,11 +252,20 @@ verification surface that omits the field a reader would verify against defeats 
   next page" — offset paging needs a deterministic (tie-broken) sort order or
   rows repeat and vanish:
   https://use-the-index-luke.com/sql/partial-results/fetch-next-page
+- RFC 9110, HTTP Semantics, §15.5.1 (400 Bad Request) - the status for a request
+  the server "cannot or will not process due to something that is perceived to be
+  a client error": https://www.rfc-editor.org/rfc/rfc9110.html#name-400-bad-request
+- JSON:API, *Implementation-Specific Query Parameters* - the stricter alternative
+  this ADR deviates from: a server "MUST return 400 Bad Request" for a query
+  parameter it does not know how to process: https://jsonapi.org/format/
 - ADR 0002 (the layers), ADR 0007 (the row cap and truncation honesty), ADR 0010
   (the retrieval path this tab reuses), ADR 0012 (identity from the token, thin
   handlers), ADR 0006 (the design system the views compose).
 
 The judgment calls, labelled as such because no external source settles them:
 which eight filters to allowlist, showing the executed SQL under the table,
-surfacing the committed poison manifest in the UI, and keeping a visited tab
-mounted rather than unmounting it.
+surfacing the committed poison manifest in the UI, keeping a visited tab
+mounted rather than unmounting it, and - per the #107 amendment - answering an
+unread parameter with a 200 plus a report rather than a 400, the wording of that
+report, and choosing a raw parameter box over a tenant-named button as the
+interactive proof.

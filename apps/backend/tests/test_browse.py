@@ -384,3 +384,67 @@ def test_the_default_sort_is_the_primary_key(db_path):
     page = browse_records(ACME, db_path=db_path)
     assert page.sort == DEFAULT_SORT
     assert _column(page, "user_id") == [1, 2, 3, 4, 5]
+
+
+def test_a_parameter_the_listing_does_not_read_is_reported_with_the_page(db_path):
+    """The rows are unchanged and the discarded name is named: 200 plus a report (issue #107)."""
+    silent = browse_records(ACME, db_path=db_path)
+    probed = browse_records(ACME, requested=["tenant_id", "name", "page"], db_path=db_path)
+
+    assert probed.rows == silent.rows
+    assert probed.total == silent.total
+    assert [param.name for param in probed.ignored] == ["tenant_id"]
+
+
+def test_the_tenant_parameter_is_refused_with_the_reason_no_request_can_name_one(db_path):
+    """Layer 1 is the reason, so layer 1 is what the sentence says - not "unknown parameter"."""
+    ((name, reason),) = [
+        (param.name, param.reason)
+        for param in browse_records(ACME, requested=["tenant"], db_path=db_path).ignored
+    ]
+
+    assert name == "tenant"
+    assert "verified token" in reason
+    assert "ADR 0002" in reason
+    assert "not a parameter this listing reads" not in reason
+
+
+def test_the_tenant_parameter_is_recognized_whatever_its_casing(db_path):
+    """No casing of it is accepted anywhere, so every casing earns the same explanation."""
+    page = browse_records(ACME, requested=["Tenant_ID", "tenant"], db_path=db_path)
+    reasons = {param.reason for param in page.ignored}
+
+    assert len(reasons) == 1
+    assert "verified token" in reasons.pop()
+
+
+def test_an_unknown_parameter_is_reported_with_the_ones_the_listing_does_read(db_path):
+    """The generic case answers the reader's next question: then what may I send?"""
+    (param,) = browse_records(ACME, requested=["db_path"], db_path=db_path).ignored
+
+    assert param.name == "db_path"
+    assert "not a parameter this listing reads" in param.reason
+    assert "salary_min" in param.reason
+    assert "sort" in param.reason
+
+
+def test_a_report_names_parameters_and_never_their_values(db_path):
+    """The names came from the request; echoing a value would print a tenant we never accepted."""
+    report = browse.ignored_params(["tenant_id", "department", "nonsense"])
+
+    assert [param.name for param in report] == ["tenant_id", "nonsense"]
+    assert not any(BETA in param.reason for param in report)
+
+
+def test_the_notes_listing_reports_what_it_ignored_the_same_way(db_path):
+    """The corpus takes the same filters, so it owes the same honesty about a stray one."""
+    page = browse_notes(ACME, requested=["tenant_id"], db_path=db_path)
+
+    assert page.total == 5
+    assert [param.name for param in page.ignored] == ["tenant_id"]
+
+
+def test_a_known_filter_with_a_bad_value_still_refuses_terminally(db_path):
+    """Nothing here softens the allowlist: a bad sort raises before a page is built at all."""
+    with pytest.raises(QueryRejected):
+        browse_records(ACME, sort="notes", requested=["tenant_id", "sort"], db_path=db_path)

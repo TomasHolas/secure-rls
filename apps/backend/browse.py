@@ -27,6 +27,14 @@ the page size it actually used, so a clamp is reported rather than silent. The t
 COUNT over the same filters through the same executor - one extra scoped query, which is what
 makes "450 rows" a fact about the tenant's data rather than about the page in hand.
 
+What a listing does not read, it says so about. `Filters` is the query-parameter allowlist, so a
+`?tenant_id=beta` a client invents was never read - but silence about it is indistinguishable
+from having honored it, which is the one ambiguity this surface exists to remove (issue #107).
+`ignored_params` reports every name a request carried that the listing does not read, `tenant_id`
+and `tenant` with the reason they can never be parameters at all, so the page states what it
+ignored instead of only what it served. It changes no behaviour: the rows, the total and the
+400 a known filter with a bad value earns are exactly what they were.
+
 Notes. The corpus listing is the second template over the same table, since a note is a column
 of its employee's row. The search is not a template at all: it delegates to
 `rag.search_notes_scoped`, the agent's own retrieval path (ADR 0010), so what the reader sees -
@@ -40,7 +48,7 @@ tenant data, and it is filtered to the caller's tenant anyway.
 """
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -101,6 +109,29 @@ class Filters:
     hired_to: str | None = None
 
 
+LISTING_PARAMS = frozenset(Filters.__dataclass_fields__) | {
+    "sort",
+    "direction",
+    "page",
+    "page_size",
+}
+TENANT_PARAMS = frozenset({"tenant_id", "tenant"})
+_TENANT_REASON = (
+    "the tenant is not a parameter of this request: it is read from your verified token and "
+    "bound into the query server-side (ADR 0002, layer 1), so no request can name one. The "
+    "listing below and its total are your own tenant's, unchanged."
+)
+_UNKNOWN_REASON = "not a parameter this listing reads; it reads {accepted}"
+
+
+@dataclass(frozen=True)
+class Ignored:
+    """One query parameter a listing did not read, and the reason it did not."""
+
+    name: str
+    reason: str
+
+
 @dataclass(frozen=True)
 class BrowsePage:
     """One page of a tenant's rows, with the true total the same executor counted."""
@@ -113,6 +144,7 @@ class BrowsePage:
     sort: str
     direction: str
     executed_sql: str
+    ignored: tuple[Ignored, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,10 +163,13 @@ def browse_records(
     direction: str = DEFAULT_DIRECTION,
     page: int = _FIRST_PAGE,
     page_size: int | None = None,
+    requested: Iterable[str] = (),
     db_path: Path = DEFAULT_DB_PATH,
 ) -> BrowsePage:
     """One sorted, filtered page of the tenant's employee rows, plus how many match in all."""
-    return _page(RECORD_COLUMNS, tenant_id, filters, sort, direction, page, page_size, db_path)
+    return _page(
+        RECORD_COLUMNS, tenant_id, filters, sort, direction, page, page_size, requested, db_path
+    )
 
 
 def browse_notes(
@@ -145,10 +180,44 @@ def browse_notes(
     direction: str = DEFAULT_DIRECTION,
     page: int = _FIRST_PAGE,
     page_size: int | None = None,
+    requested: Iterable[str] = (),
     db_path: Path = DEFAULT_DB_PATH,
 ) -> BrowsePage:
     """The same page over the note corpus: a note is a column of the employee row that owns it."""
-    return _page(NOTE_COLUMNS, tenant_id, filters, sort, direction, page, page_size, db_path)
+    return _page(
+        NOTE_COLUMNS, tenant_id, filters, sort, direction, page, page_size, requested, db_path
+    )
+
+
+def ignored_params(
+    names: Iterable[str], accepted: frozenset[str] = LISTING_PARAMS
+) -> tuple[Ignored, ...]:
+    """The parameters a request carried that this listing does not read, each with its reason.
+
+    A stray query parameter must not break a page, so it is ignored - but ignoring it in silence
+    leaves a reader unable to tell a refusal from a coincidence (issue #107): as `acme`,
+    `?tenant_id=beta` answers with acme's rows whether the parameter was refused or another
+    tenant simply held the same ones. So every name a request carried that the listing does not
+    read is reported back beside the page it did not change, the way a known filter with a bad
+    value is already refused by name.
+
+    Only names are reported, never the values they carried: a response that echoed the value
+    would put a tenant name the server never accepted into the server's own output.
+
+    `tenant_id` and `tenant` get their own sentence rather than the generic one, because the
+    reason they are not parameters is the security claim itself - the tenant is read from the
+    verified token and reaches the query by closure, so there is no request that can name one
+    (ADR 0002, layer 1) - and this is where a reader gets to read it. The accepted set is matched
+    exactly, as the web framework matches a parameter name, so a differently cased `Name` counts
+    as unread because it *is* unread; the two tenant names are matched case-insensitively, since
+    no casing of either is accepted anywhere.
+    """
+    unknown = _UNKNOWN_REASON.format(accepted=", ".join(sorted(accepted)))
+    return tuple(
+        Ignored(name=name, reason=_TENANT_REASON if name.lower() in TENANT_PARAMS else unknown)
+        for name in dict.fromkeys(names)
+        if name not in accepted
+    )
 
 
 def departments(tenant_id: str, *, db_path: Path = DEFAULT_DB_PATH) -> list[dict[str, object]]:
@@ -214,6 +283,7 @@ def _page(
     direction: str,
     page: int,
     page_size: int | None,
+    requested: Iterable[str],
     db_path: Path,
 ) -> BrowsePage:
     """Run the two scoped queries one listing needs: the page itself, and how many rows match."""
@@ -238,6 +308,7 @@ def _page(
         sort=sort,
         direction=direction,
         executed_sql=result.executed_sql,
+        ignored=ignored_params(requested),
     )
 
 

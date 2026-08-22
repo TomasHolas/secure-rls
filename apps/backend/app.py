@@ -63,7 +63,12 @@ the notes search delegates to `rag.search_notes_scoped`, the retrieval path the 
 tool uses. So these handlers stay what every other one here is - one call into the module that
 owns the logic - and the tenant reaches them the only way it ever does, from the verified token.
 The filter values arrive as query parameters typed by `browse.Filters`, which is the allowlist:
-a parameter the client invents is not in it and is dropped, exactly as a body field would be.
+a parameter the client invents is not in it and is dropped, exactly as a body field would be -
+and, since issue #107, is named in the response rather than dropped in silence. Both listings
+pass the request's raw parameter names to `browse.ignored_params`, which reports what it did not
+read and gives `tenant_id`/`tenant` the reason no request can name a tenant (ADR 0002, layer 1).
+A stray parameter is still a 200 with the caller's own rows: a page must not break over one, and
+a known filter with a value the allowlist refuses is still the same 400.
 
 Three exception handlers turn a refused browse into an honest status without narrating the
 server: `QueryRejected` is a 400 carrying its own reason (a sort outside the allowlist, a date
@@ -618,6 +623,7 @@ def create_app(
 
     @app.get("/records")
     def records(
+        request: Request,
         identity: Annotated[Identity, Depends(_identity)],
         filters: Annotated[Filters, Depends()],
         sort: str = DEFAULT_SORT,
@@ -630,6 +636,11 @@ def create_app(
         The tenant is the token's, so there is nothing to authorize here beyond having a token:
         the same query for two identities reads two disjoint sets of rows because the executor
         binds a different tenant into it, not because this handler chose differently.
+
+        The raw parameter names travel with the request so `browse.py` can report the ones it
+        does not read (issue #107) - the names only, never their values. A parameter this
+        handler has no field for is still not read, exactly as before; what changes is that the
+        page says so rather than leaving a reader to guess whether it was refused or honored.
         """
         return browse_records(
             identity.tenant_id,
@@ -638,6 +649,7 @@ def create_app(
             direction=direction,
             page=page,
             page_size=page_size,
+            requested=request.query_params.keys(),
             db_path=db_path,
         )
 
@@ -650,6 +662,7 @@ def create_app(
 
     @app.get("/notes")
     def notes(
+        request: Request,
         identity: Annotated[Identity, Depends(_identity)],
         filters: Annotated[Filters, Depends()],
         sort: str = DEFAULT_SORT,
@@ -657,7 +670,11 @@ def create_app(
         page: int = 1,
         page_size: int | None = None,
     ) -> BrowsePage:
-        """One page of the caller's note corpus - the text the agent retrieves over (ADR 0014)."""
+        """One page of the caller's note corpus - the text the agent retrieves over (ADR 0014).
+
+        Same listing contract as `/records`, including the report of the parameters it did not
+        read: the corpus takes the same filters, so it owes a reader the same honesty about them.
+        """
         return browse_notes(
             identity.tenant_id,
             filters=filters,
@@ -665,6 +682,7 @@ def create_app(
             direction=direction,
             page=page,
             page_size=page_size,
+            requested=request.query_params.keys(),
             db_path=db_path,
         )
 

@@ -644,6 +644,54 @@ def test_a_tenant_the_client_invents_is_ignored(wiring, query):
     assert BETA_SECRET not in response.text
 
 
+def test_a_tenant_a_request_names_is_answered_with_the_reason_it_cannot(wiring):
+    """The 200 stays a 200 over the caller's own rows, and now it says what it ignored (#107)."""
+    response = wiring.client.get(
+        "/records", params={"tenant_id": BETA}, headers=_headers(wiring.client, ALICE)
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["total"] == ACME_ROWS
+    assert [param["name"] for param in body["ignored"]] == ["tenant_id"]
+    assert "verified token" in body["ignored"][0]["reason"]
+    assert "ADR 0002" in body["ignored"][0]["reason"]
+    assert BETA not in response.text
+
+
+def test_an_unknown_parameter_is_reported_rather_than_swallowed(wiring):
+    """Not every stray parameter is an attack; every one of them is still reported."""
+    body = wiring.client.get(
+        "/records", params={"db_path": "/etc/passwd"}, headers=_headers(wiring.client, ALICE)
+    ).json()
+
+    assert body["total"] == ACME_ROWS
+    assert [param["name"] for param in body["ignored"]] == ["db_path"]
+    assert "not a parameter this listing reads" in body["ignored"][0]["reason"]
+
+
+def test_an_accepted_filter_is_not_reported_as_ignored(wiring):
+    """The report is about what was discarded; a filter that worked is visible in the rows."""
+    body = wiring.client.get(
+        "/records",
+        params={"name": "ada", "sort": "salary", "page_size": 2},
+        headers=_headers(wiring.client, ALICE),
+    ).json()
+
+    assert body["ignored"] == []
+
+
+def test_the_notes_listing_reports_a_tenant_a_request_names_too(wiring):
+    """Both listings take the same filters, so both owe the same sentence (ADR 0014 as amended)."""
+    body = wiring.client.get(
+        "/notes", params={"tenant": BETA}, headers=_headers(wiring.client, BOB)
+    ).json()
+
+    assert body["total"] == BETA_ROWS
+    assert [param["name"] for param in body["ignored"]] == ["tenant"]
+    assert "verified token" in body["ignored"][0]["reason"]
+
+
 @pytest.mark.parametrize(
     "hostile",
     ["' OR 1=1 --", "x' UNION SELECT * FROM employees WHERE tenant_id='beta' --", "%", "?"],
@@ -690,6 +738,7 @@ def test_a_page_larger_than_the_row_cap_is_clamped_and_says_so(wiring):
         ({"direction": "sideways"}, "direction must be one of"),
         ({"hired_from": "yesterday"}, "ISO date"),
         ({"name": "a" * 500}, "characters"),
+        ({"sort": "notes", "tenant_id": BETA}, "sort must be one of"),
     ],
 )
 def test_a_refused_browse_is_a_400_naming_the_allowlist_that_refused_it(wiring, query, expected):

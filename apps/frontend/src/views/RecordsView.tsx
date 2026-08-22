@@ -10,6 +10,12 @@
  * otherwise fire a request per character, and the reader is composing a question, not narrowing
  * live. The executed SQL is shown under the table for the same reason the chat trace shows it:
  * the scoping subquery with its bound tenant is the evidence, and hiding it would waste it.
+ *
+ * There is deliberately no tenant filter — a caller holds exactly one tenant, and offering to
+ * pick one would imply otherwise. What there is instead is the `ParamProbe`: a reader may append
+ * a query parameter of their own to the request and read back what the server did with it, so
+ * `?tenant_id=beta` produces the tenant's own 450 rows *and* the server's sentence about why no
+ * request can name a tenant, rather than an unchanged page they have to take on faith (#107).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -17,6 +23,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/Button";
 import { CodeBlock } from "../components/CodeBlock";
 import { DataTable } from "../components/DataTable";
+import { ParamProbe } from "../components/ParamProbe";
 import { Pill } from "../components/Pill";
 import { SelectField, TextField } from "../components/forms";
 import { EmptyState, Page, PageHeader, Section } from "../components/layout";
@@ -26,6 +33,7 @@ import { formatCount, formatNumber } from "../lib/format";
 
 const LOAD_FAILURE = "The rows could not be loaded.";
 const EXECUTED_LABEL = "executed after tenant scoping";
+const PROBE_TITLE = "Attack it yourself";
 const SORTABLE = ["user_id", "name", "department", "salary", "performance_score", "hire_date"];
 const FIRST_PAGE = 1;
 
@@ -57,6 +65,7 @@ export function RecordsView({ tenant }: { tenant: string }) {
   const [sort, setSort] = useState(SORTABLE[0]);
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(FIRST_PAGE);
+  const [probe, setProbe] = useState("");
   const [rows, setRows] = useState<BrowsePage | null>(null);
   const [departments, setDepartments] = useState<DepartmentCount[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,7 +89,7 @@ export function RecordsView({ tenant }: { tenant: string }) {
   useEffect(() => {
     let live = true;
     setLoading(true);
-    browseRecords({ ...applied, sort, direction, page })
+    browseRecords({ ...applied, sort, direction, page }, probe)
       .then((serverPage) => {
         if (live) {
           setRows(serverPage);
@@ -96,7 +105,7 @@ export function RecordsView({ tenant }: { tenant: string }) {
     return () => {
       live = false;
     };
-  }, [applied, sort, direction, page]);
+  }, [applied, sort, direction, page, probe]);
 
   const sortBy = useCallback(
     (column: string) => {
@@ -213,6 +222,15 @@ export function RecordsView({ tenant }: { tenant: string }) {
             </Button>
           </div>
         </form>
+      </Section>
+
+      <Section title={PROBE_TITLE}>
+        <ParamProbe
+          id="records-probe"
+          ignored={rows?.ignored ?? []}
+          onSend={setProbe}
+          disabled={loading}
+        />
       </Section>
 
       <Section
