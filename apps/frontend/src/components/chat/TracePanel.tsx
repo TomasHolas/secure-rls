@@ -31,11 +31,13 @@ import { CodeBlock } from "../CodeBlock";
 import { TraceStep } from "./TraceStep";
 import type { StepTone } from "./TraceStep";
 import { ToolResultView } from "./ToolResultView";
+import { formatCount, formatNumber, formatSeconds } from "../../lib/format";
 import { FIRST_ROUND } from "../../lib/trace";
 import type { CallItem, CallOutcome, ReasoningItem, TraceItem } from "../../lib/trace";
 
 const REASONING_ICON = "sparkles";
 const REASONING_TITLE = "Thinking";
+const SETTLED_TITLE = "Thought for";
 
 const TOOL_ICONS: Record<string, string> = {
   query_db: "database",
@@ -102,15 +104,27 @@ function TraceItemStep({ item }: { item: TraceItem }) {
   return <CallStep item={item} />;
 }
 
-/** One model round's thinking: closed to start with, and from the second round on it says which. */
+/**
+ * One model round's thinking. It is open and shimmering while the round's thinking is still
+ * arriving, and folds itself away once it settles, leaving how long it took on the row - the
+ * thinking-trace pattern from beautifului.dev, whose header swaps a live verb for a past-tense
+ * summary carrying the cost. Which round it was is on the chip from the second one on.
+ */
 function ReasoningStep({ item }: { item: ReasoningItem }) {
+  const settled = item.endedAt;
   return (
     <TraceStep
       icon={REASONING_ICON}
-      title={REASONING_TITLE}
+      title={
+        settled === null ? (
+          <span className="trace-live">{REASONING_TITLE}</span>
+        ) : (
+          `${SETTLED_TITLE} ${formatSeconds(settled - item.startedAt)}`
+        )
+      }
       meta={item.round > FIRST_ROUND ? <Pill tone="neutral">round {item.round}</Pill> : undefined}
       tone="muted"
-      open={false}
+      open={settled === null}
     >
       <p className="trace-reasoning">{item.text}</p>
     </TraceStep>
@@ -170,11 +184,11 @@ function OutcomeChips({ outcome }: { outcome: CallOutcome }) {
     <>
       {truncated ? (
         <Pill tone="warn">
-          showing {returned_count} of {total_count} rows
+          showing {formatNumber(returned_count ?? 0)} of {formatCount(total_count ?? 0, "row")}
         </Pill>
       ) : null}
       {returned_count !== undefined && !truncated ? (
-        <Pill tone="ok">{returned_count} rows</Pill>
+        <Pill tone="ok">{formatCount(returned_count, "row")}</Pill>
       ) : null}
     </>
   );

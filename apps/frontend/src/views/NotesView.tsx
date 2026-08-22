@@ -26,7 +26,7 @@ import { EmptyState, Page, PageHeader, Section } from "../components/layout";
 import type { NoteEntry } from "../components/NoteList";
 import { ApiError, browseNotes, listFlaggedNotes, searchNotes } from "../lib/api";
 import type { BrowsePage, NoteHits } from "../lib/api";
-import { formatNumber } from "../lib/format";
+import { formatCount, formatNumber } from "../lib/format";
 
 const LOAD_FAILURE = "The notes could not be loaded.";
 const SEARCH_FAILURE = "The search failed. Try again.";
@@ -158,7 +158,7 @@ export function NotesView({ tenant }: { tenant: string }) {
         aside={
           corpus ? (
             <Pill tone="neutral">
-              {formatNumber(corpus.total)} notes · page {formatNumber(corpus.page)} of{" "}
+              {formatCount(corpus.total, "note")} · page {formatNumber(corpus.page)} of{" "}
               {formatNumber(pages)}
             </Pill>
           ) : null
@@ -182,7 +182,7 @@ export function NotesView({ tenant }: { tenant: string }) {
                 Previous
               </Button>
               <span className="pager-state">
-                showing {formatNumber(corpus.rows.length)} of {formatNumber(corpus.total)} notes
+                showing {formatNumber(corpus.rows.length)} of {formatCount(corpus.total, "note")}
               </span>
               <Button
                 onClick={() => setPage((current) => current + 1)}

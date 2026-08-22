@@ -20,8 +20,14 @@ function done(status: TurnStatus, answer: string, model = "m"): DoneEvent {
   return { type: "done", status, answer, model, ...COST };
 }
 
+/** One scripted second between events, so a reasoning span asserts as a round number of seconds. */
+const TICK = 1000;
+
 function fold(events: TraceEvent[], question = "average salary per department"): Turn {
-  return events.reduce(applyEvent, startTurn(question));
+  return events.reduce(
+    (turn, event, index) => applyEvent(turn, event, index * TICK),
+    startTurn(question),
+  );
 }
 
 function calls(turn: Turn): CallItem[] {
@@ -78,11 +84,20 @@ describe("a turn that answers", () => {
   });
 
   it("groups each round's thinking into one step and numbers the rounds", () => {
-    expect(thoughts(turn)).toEqual([
+    expect(thoughts(turn)).toMatchObject([
       { kind: "reasoning", round: 1, text: "an average per group" },
       { kind: "reasoning", round: 2, text: "the table answers it" },
     ]);
     expect(turn.round).toBe(2);
+  });
+
+  it("spans each round's thinking from its first chunk to whatever the turn did next", () => {
+    // Round 1 opens on the chunk at index 1 and is closed by the tool call at index 4; round 2
+    // opens at index 8 and is closed by the terminal frame at index 12.
+    expect(thoughts(turn).map((thought) => [thought.startedAt, thought.endedAt])).toEqual([
+      [1 * TICK, 4 * TICK],
+      [8 * TICK, 12 * TICK],
+    ]);
   });
 
   it("reports what the turn cost from its terminal frame", () => {
@@ -206,7 +221,7 @@ describe("streamed reasoning", () => {
   ]);
 
   it("accumulates into one step of its round, not on the answer", () => {
-    expect(turn.items).toEqual([
+    expect(turn.items).toMatchObject([
       { kind: "reasoning", round: 1, text: "the question asks for an average per group" },
     ]);
     expect(turn.answer).toBe("Engineering averages 91000.");
@@ -223,16 +238,18 @@ describe("streamed reasoning", () => {
       { type: "reasoning", text: "second thought" },
     ]);
 
-    expect(twice.items).toEqual([
-      { kind: "reasoning", round: 1, text: "first thought" },
-      { kind: "reasoning", round: 2, text: "second thought" },
+    expect(twice.items).toMatchObject([
+      { kind: "reasoning", round: 1, text: "first thought", endedAt: 6 * TICK },
+      { kind: "reasoning", round: 2, text: "second thought", endedAt: null },
     ]);
   });
 
   it("opens the first round's step for reasoning that arrives before its node was announced", () => {
     const early = fold([{ type: "reasoning", text: "thinking already" }]);
 
-    expect(early.items).toEqual([{ kind: "reasoning", round: 1, text: "thinking already" }]);
+    expect(early.items).toMatchObject([
+      { kind: "reasoning", round: 1, text: "thinking already" },
+    ]);
     expect(early.answer).toBe("");
   });
 

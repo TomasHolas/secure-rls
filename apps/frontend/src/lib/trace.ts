@@ -51,11 +51,19 @@ const USER_ROLE = "user";
 /** What separates two things the assistant said inside one replayed turn. */
 const ANSWER_SEPARATOR = "\n\n";
 
-/** The model's own thinking from one model round, whatever number of chunks it streamed in. */
+/**
+ * The model's own thinking from one model round, whatever number of chunks it streamed in.
+ *
+ * `startedAt` and `endedAt` are this client's clock, not the server's: the stream carries no
+ * timestamps, so what is measured is the span over which the round's thinking arrived here.
+ * `endedAt` is null while it is still arriving, which is what makes the step render as live.
+ */
 export interface ReasoningItem {
   kind: "reasoning";
   round: number;
   text: string;
+  startedAt: number;
+  endedAt: number | null;
 }
 
 export interface CallItem {
@@ -121,8 +129,11 @@ export function startTurn(question: string): Turn {
   };
 }
 
-/** The turn after one trace event; the input turn is never mutated. */
-export function applyEvent(turn: Turn, event: TraceEvent): Turn {
+/**
+ * The turn after one trace event; the input turn is never mutated. `now` is the clock the
+ * reasoning spans are measured against and is injectable so a scripted sequence can assert them.
+ */
+export function applyEvent(turn: Turn, event: TraceEvent, now: number = Date.now()): Turn {
   switch (event.type) {
     case "node_start":
       return event.node === REASON_NODE ? { ...turn, round: turn.round + 1 } : turn;
@@ -130,22 +141,22 @@ export function applyEvent(turn: Turn, event: TraceEvent): Turn {
       return { ...turn, answer: turn.answer + event.text };
     case "reasoning": {
       const round = Math.max(turn.round, FIRST_ROUND);
-      return { ...turn, round, items: appendReasoning(turn.items, event.text, round) };
+      return { ...turn, round, items: appendReasoning(turn.items, event.text, round, now) };
     }
     case "tool_call":
-      return { ...turn, items: [...turn.items, callItem(event)] };
+      return { ...turn, items: [...settle(turn.items, now), callItem(event)] };
     case "tool_result":
     case "retry":
     case "security_event":
-      return { ...turn, items: attachOutcome(turn.items, event) };
+      return { ...turn, items: attachOutcome(settle(turn.items, now), event) };
     case "done":
-      return done(turn, event);
+      return done(turn, event, now);
   }
 }
 
 /** A turn whose stream broke: an unreachable endpoint or a rejected request, stated as such. */
-export function failTurn(turn: Turn, error: string): Turn {
-  return { ...turn, phase: "failed", error };
+export function failTurn(turn: Turn, error: string, now: number = Date.now()): Turn {
+  return { ...turn, phase: "failed", error, items: settle(turn.items, now) };
 }
 
 /**
@@ -182,10 +193,11 @@ export function replayTurns(messages: Message[], results: ToolResultRecord[]): T
  * of a run that never answered, so it goes to `error` and whatever text streamed before it
  * stays the answer - the view states the diagnosis instead of guessing at one.
  */
-function done(turn: Turn, event: DoneEvent): Turn {
+function done(turn: Turn, event: DoneEvent, now: number): Turn {
   const failed = event.status === "failed";
   return {
     ...turn,
+    items: settle(turn.items, now),
     answer: failed ? turn.answer : turn.answer || event.answer,
     phase: event.status,
     model: event.model,
@@ -239,13 +251,32 @@ function callItem(event: ToolCallEvent): CallItem {
  * they returned. A step exists only once there is thinking in it - a round that showed none is no
  * row at all.
  */
-function appendReasoning(items: TraceItem[], text: string, round: number): TraceItem[] {
+function appendReasoning(
+  items: TraceItem[],
+  text: string,
+  round: number,
+  now: number,
+): TraceItem[] {
   const last = items[items.length - 1];
   if (!last || last.kind !== "reasoning" || last.round !== round) {
-    return [...items, { kind: "reasoning", round, text }];
+    const started = { kind: "reasoning", round, text, startedAt: now, endedAt: null } as const;
+    return [...settle(items, now), started];
   }
   const next = [...items];
   next[next.length - 1] = { ...last, text: last.text + text };
+  return next;
+}
+
+/**
+ * Whatever thinking was still arriving stops arriving here: the next thing the turn did, or its
+ * end, is the moment that round's thinking finished. Only the newest step can still be open, so
+ * this closes the last item and leaves every earlier one alone.
+ */
+function settle(items: TraceItem[], now: number): TraceItem[] {
+  const last = items[items.length - 1];
+  if (!last || last.kind !== "reasoning" || last.endedAt !== null) return items;
+  const next = [...items];
+  next[next.length - 1] = { ...last, endedAt: now };
   return next;
 }
 
