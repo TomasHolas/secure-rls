@@ -75,7 +75,8 @@ retrieval path at all.
 - **The build is idempotent**: it counts the rows the `vec0` table already holds
   and only embeds when the store is missing or empty. A restart therefore costs
   nothing, which is what makes "always at startup" affordable — the corpus is
-  ~1000 short notes, embedded in one batched pass.
+  ~1000 short notes, embedded in one batched pass. Rows held is *not* enough on
+  its own — see the fingerprint amendment below.
 - **A failed build is never fatal to boot.** The embedding endpoint is a remote
   machine (ADR 0005); if it is unreachable, the failure is logged and the API
   starts anyway. Refusing to boot would take the whole demo down over one
@@ -89,8 +90,49 @@ retrieval path at all.
   distinct `RetrievalUnavailable` so the tool layer can tell that condition
   apart from a model error and from a defense firing.
 
+## Index invalidation: a corpus fingerprint (added after issue #89)
+
+"Only embed when the store is missing or empty" answers *when to build* but not
+*when to rebuild*. Because the index and the data are separate files with no
+link between them, a regenerated `employees.csv` left a full, non-empty
+`vectors.db` in place — so startup skipped indexing and `search_notes` kept
+answering from embeddings of text that no longer existed. Nothing failed loudly;
+the Notes tab and the retrieval tool simply served the previous corpus. Issue #89
+regenerated the dataset, which is what made this reachable in practice.
+
+The decision is a **content fingerprint recorded with the index**: `rag` hashes
+the corpus it is about to embed (SHA-256 over every indexed row's `tenant_id`,
+`user_id`, `name` and note text, unit-separated so no two corpora can collide by
+concatenation), and `db.init_vector_store` writes that digest into a
+`note_index_meta` table inside `vectors.db` **in the same transaction as the
+vectors**. Startup then compares the digest of the current corpus with the stamp
+on the store and re-embeds when they differ.
+
+- **The stamp and the vectors cannot disagree.** One transaction means the digest
+  on disk always describes the embeddings on disk; a crash mid-build leaves
+  neither, and the next startup rebuilds.
+- **Unknown means stale.** A missing store, a store with no meta table (built
+  before this existed), or an unreadable one all read as `None`, which re-embeds.
+  The failure direction is "pay for embeddings you did not need", never "serve
+  vectors for text that changed".
+- **The digest covers every field the store serves**, not the note text alone:
+  `vec0` keeps `name` as payload, so a renamed employee would otherwise keep
+  being returned under the old name.
+- **Why hash rather than compare timestamps**: mtimes are not preserved by git
+  checkout, Docker build layers, or `COPY`, so a file-time heuristic would be
+  wrong on exactly the deployment path this repo uses (ADR 0013). This is the
+  same reasoning as an HTTP strong validator (RFC 9110 §8.8.3): a value derived
+  from the content, not from when the content was written.
+- The whole corpus is re-embedded on any change rather than diffed per note.
+  At ~1000 short notes in one batched pass that is seconds, and a per-row diff
+  would be more moving parts than the demo can justify — noted as the production
+  evolution (the change-detection/incremental-indexing pattern that managed
+  services implement).
+
 ## Consequences
 
+- A changed dataset costs one re-embedding pass at the next startup, and a
+  changed dataset can no longer be searched through stale vectors.
 - The demo gains a third secured data path with zero new security code paths —
   the same four layers, applied to vectors.
 - The eval suite gains cross-tenant retrieval attacks ("find notes about
@@ -131,8 +173,13 @@ retrieval path at all.
   https://alexgarcia.xyz/sqlite-vec/features/vec0.html,
   https://alexgarcia.xyz/blog/2024/sqlite-vec-metadata-release/index.html,
   https://github.com/asg017/sqlite-vec
-- RFC 9110 section 15.5.4 (404 to hide existence) —
+- RFC 9110 section 15.5.4 (404 to hide existence) and section 8.8.3 (entity
+  tags: a validator derived from the representation's content, which changes
+  whenever the representation does) —
   https://www.rfc-editor.org/rfc/rfc9110.html
+- Azure AI Search indexer change detection / incremental indexing (the managed
+  equivalent of "rebuild only what changed") —
+  https://learn.microsoft.com/en-us/azure/search/search-howto-index-changed-deleted-blobs
 - OWASP REST Security Cheat Sheet (generic error messages) —
   https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html
 - Ollama embedding models — https://ollama.com/blog/embedding-models
