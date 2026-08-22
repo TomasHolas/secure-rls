@@ -59,6 +59,9 @@ const PHASE_PILL = {
   blocked: { tone: "danger", label: "blocked by a security layer" },
   failed: { tone: "danger", label: "failed before answering" },
 } as const;
+const UNGROUNDED_LABEL = "answered without querying the data";
+const UNGROUNDED_TITLE =
+  "No tool of this turn returned a result the answer could rest on, so any figure in it was not read from the database.";
 
 /** The phases that earn a pill of their own; the rest are carried by the answer alone. */
 type PilledPhase = keyof typeof PHASE_PILL;
@@ -216,6 +219,8 @@ export function ChatView({
 /** One turn, whether it streamed here or was read back: the same bricks either way. */
 function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
   const phase = turn.phase in PHASE_PILL ? PHASE_PILL[turn.phase as PilledPhase] : null;
+  // A turn that ended some other way already says so on its own pill; this one is for an answer.
+  const ungrounded = turn.grounded === false && turn.phase === "ok";
   return (
     <div className="chat-turn">
       <ChatMessage role="user" text={turn.question} />
@@ -230,9 +235,14 @@ function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
           />
         }
         footer={
-          phase || turn.model ? (
+          phase || ungrounded || turn.model ? (
             <>
               {phase ? <Pill tone={phase.tone}>{phase.label}</Pill> : null}
+              {ungrounded ? (
+                <Pill tone="warn" title={UNGROUNDED_TITLE}>
+                  {UNGROUNDED_LABEL}
+                </Pill>
+              ) : null}
               {turn.model ? (
                 <Pill tone="neutral" icon="cpu" title="The model that answered this turn">
                   {turn.model}

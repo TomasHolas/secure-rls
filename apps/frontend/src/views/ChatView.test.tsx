@@ -61,7 +61,27 @@ const ANSWERING = [
     },
   },
   { type: "token", text: "Engineering leads at 91000." },
-  { type: "done", status: "ok", answer: "Engineering leads at 91000.", model: MODEL, ...COST },
+  {
+    type: "done",
+    status: "ok",
+    answer: "Engineering leads at 91000.",
+    grounded: true,
+    model: MODEL,
+    ...COST,
+  },
+];
+
+const RECALLED = [
+  { type: "node_start", node: "reason" },
+  { type: "token", text: "Sales averages 65263.94, as I said." },
+  {
+    type: "done",
+    status: "ok",
+    answer: "Sales averages 65263.94, as I said.",
+    grounded: false,
+    model: MODEL,
+    ...COST,
+  },
 ];
 
 const BLOCKED = [
@@ -79,6 +99,7 @@ const BLOCKED = [
     type: "done",
     status: "blocked",
     answer: "That query is not allowed.",
+    grounded: false,
     model: MODEL,
     input_tokens: 190,
     output_tokens: 0,
@@ -95,6 +116,7 @@ const FAILED = [
     type: "done",
     status: "failed",
     answer: DIAGNOSIS,
+    grounded: false,
     model: MODEL,
     input_tokens: 0,
     output_tokens: 0,
@@ -435,6 +457,23 @@ describe("the chat view", () => {
     await screen.findByText(DIAGNOSIS);
     expect(screen.queryByText(/T\/S/)).toBeNull();
     expect(screen.queryByText(/^In /)).toBeNull();
+  });
+
+  it("says an answer no tool of that turn grounded was not read from the data", async () => {
+    api.openChatStream.mockImplementation(() => Promise.resolve(sseResponse(RECALLED)));
+    await renderReady();
+    ask("and how does that compare with Sales?");
+
+    await screen.findByText("Sales averages 65263.94, as I said.");
+    expect(screen.getByText("answered without querying the data")).toBeTruthy();
+  });
+
+  it("says nothing of the kind about an answer a tool result grounded", async () => {
+    await renderReady();
+    ask();
+
+    await screen.findByText("Engineering leads at 91000.");
+    expect(screen.queryByText("answered without querying the data")).toBeNull();
   });
 
   it("names the model that answered the turn", async () => {

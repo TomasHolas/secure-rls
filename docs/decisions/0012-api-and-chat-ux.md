@@ -57,6 +57,18 @@ managed and no tokens — a run that never reached an answer never got a usage
 report to pass on. Honest zeros, never an invented number: a model endpoint
 that reports no usage yields zeros and the footer states nothing.
 
+**`done` says whether a tool grounded the answer (added with issue #94).** The
+frame carries `grounded` beside `status`: whether any tool of that turn returned
+a result the answer could rest on. It is a field of the terminal frame rather
+than an event of its own because it is a property of the finished turn, and the
+turn already has one frame for those. The SPA renders `ok` plus not-grounded as
+a warn pill, "answered without querying the data", beside the answer; a turn
+that ended some other way already carries a pill saying so, and a replayed turn
+claims nothing about it, because the server does not store it (the evidence it
+does store is what a reader judges a past turn on). The mechanism behind the
+flag - one grounding nudge per turn - is ADR 0011's, and it is answer quality,
+never a security layer.
+
 **Two termination invariants (amended after issue #66).** The live pass showed
 what their absence costs: one tool raising an unexpected exception killed the
 response mid-flight, leaving every announced step at "running" forever and the
@@ -282,6 +294,10 @@ place that attaches the bearer token.
   pill and in the notice appended to its answer, naming which bound it hit. A
   resource limit the product chose is stated as such, never rendered as a
   failure or as an answer that merely happens to stop.
+- **Groundedness visibility (added with issue #94)**: an answered turn that no
+  tool result of its own stands behind says so on a warn pill. An analyst tool
+  that shows its SQL, its rows and its refusals should not quietly hide the one
+  case where there was nothing to show.
 - **Failure visibility (added with issue #66)**: a `failed` turn renders the
   reason the backend sent, not a fallback string the SPA made up. A frontend
   guess reads as a diagnosis to the viewer and cannot be right; the backend is

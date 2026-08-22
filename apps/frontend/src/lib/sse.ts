@@ -106,11 +106,16 @@ export type TurnStatus = "ok" | "blocked" | "gave_up" | "cut_short" | "failed";
 /**
  * How a turn ended and what it cost: the summed usage of its model calls and the wall-clock
  * seconds it ran. A `failed` frame reports the seconds it managed and no tokens.
+ *
+ * `grounded` says whether a tool result of that same turn is what the answer rests on (ADR 0011
+ * as amended): false is an answer composed from the conversation or from nothing, which for a
+ * data analyst is worth showing even when the figure happens to be right.
  */
 export interface DoneEvent {
   type: "done";
   status: TurnStatus;
   answer: string;
+  grounded: boolean;
   model: string;
   input_tokens: number;
   output_tokens: number;

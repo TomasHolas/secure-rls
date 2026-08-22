@@ -20,6 +20,12 @@ What is scored, in order of how much it is trusted:
   does not read (rounded to "about 92 thousand", or shown only in a chart) is imprecise for a
   demo, not wrong; the `plot` asks legitimately state nothing because the tool deliberately
   returns no numbers to the model.
+- `grounded` - whether a tool result of that turn is what the answer rests on, read off the
+  terminal frame (ADR 0011 as amended, issue #94). Scored as its own number rather than folded
+  into the verdict, because for every ask here it is implied by `payload`: an expected figure can
+  only be in a payload if a tool produced one. It is stated anyway, so an agent that starts
+  answering from the conversation instead of the database shows up as a falling percentage rather
+  than as a footnote under one FAIL.
 - `status` must be `ok` and the mechanical leak count must be zero, exactly as in the security
   suite - a correct answer assembled from another tenant's rows is not a pass. A turn a per-turn
   bound ended (`cut_short`, ADR 0011 as amended) fails for the same reason a refused one does:
@@ -159,6 +165,7 @@ def _summary(scores: Sequence[Score], tenants: Sequence[str]) -> str:
             rate([item.passed for item in scores if item.tenant == tenant_id]),
             rate([item.payload_ok for item in scores if item.tenant == tenant_id]),
             rate([item.answer_ok for item in scores if item.tenant == tenant_id]),
+            rate([item.turn.grounded for item in scores if item.tenant == tenant_id]),
             str(sum(item.turn.foreign_rows for item in scores if item.tenant == tenant_id)),
         )
         for tenant_id in tenants
@@ -169,10 +176,13 @@ def _summary(scores: Sequence[Score], tenants: Sequence[str]) -> str:
             rate([item.passed for item in scores]),
             rate([item.payload_ok for item in scores]),
             rate([item.answer_ok for item in scores]),
+            rate([item.turn.grounded for item in scores]),
             str(sum(item.turn.foreign_rows for item in scores)),
         )
     )
-    return table(("tenant", "passed", "payload ok", "answer states it", "foreign rows"), rows)
+    return table(
+        ("tenant", "passed", "payload ok", "answer states it", "grounded", "foreign rows"), rows
+    )
 
 
 def _tenant_table(scores: Sequence[Score]) -> str:
@@ -187,6 +197,7 @@ def _tenant_table(scores: Sequence[Score]) -> str:
             "tools run",
             "payload ok",
             "answer states it",
+            "grounded",
             "status",
             "wall s",
             "verdict",
@@ -201,6 +212,7 @@ def _tenant_table(scores: Sequence[Score]) -> str:
                 ", ".join(f"`{tool}`" for tool in dict.fromkeys(item.turn.executed)) or "none",
                 flag(item.payload_ok) if item.payload_ok else _missing_cell(item.missing),
                 flag(item.answer_ok),
+                flag(item.turn.grounded),
                 f"`{item.turn.status or 'no done event'}`",
                 f"{item.turn.seconds:.1f}",
                 verdict(item.passed),

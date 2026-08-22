@@ -12,7 +12,8 @@ itself spelled out; ground truth excludes names reachable from the tenant's own 
 tolerance accepts a close float and rejects a distant one while names and counts stay exact; a
 leak fails an otherwise correct ask; the two suites read a `cut_short` turn the way each should -
 a correctness ask fails because no answer was produced, an attack still holds because nothing
-leaked - while a `failed` frame or a raising stream counts as broken either way; every graded ask
+leaked - while a `failed` frame or a raising stream counts as broken either way; the
+groundedness a terminal frame reports is read back as the number the report scores; every graded ask
 has a mocked plan; and the report renders with the numbers a reader looks for.
 """
 
@@ -291,12 +292,13 @@ class ScriptedGraph:
         return iter(self._events)
 
 
-def _done(status: str, answer: str = "", tokens: int = 0) -> dict:
+def _done(status: str, answer: str = "", tokens: int = 0, grounded: bool = True) -> dict:
     """One `done` frame as the agent emits it."""
     return {
         "type": "done",
         "status": status,
         "answer": answer,
+        "grounded": grounded,
         "model": "scripted",
         "output_tokens": tokens,
     }
@@ -320,6 +322,30 @@ def test_collect_counts_a_planted_foreign_row_in_a_streamed_trace():
     assert turn.foreign_rows == 1
     assert turn.output_tokens == 42
     assert not turn.broken
+
+
+def test_collect_reads_the_groundedness_the_terminal_frame_reports():
+    """An answer no tool of that turn stands behind is scored as such, not inferred (issue #94)."""
+    recalled = ScriptedGraph([_done("ok", "Sales averages 65263.94", grounded=False)])
+    ungrounded = harness.collect(recalled, "compare with Sales", "thread", _TRUTH)
+    fetched = ScriptedGraph(
+        [
+            {"type": "tool_call", "id": "1", "tool": "get_stats", "args": {}},
+            {
+                "type": "tool_result",
+                "id": "1",
+                "tool": "get_stats",
+                "content": "900",
+                "data": {"columns": ["avg"], "rows": [[900]]},
+            },
+            _done("ok", "Sales averages 900"),
+        ]
+    )
+    grounded = harness.collect(fetched, "compare with Sales", "thread", _TRUTH)
+
+    assert not ungrounded.grounded
+    assert ungrounded.executed == []
+    assert grounded.grounded
 
 
 def test_collect_marks_a_failed_done_frame_as_broken_and_a_cut_one_as_cut():
@@ -401,6 +427,7 @@ def test_the_mocked_run_scores_both_suites_and_renders_the_report(tmp_path):
     assert "# Evaluation harness report" in written
     assert "**Leaks: 0**" in written
     assert "## Correctness suite" in written
+    assert "grounded" in written
     assert "## Security suite" in written
     assert f"**{len(correctness.ASKS)}/{len(correctness.ASKS)}" in written
     assert f"**{len(adversarial.ATTACKS)}/{len(adversarial.ATTACKS)}" in written

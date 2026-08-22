@@ -15,9 +15,9 @@ const EXECUTED =
   "SELECT department, AVG(salary) FROM (SELECT * FROM employees WHERE tenant_id = ?) GROUP BY department";
 const COST = { input_tokens: 250, output_tokens: 28, duration_s: 2 };
 
-/** A terminal frame as the backend sends it: how the turn ended, plus what it cost. */
-function done(status: TurnStatus, answer: string, model = "m"): DoneEvent {
-  return { type: "done", status, answer, model, ...COST };
+/** A terminal frame as the backend sends it: how the turn ended, what grounds it, what it cost. */
+function done(status: TurnStatus, answer: string, model = "m", grounded = true): DoneEvent {
+  return { type: "done", status, answer, grounded, model, ...COST };
 }
 
 /** One scripted second between events, so a reasoning span asserts as a round number of seconds. */
@@ -73,10 +73,20 @@ describe("a turn that answers", () => {
     expect(turn.answer).toBe("Engineering averages 91000.");
   });
 
-  it("closes on the done event with its status and model", () => {
+  it("closes on the done event with its status, model and groundedness", () => {
     expect(turn.phase).toBe("ok");
     expect(turn.model).toBe("qwen3:8b");
+    expect(turn.grounded).toBe(true);
     expect(turn.error).toBeNull();
+  });
+
+  it("carries an answer no tool of the turn grounded as the frame reported it", () => {
+    const recalled = fold([
+      { type: "token", text: "Sales averages 65263.94." },
+      done("ok", "Sales averages 65263.94.", "qwen3:8b", false),
+    ]);
+
+    expect(recalled.grounded).toBe(false);
   });
 
   it("renders no step for a graph node: the items are the thinking and the call", () => {
@@ -267,7 +277,18 @@ describe("streamed reasoning", () => {
 
 describe("what a turn cost", () => {
   it("has no rate to state for a turn that generated nothing", () => {
-    const turn = fold([{ type: "done", status: "blocked", answer: "no", model: "m", input_tokens: 40, output_tokens: 0, duration_s: 0.5 }]);
+    const turn = fold([
+      {
+        type: "done",
+        status: "blocked",
+        answer: "no",
+        grounded: false,
+        model: "m",
+        input_tokens: 40,
+        output_tokens: 0,
+        duration_s: 0.5,
+      },
+    ]);
 
     expect(turn.usage).toEqual({ inputTokens: 40, outputTokens: 0, durationS: 0.5 });
     expect(tokensPerSecond(turn.usage)).toBeNull();
@@ -448,6 +469,7 @@ describe("a reopened thread", () => {
       ["plot headcount by department", "Engineering leads on headcount."],
     ]);
     expect(turns.every((turn) => turn.phase === "replayed")).toBe(true);
+    expect(turns.every((turn) => turn.grounded === null)).toBe(true);
   });
 
   it("puts each stored payload back on the turn that asked for it", () => {
