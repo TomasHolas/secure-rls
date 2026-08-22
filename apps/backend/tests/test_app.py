@@ -19,7 +19,9 @@ The sliding-session tests (ADR 0009 as amended) sign their own tokens with a cho
 second rather than logging in, because what is under test is the remaining lifetime: inside the
 refresh window a response carries `X-Refreshed-Token`, outside it does not, and an expired
 token is still a 401 that refreshes nothing. `ExpiringRunner` makes the expiry land while the
-SSE stream is open, so "an in-flight turn survives it" is asserted rather than argued.
+SSE stream is open, so "an in-flight turn survives it" is asserted rather than argued - it
+advances a `FrozenClock` injected over the one PyJWT verifies `exp` against, so the boundary is
+crossed on demand instead of being raced against the wall clock.
 
 The registry here is the real `ConversationRegistry` on a tmp_path file: thread scoping is the
 security property under test, so faking it would test nothing. The transcript seam is a fake
@@ -53,10 +55,12 @@ import csv
 import json
 import time
 from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
 from fastapi.testclient import TestClient
+from jwt import api_jwt
 from langchain_core.messages import HumanMessage
 
 import app
@@ -214,22 +218,45 @@ class FakeRunner:
         return self.calls[-1]
 
 
+FROZEN_NOW = datetime(2026, 1, 1, tzinfo=UTC)
+TOKEN_LIFETIME_SECONDS = 3600
+
+
+@dataclass
+class FrozenClock:
+    """The clock a token's `exp` is verified against, standing in for `api_jwt`'s wall clock."""
+
+    at: datetime
+
+    def now(self, tz=None) -> datetime:
+        """The frozen instant, in the requested zone - PyJWT reads it as `datetime.now(tz=...)`."""
+        return self.at if tz is None else self.at.astimezone(tz)
+
+    def advance(self, seconds: float) -> None:
+        """Move the frozen instant forward, lapsing any token minted before it."""
+        self.at += timedelta(seconds=seconds)
+
+    def __instancecheck__(self, obj) -> bool:
+        """`api_jwt.encode` uses the same name as a type, so the stand-in answers for `datetime`."""
+        return isinstance(obj, datetime)
+
+
 @dataclass
 class ExpiringRunner:
-    """Replays the canned events, crossing the caller's token expiry between the first two.
+    """Replays the canned events, lapsing the caller's token between the first two.
 
     The sliding-session property under test is that a turn already streaming is not killed by
-    the clock passing `exp`: verification happens once, at request start. Sleeping inside the
-    generator is what makes the expiry land mid-stream rather than before the request.
+    the clock passing `exp`: verification happens once, at request start. Advancing the injected
+    clock inside the generator lands the expiry mid-stream without racing the real one.
     """
 
-    expires_at: float
+    clock: FrozenClock
 
     def __call__(self, *, tenant_id, thread_id, message, model):
-        """Yield the first event, wait out the token, then finish the turn."""
+        """Yield the first event, lapse the token well past its expiry, then finish the turn."""
         for index, event in enumerate(EVENTS):
             if index == 1:
-                time.sleep(max(0.0, self.expires_at - time.time()) + 0.1)
+                self.clock.advance(2 * TOKEN_LIFETIME_SECONDS)
             yield dict(event)
 
 
@@ -1213,10 +1240,10 @@ def test_the_app_refuses_to_build_without_a_usable_signing_secret(monkeypatch, s
         create_app()
 
 
-def _token_expiring_at(expires_at: int) -> str:
-    """A validly signed token for ALICE with an exact expiry second (ADR 0009 sliding session)."""
+def _token_expiring_at(expires_at: int, issued_at: int) -> str:
+    """A validly signed token for ALICE with exact issue and expiry seconds (ADR 0009)."""
     return jwt.encode(
-        {"sub": ALICE[0], "tenant_id": ACME, "iat": int(time.time()), "exp": expires_at},
+        {"sub": ALICE[0], "tenant_id": ACME, "iat": issued_at, "exp": expires_at},
         TEST_SECRET,
         algorithm="HS256",
     )
@@ -1224,7 +1251,8 @@ def _token_expiring_at(expires_at: int) -> str:
 
 def _expiring_headers(seconds: float) -> dict[str, str]:
     """An Authorization header whose token has the given remaining lifetime."""
-    return {"Authorization": f"Bearer {_token_expiring_at(int(time.time() + seconds))}"}
+    issued_at = int(time.time())
+    return {"Authorization": f"Bearer {_token_expiring_at(issued_at + int(seconds), issued_at)}"}
 
 
 def _inside_the_window() -> float:
@@ -1280,11 +1308,13 @@ def test_chat_carries_the_refreshed_token_on_the_streaming_response(wiring):
     ]
 
 
-def test_a_turn_in_flight_is_not_killed_by_the_token_expiring(tmp_path):
-    expires_at = int(time.time()) + 1
+def test_a_turn_in_flight_is_not_killed_by_the_token_expiring(tmp_path, monkeypatch):
+    clock = FrozenClock(at=FROZEN_NOW)
+    monkeypatch.setattr(api_jwt, "datetime", clock)
+    issued_at = int(FROZEN_NOW.timestamp())
     client = TestClient(
         create_app(
-            chat_runner=ExpiringRunner(expires_at=expires_at),
+            chat_runner=ExpiringRunner(clock=clock),
             model_lister=lambda: list(SERVED_MODELS),
             capability_checker=FakeCapabilities(),
             registry=ConversationRegistry(tmp_path / "state.db"),
@@ -1293,7 +1323,8 @@ def test_a_turn_in_flight_is_not_killed_by_the_token_expiring(tmp_path):
             note_index=lambda: None,
         )
     )
-    headers = {"Authorization": f"Bearer {_token_expiring_at(expires_at)}"}
+    token = _token_expiring_at(issued_at + TOKEN_LIFETIME_SECONDS, issued_at)
+    headers = {"Authorization": f"Bearer {token}"}
     thread_id = _new_thread(client, headers)
 
     response = client.post(
