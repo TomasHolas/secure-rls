@@ -124,6 +124,31 @@ argument, so there is nothing for the model to fill in.
 | `detect_anomalies` | `(column, group_by?)` | Tukey IQR fences (1.5 x IQR) within each group; chosen over z-scores because the salary distribution is lognormal by design |
 | `search_notes` | `(query)` | Tenant-partitioned KNN over embedded notes; partition-key pre-filter plus egress check. Neutral "no matching notes found" on empty results, identical whether nothing matched or the match belongs to another tenant |
 
+### Seeing the data without asking the agent
+
+The SPA has three tabs, and two of them exist so a human can check the agent
+rather than trust it ([ADR 0014](docs/decisions/0014-records-and-notes-browsing.md)):
+
+- **Chat** — the streaming turn: reasoning as it arrives, each tool call with
+  its arguments, the tenant rewrite marked inside the executed statement, result
+  tables, charts, retries, refusals, and what the turn cost in tokens.
+- **Records** — the caller's own rows, paged and filterable. Signed in as
+  `alice@acme` it reads 450; as `bob@beta`, 350. That difference *is* the
+  isolation, visible without asking anything.
+- **Notes** — the corpus the agent retrieves over, with a search box that calls
+  `rag.search_notes_scoped`: literally the same partition-filtered vector search
+  the `search_notes` tool uses, showing the distance it scored each note by.
+  Notes carrying a planted injection payload are badged from
+  `poisoned_manifest.json`, so the second-order injection demo is one screen.
+
+Neither browsing tab opens a second data path: every row is served by an
+allowlisted fixed template through the same `db.execute_scoped` the agent's
+tools use, and both tabs carry an **"Attack it yourself"** box that appends a
+query parameter of the reader's choosing to the next request. Typing
+`tenant_id=beta` as an acme user returns acme's 450 rows unchanged, with the
+server's own explanation above them: the tenant is read from the verified token
+and bound server-side, so no request can name one.
+
 ### Data
 
 `employees.csv` — 1000 rows generated deterministically from a single seed
@@ -252,7 +277,7 @@ loadable-extension support, and some system interpreters compile it out. Use
 
 ### API
 
-Eight operations over six paths, all thin handlers over the service modules.
+Thin handlers over the service modules, and nothing else.
 Everything but `/health` and `/login` requires `Authorization: Bearer <jwt>`.
 
 | Route | Purpose |
@@ -263,7 +288,10 @@ Everything but `/health` and `/login` requires `Authorization: Bearer <jwt>`.
 | `POST /chat` | One turn as an SSE stream of typed trace events |
 | `GET /conversations` | The caller's own threads, newest first |
 | `POST /conversations` | Register a thread for the caller |
+| `PATCH /conversations/{id}` | Retitle a thread from its first exchange; the model's label, sanitized and capped, with the first question as the fallback |
 | `GET/DELETE /conversations/{id}` | Replay or delete the caller's own thread. A foreign id and a missing id return the same 404 |
+| `GET /records`, `GET /records/departments` | The caller's own rows, paged, filtered and sorted through allowlisted templates — the Records tab (ADR 0014) |
+| `GET /notes`, `GET /notes/search`, `GET /notes/flagged` | The caller's own notes, the agent's own retrieval path, and which of them carry a planted injection payload |
 
 Sessions slide rather than expiring under the user: a token lives 120 minutes,
 and any authenticated response may carry `X-Refreshed-Token` when the presented
@@ -294,8 +322,8 @@ without any model, which is the whole point of
 [ADR 0004](docs/decisions/0004-testing-and-eval-strategy.md).
 
 ```bash
-cd apps/backend && uv run pytest -q     # 413 tests
-cd apps/frontend && npm test            # 101 tests, 9 files
+cd apps/backend && uv run pytest -q     # 694 tests
+cd apps/frontend && npm test            # 217 tests, 17 files
 ```
 
 The backend suite is weighted toward the boundary: 123 tests on the SQL
@@ -305,15 +333,16 @@ mapped one-to-one onto the RFC 8725 requirements.
 
 ### CI/CD
 
-One workflow, [`.github/workflows/ci.yml`](.github/workflows/ci.yml), five jobs.
+One workflow, [`.github/workflows/ci.yml`](.github/workflows/ci.yml), six jobs.
 CI runs on every pull request and every push to `main`; CD runs on `main` pushes
-only, after all four CI jobs pass.
+only, after all five CI jobs pass.
 
 | Job | What it proves |
 |---|---|
-| `backend (ruff + pytest)` | Lint clean, 413 tests green |
+| `backend (ruff + pytest)` | Lint clean, 694 tests green |
 | `dataset (regenerate + diff)` | `employees.csv` and `poisoned_manifest.json` are exactly what the seeded generator produces — nothing hand-edited |
-| `frontend (build)` | `tsc` + `vite build` succeed, 101 vitest tests green |
+| `frontend (build)` | `tsc` + `vite build` succeed, 217 vitest tests green |
+| `evals (mocked harness)` | The evaluation harness still runs: its ask list renders, then the full suite drives 171 turns through the real graph and layers on a scripted model, failing on any leak or any failed ask |
 | `images (compose build)` | Both Dockerfiles build |
 | `cd (publish images to GHCR)` | Backend and frontend images pushed to `ghcr.io/tomasholas/secure-rls-*`, tagged `latest` and the commit SHA |
 
@@ -452,7 +481,7 @@ you have to take on faith.
   table, the hard rules, and the engineering standards. Any fresh agent session
   reads it and resumes with full context. It is treated as code — a change that
   makes it stale updates it in the same commit.
-- **13 ADRs before the code they govern.** Each records context, the decision,
+- **14 ADRs before the code they govern.** Each records context, the decision,
   consequences, the alternatives rejected and why, and cites published practice —
   OWASP, RFCs, sqlite.org, Microsoft and AWS multi-tenant guidance, BLS for the
   dataset. Where no authoritative source exists, the ADR says so and labels the
@@ -570,13 +599,17 @@ trustworthy.
   retries or refusals: those are the transport of the turn that produced them.
   Persisting the full turn is tracked as
   [issue #90](https://github.com/TomasHolas/secure-rls/issues/90).
-- **An answer is not yet guaranteed to be grounded in a tool call.** The
-  evaluation run caught one turn that answered from conversation context without
-  querying anything. Nothing can leak that way — whatever is in context is
-  already the caller's own tenant data — but a reader cannot distinguish a
-  computed figure from a recalled one, which for a data-analyst agent is a trust
-  problem. Tracked as
-  [issue #94](https://github.com/TomasHolas/secure-rls/issues/94).
+- **Groundedness is enforced by a nudge, not a proof.** The evaluation run
+  caught a turn answering from conversation context without querying anything —
+  nothing can leak that way, since whatever is in context is already the
+  caller's own data, but a reader cannot tell a computed figure from a recalled
+  one. A turn that would answer with no successful tool result now has its
+  answer dropped and the model re-asked once, at the cost of one tool round, and
+  the `done` frame reports whether the turn was grounded. What that does not do
+  is verify that a figure in the answer *matches* the tool result it came from;
+  the model could still mis-transcribe a number it did fetch. Charts are exempt
+  by construction — `plot` fetches its own data, so charted values never pass
+  through the model at all.
 - **`sqlite-vec` is pre-v1.** The vector extension warns of breaking changes, so
   its version is pinned exactly and the tenant-isolation invariant is covered by
   tests that re-run on any bump. It also segfaults if its `_rowids` shadow read
@@ -602,7 +635,7 @@ by what was landing.
 
 | Phase | What landed | Time |
 |---|---|---|
-| M0 | Design: architecture, 13 ADRs, the issue queue, CLAUDE.md | ~1 h |
+| M0 | Design: architecture, the first 13 ADRs, the issue queue, CLAUDE.md | ~1 h |
 | M1-M4 | Dataset + RLS core + analytics, agent + RAG, REST API + auth, React frontend | ~2.5 h |
 | M2 gate, M6 | Model shootout and gate runs, Docker + compose + GHCR, first bug wave | ~3 h |
 | Polish | Chart kinds, trace transparency, per-turn bounds, replay persistence, titles | ~1.5 h |
