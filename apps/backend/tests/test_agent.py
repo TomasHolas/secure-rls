@@ -214,6 +214,16 @@ def _tool_calls(*specs: tuple[str, dict]) -> AIMessage:
     )
 
 
+def _nudged(said: str, again: str = "") -> tuple[AIMessage, AIMessage]:
+    """A tool-less turn's script: the answer the grounding nudge drops, then the one it keeps.
+
+    A turn that asks for no tool is nudged exactly once (ADR 0011 as amended), so the model is
+    asked twice and only the second answer is streamed and stored. `again` is what it says the
+    second time; by default it says the same thing.
+    """
+    return AIMessage(content=said), AIMessage(content=again or said)
+
+
 def _spent(message: AIMessage, prompt: int, completion: int) -> AIMessage:
     """The same assistant message carrying the usage an endpoint would report for it."""
     return AIMessage(
@@ -408,11 +418,13 @@ def test_happy_path_walks_the_graph_and_emits_the_documented_sequence(build):
     assert done["status"] == STATUS_OK
     assert done["answer"] == f"acme has {_ACME_ROWS} employees"
     assert done["model"] == runtime().agent.model
+    assert done["grounded"] is True
+    assert len(llm.seen) == 2
 
 
 def test_the_model_id_the_caller_passes_labels_the_turn(build):
     """A per-request model id overrides the runtime default in the trace."""
-    graph, _ = build(AIMessage(content="no tools needed"), model_id="some-other-model")
+    graph, _ = build(*_nudged("no tools needed"), model_id="some-other-model")
     assert _one(list(run_turn(graph, "hello", _THREAD)), "done")["model"] == "some-other-model"
 
 
@@ -459,7 +471,7 @@ def test_a_model_that_never_stops_is_cut_short_at_the_turn_deadline(build, check
     assert _nodes(events) == [REASON, RESPOND]
     assert _of_type(events, "tool_call") == []
     assert len(llm.seen) == 1
-    assert _text(events).startswith(_RAMBLE * 3)
+    assert _text(events).startswith((_RAMBLE * 3).strip())
     done = _one(events, "done")
     assert done["status"] == STATUS_CUT_SHORT
     assert _RAMBLE.strip() in done["answer"]
@@ -535,6 +547,81 @@ def test_the_tool_round_budget_resets_between_turns(build, checkpointer, tuned):
 
     assert (first["status"], second["status"]) == (STATUS_CUT_SHORT, STATUS_CUT_SHORT)
     assert len(llm.seen) == 4
+
+
+def test_an_answer_with_no_tool_call_is_nudged_into_calling_one(build):
+    """The failure of issue #94: an answer composed from context alone is re-asked, not served."""
+    graph, llm = build(
+        AIMessage(content="Sales averages 65263.94, as I said earlier."),
+        _tool_call("get_stats", metric="avg", column="salary", group_by="department"),
+        AIMessage(content="Sales averages 900 on this tenant's rows."),
+    )
+    events = list(run_turn(graph, "and how does that compare with Sales?", _THREAD))
+
+    assert _nodes(events) == [REASON, REASON, VALIDATE, EXECUTE_TOOL, AUDIT, REASON, RESPOND]
+    assert "65263.94" not in _text(events)
+    assert "65263.94" not in json.dumps(events)
+    assert _one(events, "tool_result")["tool"] == "get_stats"
+    done = _one(events, "done")
+    assert done["status"] == STATUS_OK
+    assert done["grounded"] is True
+    assert done["answer"] == "Sales averages 900 on this tenant's rows."
+    assert "not called a tool in this turn" in llm.seen[1][-1].text
+
+
+def test_the_nudge_fires_once_and_the_second_answer_stands_as_ungrounded(build):
+    """A model that will not call a tool is asked twice, and the turn reports it as ungrounded."""
+    graph, llm = build(*_nudged("hello there", again="still nothing to look up"))
+    events = list(run_turn(graph, "hello", _THREAD))
+
+    assert _nodes(events) == [REASON, REASON, RESPOND]
+    assert len(llm.seen) == 2
+    assert _text(events) == "still nothing to look up"
+    done = _one(events, "done")
+    assert done["status"] == STATUS_OK
+    assert done["grounded"] is False
+
+
+def test_the_nudge_is_charged_to_the_turns_tool_round_budget(build, tuned):
+    """The nudge costs one round of the ADR 0011 cap, so a nudged turn has one round fewer."""
+    tuned(max_tool_iterations=2)
+    graph, llm = build(
+        AIMessage(content="no lookup needed, I remember"),
+        _tool_call("get_stats", metric="avg", column="salary"),
+        _tool_call("get_stats", metric="avg", column="salary"),
+    )
+    events = list(run_turn(graph, "what is the average salary?", _THREAD))
+
+    assert len(llm.seen) == 2
+    done = _one(events, "done")
+    assert done["status"] == STATUS_CUT_SHORT
+    assert "all 2 of its tool rounds" in done["answer"]
+
+
+def test_the_nudge_reaches_the_model_but_never_the_stored_thread(build, checkpointer):
+    """The instruction and the dropped answer belong to one model call, not to the conversation."""
+    graph, _ = build(
+        AIMessage(content="from memory: 65263.94"),
+        _tool_call("query_db", sql="SELECT COUNT(*) AS n FROM employees"),
+        AIMessage(content="acme has six employees"),
+        checkpointer=checkpointer,
+    )
+    list(run_turn(graph, "how many employees?", _THREAD))
+
+    replayed = thread_messages(checkpointer, _THREAD)
+    said = " ".join(message.content for message in replayed)
+    assert "65263.94" not in said
+    assert "not called a tool in this turn" not in said
+    assert replayed[-1].content == "acme has six employees"
+
+
+def test_a_blocked_turn_reports_itself_as_ungrounded(build):
+    """A refusal rests on no tool result, and the frame says so rather than implying one."""
+    graph, _ = build(_tool_call("query_db", sql="SELECT * FROM sqlite_master"))
+    done = _one(list(run_turn(graph, "read the schema table", _THREAD)), "done")
+
+    assert done["status"] == STATUS_BLOCKED
+    assert done["grounded"] is False
 
 
 def test_a_policy_violation_is_terminal_and_never_retried(build):
@@ -869,6 +956,7 @@ def test_thinking_markup_becomes_reasoning_and_never_the_answer(build):
     """A model that thinks out loud in <think> tags has that text routed out of the answer."""
     graph, _ = build(
         AIMessage(content=f"<think>the user wants a count</think>acme has {_ACME_ROWS} employees"),
+        AIMessage(content=f"acme has {_ACME_ROWS} employees"),
         chunked=True,
     )
     events = list(run_turn(graph, "how many employees?", _THREAD))
@@ -881,18 +969,22 @@ def test_thinking_markup_becomes_reasoning_and_never_the_answer(build):
 
 def test_a_thinking_region_the_model_never_closes_is_still_reasoning(build):
     """Text held inside an unclosed <think> is shown as thinking, not dropped and not answered."""
-    graph, _ = build(AIMessage(content="<think>still weighing the options"), chunked=True)
+    graph, _ = build(
+        AIMessage(content="<think>still weighing the options"),
+        AIMessage(content="<think>and I still cannot say</think>"),
+        chunked=True,
+    )
     events = list(run_turn(graph, "how many employees?", _THREAD))
 
-    assert _reasoning(events) == "still weighing the options"
+    assert _reasoning(events).startswith("still weighing the options")
     assert _text(events) == "I could not produce an answer to that."
 
 
 def test_the_reasoning_channel_streams_as_its_own_event(build):
     """An endpoint that reasons beside its answer has that reasoning streamed, never spoken."""
     graph, _ = build(
-        AIMessage(content=f"acme has {_ACME_ROWS} employees"),
-        thoughts=["counting the rows the tenant can see"],
+        *_nudged(f"acme has {_ACME_ROWS} employees"),
+        thoughts=["counting the rows the tenant can see", ""],
     )
     events = list(run_turn(graph, "how many employees?", _THREAD))
 
@@ -907,9 +999,9 @@ def test_the_reasoning_channel_streams_as_its_own_event(build):
 def test_reasoning_is_never_written_to_the_transcript(build, checkpointer):
     """The trace owns the thinking: the stored turn is the words, so a replay cannot show it."""
     graph, llm = build(
-        AIMessage(content="acme has six employees"),
-        AIMessage(content="the same six, yes"),
-        thoughts=["a private note to myself", "and another"],
+        *_nudged("acme has six employees"),
+        *_nudged("the same six, yes"),
+        thoughts=["a private note to myself", "", "and another", ""],
         checkpointer=checkpointer,
     )
     list(run_turn(graph, "how many employees?", _THREAD))
@@ -937,7 +1029,7 @@ def test_the_done_event_sums_what_every_model_call_of_the_turn_cost(build):
 
 def test_an_endpoint_that_reports_no_usage_is_reported_as_no_tokens(build):
     """A model that says nothing about its usage costs the turn a zero, never a failure."""
-    graph, _ = build(AIMessage(content="acme has six employees"))
+    graph, _ = build(*_nudged("acme has six employees"))
     events = list(run_turn(graph, "how many employees?", _THREAD))
 
     done = _one(events, "done")
@@ -948,20 +1040,22 @@ def test_the_turn_cost_belongs_to_the_turn_that_spent_it(build, checkpointer):
     """Usage is reported per turn, never accumulated over the thread the checkpointer keeps."""
     graph, _ = build(
         _spent(AIMessage(content="six"), 100, 10),
+        _spent(AIMessage(content="six"), 40, 4),
         _spent(AIMessage(content="still six"), 120, 12),
+        _spent(AIMessage(content="still six"), 50, 5),
         checkpointer=checkpointer,
     )
     first = _one(list(run_turn(graph, "one", _THREAD)), "done")
     second = _one(list(run_turn(graph, "two", _THREAD)), "done")
 
-    assert (first["input_tokens"], first["output_tokens"]) == (100, 10)
-    assert (second["input_tokens"], second["output_tokens"]) == (120, 12)
+    assert (first["input_tokens"], first["output_tokens"]) == (140, 14)
+    assert (second["input_tokens"], second["output_tokens"]) == (170, 17)
 
 
 def test_the_done_event_reports_how_long_the_turn_took(build, clock):
     """The turn is timed from where it starts to the frame that closes it."""
     clock(10.0, 12.5)
-    graph, _ = build(AIMessage(content="acme has six employees"))
+    graph, _ = build(*_nudged("acme has six employees"))
     events = list(run_turn(graph, "how many employees?", _THREAD))
 
     assert _one(events, "done")["duration_s"] == 2.5
@@ -987,7 +1081,10 @@ def test_a_tool_call_written_as_plain_text_is_parsed_instead_of_answered(build):
 
 def test_unreadable_markup_is_dropped_rather_than_presented_as_prose(build):
     """A tool call this graph cannot read is not an answer either; the turn says it has none."""
-    graph, _ = build(AIMessage(content="<tool_call>{not json at all}</tool_call>"), chunked=True)
+    graph, _ = build(
+        *_nudged("<tool_call>{not json at all}</tool_call>"),
+        chunked=True,
+    )
     events = list(run_turn(graph, "average salary?", _THREAD))
 
     assert _of_type(events, "tool_call") == []
@@ -1002,7 +1099,7 @@ def test_a_second_turn_on_one_thread_sees_the_first(build, checkpointer):
     graph, llm = build(
         _tool_call("query_db", sql="SELECT COUNT(*) AS n FROM employees"),
         AIMessage(content=f"acme has {_ACME_ROWS} employees"),
-        AIMessage(content="the same six, yes"),
+        *_nudged("the same six, yes"),
         checkpointer=checkpointer,
     )
     list(run_turn(graph, "how many employees?", _THREAD))
@@ -1018,14 +1115,14 @@ def test_a_second_turn_on_one_thread_sees_the_first(build, checkpointer):
 def test_a_different_thread_starts_clean(build, checkpointer):
     """Conversation state is keyed by thread_id; a new thread carries nothing over."""
     graph, llm = build(
-        AIMessage(content="first answer"),
-        AIMessage(content="second answer"),
+        *_nudged("first answer"),
+        *_nudged("second answer"),
         checkpointer=checkpointer,
     )
     list(run_turn(graph, "first question", _THREAD))
     list(run_turn(graph, "second question", "thread-2"))
 
-    second = [message.text for message in llm.seen[1]]
+    second = [message.text for message in llm.seen[2]]
     assert "first question" not in second
     assert second[-1] == "second question"
 
@@ -1052,7 +1149,7 @@ def test_replay_keeps_what_was_said_and_leaves_the_tool_internals_out(build, che
     graph, _ = build(
         _tool_call("query_db", sql="SELECT COUNT(*) AS n FROM employees"),
         AIMessage(content=answer),
-        AIMessage(content="the same six, yes"),
+        *_nudged("the same six, yes"),
         checkpointer=checkpointer,
     )
     list(run_turn(graph, "how many employees?", _THREAD))
@@ -1071,7 +1168,7 @@ def test_replay_keeps_what_was_said_and_leaves_the_tool_internals_out(build, che
 
 def test_replay_is_keyed_by_thread_and_empty_for_one_never_chatted_in(build, checkpointer):
     """A thread the checkpointer never saw replays as nothing - not an error, not a neighbor."""
-    graph, _ = build(AIMessage(content="first answer"), checkpointer=checkpointer)
+    graph, _ = build(*_nudged("first answer"), checkpointer=checkpointer)
     list(run_turn(graph, "first question", _THREAD))
 
     assert thread_messages(checkpointer, "thread-2") == []
@@ -1091,7 +1188,7 @@ def test_replay_carries_the_refusal_the_graph_composed_itself(build, checkpointe
 
 def test_the_system_prompt_carries_the_schema_card_and_own_tenant_samples(build):
     """The prompt is built from the live table through the scoped executor, notes excluded."""
-    graph, llm = build(AIMessage(content="ready"))
+    graph, llm = build(*_nudged("ready"))
     list(run_turn(graph, "hello", _THREAD))
     prompt = llm.seen[0][0].text
 
@@ -1106,10 +1203,12 @@ def test_the_system_prompt_carries_the_schema_card_and_own_tenant_samples(build)
 
 def test_the_system_prompt_states_the_query_rules(build):
     """Aggregation push-down, column selection, inline literals, wrapped set operations, scope."""
-    graph, llm = build(AIMessage(content="ready"))
+    graph, llm = build(*_nudged("ready"))
     list(run_turn(graph, "hello", _THREAD))
     prompt = llm.seen[0][0].text
 
+    assert "comes from a tool call in this turn" in prompt
+    assert "query it again before you repeat it" in prompt
     assert "GROUP BY inside the query" in prompt
     assert "only the columns the question needs" in prompt
     assert "? placeholder is rejected" in prompt
@@ -1120,7 +1219,7 @@ def test_the_system_prompt_states_the_query_rules(build):
 
 def test_the_system_prompt_states_the_injection_and_output_rules(build):
     """Data-borne instructions are refused plainly; no emojis; real markdown blocks."""
-    graph, llm = build(AIMessage(content="ready"))
+    graph, llm = build(*_nudged("ready"))
     list(run_turn(graph, "hello", _THREAD))
     prompt = llm.seen[0][0].text
 

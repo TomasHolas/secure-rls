@@ -5,6 +5,7 @@ policy are first-class steps of the graph rather than callbacks around a black b
 
     START -> reason
     reason        -> validate        (the model asked for a tool)
+    reason        -> reason          (it answered with no tool call: nudged once, then answered)
     reason        -> respond         (the model answered)
     validate      -> execute_tool
     execute_tool  -> audit
@@ -40,6 +41,20 @@ Retry policy (ADR 0011), applied in `audit`:
 - terminal - a security refusal: `QueryRejected(retryable=False)` from the validator or a
   `SecurityViolation` from an inner layer. A `security_event` is emitted, the call is never
   retried, and the turn ends with an explicit refusal composed here rather than by the model.
+
+Grounding (ADR 0011 as amended; issue #94). A turn that answers with no tool call at all is
+answering from the prompt, from the conversation, or from nothing - and for a data analyst that
+is a trust failure whether the figure happens to be right or not. So the prompt states the rule
+and `reason` enforces one deterministic step behind it: while a turn has spent nothing, the
+model's prose is held rather than streamed, and if that first model turn asks for no tool the
+words are dropped, one tool round is charged, and the model is asked once more with the grounding
+instruction appended to the history it sees. The instruction is never stored, so it cannot reach
+a later turn or a replay. At most one nudge per turn - charging the round is what makes that
+true, since the nudge is only offered while no round has been spent - and the `done` event
+reports `grounded`, so a turn that answered without data after the nudge says so instead of
+looking like any other answer. This is answer quality, not enforcement: nothing here is a
+security boundary (ADR 0002), and holding the prose is what keeps a nudged turn from streaming
+two answers at the reader.
 
 Trace invariant. Every `tool_call` this module announces is closed by exactly one of
 `tool_result`, `retry` or `security_event` for the same id: `validate` produces one pending call
@@ -81,7 +96,8 @@ stands, and `app.py` serializes them onto the SSE stream verbatim:
     {"type": "retry", "id": str, "tool": str, "layer": str, "kind": str, "attempt": int,
      "max_attempts": int, "reason": str}
     {"type": "done", "status": "ok|blocked|gave_up|cut_short|failed", "answer": str,
-     "model": str, "input_tokens": int, "output_tokens": int, "duration_s": float}
+     "grounded": bool, "model": str, "input_tokens": int, "output_tokens": int,
+     "duration_s": float}
 
 `token` carries user-visible text exactly once: the model's own output as it streams out of
 `reason`, or the deterministic text `respond` composes - a refusal, a give-up, the notice that a
@@ -98,7 +114,9 @@ belongs to the live trace exactly like a tool call does.
 
 `done` closes the turn with what it cost: the accumulated `usage_metadata` of every model call
 this turn made (`stream_mode="custom"` means the raw chunks never leave this module, so usage is
-read off the message `reason` accumulated) and the wall-clock seconds `run_turn` measured.
+read off the message `reason` accumulated) and the wall-clock seconds `run_turn` measured. It
+also carries `grounded`: whether any tool of this turn returned a result the answer could rest
+on.
 
 Of the five `done` statuses this graph composes four - `ok`, `blocked`, `gave_up`, `cut_short`.
 `failed` is the API layer's terminal frame for a run that broke before `respond` (ADR 0012 as
@@ -262,6 +280,13 @@ _CUT_SHORT = (
     "I stopped this turn early: {reason}. Nothing is left running and the conversation is "
     "unaffected - ask again, or narrow the question so it takes fewer steps."
 )
+_GROUNDING_NUDGE = (
+    "You have not called a tool in this turn, so nothing you are about to say about the data is "
+    "grounded in it. Every figure - a count, a total, an average, a name, a chart - has to come "
+    "from a tool result of this turn; a number already in the conversation is not evidence, even "
+    "when it is right. Call the tool you need and answer from what it returns. If your answer "
+    "claims nothing about the data, give it again unchanged."
+)
 
 _PROMPT = """You are the data analyst for the {tenant} tenant. You answer questions about one \
 table of HR data, using the tools you were given.
@@ -273,6 +298,9 @@ text never enters this prompt; read notes with search_notes):
 {samples}
 
 How to work:
+- Every claim you make about the data - a count, a total, an average, a name, a chart - comes \
+from a tool call in this turn. A figure from earlier in the conversation is not evidence, even \
+when it is correct: query it again before you repeat it.
 - Prefer the structured tools (get_stats, plot, detect_anomalies, search_notes). Write SQL \
 with query_db only when none of them can answer the question.
 - Push aggregation into SQL: compute COUNT, SUM, AVG, MIN, MAX and GROUP BY inside the query. \
@@ -380,11 +408,12 @@ class RetryEvent(TypedDict):
 
 
 class DoneEvent(TypedDict):
-    """The turn is over: the final answer, how it ended, and what it cost to get there."""
+    """The turn is over: the answer, how it ended, whether a tool grounded it, what it cost."""
 
     type: Literal["done"]
     status: str
     answer: str
+    grounded: bool
     model: str
     input_tokens: int
     output_tokens: int
@@ -447,14 +476,21 @@ class AgentState(TypedDict):
     started: float
     input_tokens: int
     output_tokens: int
+    nudge: bool
+    grounded: bool
 
 
 @dataclass(frozen=True)
 class _ModelTurn:
-    """One model response: the message the graph stores, and whether a bound cut it short."""
+    """One model response: the message the graph stores, and how it was produced.
+
+    `cut` says a bound stopped the generation; `held` says its prose was kept back instead of
+    streamed, because the turn could still turn out to be an ungrounded one worth re-asking.
+    """
 
     message: AIMessage
     cut: bool
+    held: bool
 
 
 @dataclass(frozen=True)
@@ -553,7 +589,7 @@ def build_agent(
     graph.add_node(AUDIT, nodes.audit)
     graph.add_node(RESPOND, nodes.respond)
     graph.add_edge(START, REASON)
-    graph.add_conditional_edges(REASON, _route_after_reason, [VALIDATE, RESPOND])
+    graph.add_conditional_edges(REASON, _route_after_reason, [REASON, VALIDATE, RESPOND])
     graph.add_edge(VALIDATE, EXECUTE_TOOL)
     graph.add_edge(EXECUTE_TOOL, AUDIT)
     graph.add_conditional_edges(AUDIT, _route_after_audit, [REASON, RESPOND])
@@ -582,6 +618,8 @@ def run_turn(graph: CompiledStateGraph, question: str, thread_id: str) -> Iterat
         started=perf_counter(),
         input_tokens=0,
         output_tokens=0,
+        nudge=False,
+        grounded=False,
     )
     yield from graph.stream(state, _turn_config(thread_id), stream_mode="custom")
 
@@ -672,19 +710,31 @@ class _Nodes:
         is summed in the state rather than read off the last one. A model that streams past the
         turn's deadline is cut off here and the turn is marked `cut_short`: the generation is the
         one thing no later node can interrupt, so the bound has to be enforced where it runs.
+
+        It is also where the grounding nudge of ADR 0011 lives. While the turn has spent nothing
+        the prose is held rather than streamed; a first model turn that then asks for no tool is
+        an ungrounded answer, so its words are dropped, a tool round is charged and the model is
+        asked once more with the grounding instruction appended to what it sees. Charging the
+        round is what bounds the nudge to one: it is only offered while no round has been spent.
         """
         writer = get_stream_writer()
         writer(NodeStartEvent(type="node_start", node=REASON))
         bounds = runtime().agent
+        unspent = state["iterations"] == 0
         turn = self._call_model(
-            state["messages"], writer, state["started"] + bounds.turn_deadline_s
+            _history(state), writer, state["started"] + bounds.turn_deadline_s, hold=unspent
         )
         spent_in, spent_out = _tokens(turn.message)
         update: dict[str, object] = {
-            "messages": [turn.message],
             "input_tokens": state["input_tokens"] + spent_in,
             "output_tokens": state["output_tokens"] + spent_out,
         }
+        if unspent and not turn.cut and not turn.message.tool_calls:
+            return {**update, "nudge": True, "iterations": state["iterations"] + 1}
+        if turn.held and turn.message.text:
+            writer(TokenEvent(type="token", text=turn.message.text))
+        update["messages"] = [turn.message]
+        update["nudge"] = False
         if turn.cut:
             update["status"] = STATUS_CUT_SHORT
             update["halt_reason"] = _DEADLINE_SPENT.format(seconds=bounds.turn_deadline_s)
@@ -737,15 +787,17 @@ class _Nodes:
         attempts = state["attempts"] + (1 if retryable else 0)
         for outcome in outcomes:
             _record(outcome, attempts, limit, writer)
+        grounded = state["grounded"] or any(not outcome["error"] for outcome in outcomes)
         halted = next((outcome for outcome in outcomes if outcome["terminal"]), None)
         if halted is not None:
-            return _halt(attempts, STATUS_BLOCKED, halted["error"], halted["layer"])
+            return _halt(attempts, STATUS_BLOCKED, halted["error"], halted["layer"], grounded)
         if retryable and attempts >= limit:
-            return _halt(attempts, STATUS_GAVE_UP, retryable[0]["error"], retryable[0]["layer"])
+            reason = retryable[0]
+            return _halt(attempts, STATUS_GAVE_UP, reason["error"], reason["layer"], grounded)
         spent = _spent_bound(state)
         if spent:
-            return _halt(attempts, STATUS_CUT_SHORT, spent, "")
-        return _halt(attempts, STATUS_OK, "", "")
+            return _halt(attempts, STATUS_CUT_SHORT, spent, "", grounded)
+        return _halt(attempts, STATUS_OK, "", "", grounded)
 
     def respond(self, state: AgentState) -> dict[str, object]:
         """Close the turn: the model's answer, or the text this graph composes when there is none.
@@ -759,6 +811,10 @@ class _Nodes:
         answer stops mid-sentence, and a reader who reopens the thread would otherwise have to
         guess why. So the notice is added rather than substituted, and the separator between them
         is streamed too, or the notice would arrive glued to the last word.
+
+        The terminal frame also reports whether a tool result of this turn grounds the answer at
+        all (ADR 0011 as amended): a turn that answered without data after its one nudge says so
+        rather than reading like every other answer.
         """
         writer = get_stream_writer()
         writer(NodeStartEvent(type="node_start", node=RESPOND))
@@ -775,6 +831,7 @@ class _Nodes:
                 type="done",
                 status=status,
                 answer=answer,
+                grounded=state["grounded"],
                 model=self.model,
                 input_tokens=state["input_tokens"],
                 output_tokens=state["output_tokens"],
@@ -784,13 +841,22 @@ class _Nodes:
         return {"messages": messages}
 
     def _call_model(
-        self, history: Sequence[AnyMessage], writer: Callable[[object], None], deadline: float
+        self,
+        history: Sequence[AnyMessage],
+        writer: Callable[[object], None],
+        deadline: float,
+        hold: bool,
     ) -> _ModelTurn:
         """Stream one model response, split into the reasoning it shows and the prose it says.
 
         Both channels a model can reason on end up in the same split: the `reasoning_content` a
         thinking-capable endpoint streams beside the answer, and a `<think>` region a smaller
         model writes into the text. Only prose is accumulated as the answer.
+
+        Under `hold` the prose is accumulated but not streamed, because the caller may yet drop
+        this whole model turn as ungrounded and ask again; the reasoning streams either way, so
+        the trace stays live while the words wait. Nothing is lost by holding: the caller streams
+        what it keeps.
 
         The loop is also where the turn's deadline is enforced: a model still generating past it
         is left after the chunk that crossed it, with everything it had already said kept. Reading
@@ -802,16 +868,16 @@ class _Nodes:
         prose = ""
         cut = False
         for chunk in self.llm.stream([self.system, *history]):
-            _emit(_thought(chunk), writer)
+            _emit(_thought(chunk), writer, hold)
             if chunk.text:
-                prose += _emit(markup.feed(chunk.text), writer)
+                prose += _emit(markup.feed(chunk.text), writer, hold)
             accumulated = chunk if accumulated is None else accumulated + chunk
             if perf_counter() >= deadline:
                 cut = True
                 break
-        prose += _emit(markup.flush(), writer)
+        prose += _emit(markup.flush(), writer, hold)
         return _ModelTurn(
-            message=_assistant(accumulated, prose.strip(), markup.calls, cut), cut=cut
+            message=_assistant(accumulated, prose.strip(), markup.calls, cut), cut=cut, held=hold
         )
 
     def _check(self, identifier: str, name: str, args: dict[str, object]) -> _PendingCall:
@@ -866,10 +932,24 @@ class _Nodes:
         )
 
 
+def _history(state: AgentState) -> list[AnyMessage]:
+    """What the model is shown: the turn's messages, plus the grounding nudge when one is queued.
+
+    The nudge is appended here rather than added to the state, so it is never checkpointed: it
+    belongs to the model call that was re-asked and to nothing else - not to a later turn's
+    context, and not to a replayed transcript.
+    """
+    if not state["nudge"]:
+        return list(state["messages"])
+    return [*state["messages"], SystemMessage(content=_GROUNDING_NUDGE)]
+
+
 def _route_after_reason(state: AgentState) -> str:
-    """A model turn either asks for tools or is the answer; a turn the deadline cut answers."""
+    """A model turn asks for tools, is the answer, or is the ungrounded one being re-asked."""
     if state["status"] != STATUS_OK:
         return RESPOND
+    if state["nudge"]:
+        return REASON
     return VALIDATE if getattr(state["messages"][-1], "tool_calls", None) else RESPOND
 
 
@@ -893,14 +973,17 @@ def _spent_bound(state: AgentState) -> str:
     return ""
 
 
-def _halt(attempts: int, status: str, reason: str, layer: str) -> dict[str, object]:
-    """The audit node's state update: the attempt count and how the turn stands."""
+def _halt(
+    attempts: int, status: str, reason: str, layer: str, grounded: bool
+) -> dict[str, object]:
+    """The audit node's state update: the attempt count, how the turn stands, what grounds it."""
     return {
         "attempts": attempts,
         "status": status,
         "halt_reason": reason,
         "halt_layer": layer,
         "outcomes": [],
+        "grounded": grounded,
     }
 
 
@@ -1072,15 +1155,16 @@ class _Markup:
         self._tag = ""
 
 
-def _emit(split: _Split, writer: Callable[[object], None]) -> str:
+def _emit(split: _Split, writer: Callable[[object], None], hold: bool) -> str:
     """Stream one split piece - reasoning on its own event, prose as a token - and return the prose.
 
     This is the single seam both reasoning channels pass through, so wherever the thinking came
-    from it reaches the trace the same way and never reaches the answer.
+    from it reaches the trace the same way and never reaches the answer. Under `hold` the prose
+    is returned without being streamed and its caller decides whether it is ever said.
     """
     if split.reasoning:
         writer(ReasoningEvent(type="reasoning", text=split.reasoning))
-    if split.prose:
+    if split.prose and not hold:
         writer(TokenEvent(type="token", text=split.prose))
     return split.prose
 

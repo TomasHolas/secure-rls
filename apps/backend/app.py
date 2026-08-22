@@ -860,7 +860,8 @@ def _sse(events: Iterator[TraceEvent], model: str) -> Iterator[str]:
 
     The terminal frame carries the telemetry the turn managed to produce: the seconds it ran
     before it broke, and no token counts, because a run that never reached `respond` never got
-    a usage report to pass on.
+    a usage report to pass on. It reports the turn as ungrounded for the same reason: a run that
+    never answered has no answer a tool result could stand behind.
     """
     closed = False
     started = perf_counter()
@@ -876,6 +877,7 @@ def _sse(events: Iterator[TraceEvent], model: str) -> Iterator[str]:
                     type=EVENT_DONE,
                     status=STATUS_FAILED,
                     answer=_TURN_FAILED,
+                    grounded=False,
                     model=model,
                     input_tokens=0,
                     output_tokens=0,
