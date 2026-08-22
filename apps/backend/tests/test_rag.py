@@ -14,7 +14,9 @@ below it.
 import hashlib
 import math
 import re
+from contextlib import closing
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import sqlite_vec
@@ -94,15 +96,21 @@ def _bucket(word: str, dim: int) -> int:
     return int.from_bytes(digest, "big") % dim
 
 
-@pytest.fixture
-def db_path(tmp_path):
-    """A loaded database with its note index built, from the inline rows only."""
+def _loaded_db(tmp_path, rows: tuple[tuple, ...] = _ROWS) -> Path:
+    """Load rows into a database under tmp_path through the CSV seam the app itself uses."""
     csv_path = tmp_path / "employees.csv"
     lines = [",".join(_HEADER)]
-    lines += [",".join(str(field) for field in row) for row in _ROWS]
+    lines += [",".join(str(field) for field in row) for row in rows]
     csv_path.write_text("\n".join(lines) + "\n")
     path = tmp_path / "data.db"
     db.init_db(csv_path, path)
+    return path
+
+
+@pytest.fixture
+def db_path(tmp_path):
+    """A loaded database with its note index built, from the inline rows only."""
+    path = _loaded_db(tmp_path)
     rag.index_notes(path, FakeEmbed())
     return path
 
@@ -118,12 +126,7 @@ def search(db_path):
 
 
 def test_indexing_covers_every_row_across_every_tenant(tmp_path):
-    csv_path = tmp_path / "employees.csv"
-    lines = [",".join(_HEADER)]
-    lines += [",".join(str(field) for field in row) for row in _ROWS]
-    csv_path.write_text("\n".join(lines) + "\n")
-    path = tmp_path / "data.db"
-    db.init_db(csv_path, path)
+    path = _loaded_db(tmp_path)
     assert rag.index_notes(path, FakeEmbed()) == len(_ROWS)
     assert path.with_name(db.VECTOR_DB_NAME).exists()
 
@@ -231,19 +234,60 @@ def test_an_empty_store_counts_as_no_index_at_all(tmp_path):
 
 
 def test_ensuring_the_index_builds_it_once_and_then_leaves_it_alone(tmp_path, monkeypatch):
-    """The startup build is idempotent: a store that already holds notes costs no embeddings."""
-    csv_path = tmp_path / "employees.csv"
-    lines = [",".join(_HEADER)]
-    lines += [",".join(str(field) for field in row) for row in _ROWS]
-    csv_path.write_text("\n".join(lines) + "\n")
-    path = tmp_path / "data.db"
-    db.init_db(csv_path, path)
+    """The startup build is idempotent: a store already holding THIS corpus costs no embeddings."""
+    path = _loaded_db(tmp_path)
 
     assert rag.ensure_index(path, FakeEmbed()) == len(_ROWS)
     assert db.vector_store_rows(path) == len(_ROWS)
 
-    monkeypatch.setattr(rag, "index_notes", _never_indexes)
+    monkeypatch.setattr(rag, "_index", _never_indexes)
     assert rag.ensure_index(path, FakeEmbed()) == len(_ROWS)
+
+
+def test_a_changed_corpus_re_embeds_instead_of_serving_stale_embeddings(tmp_path):
+    """The staleness bug this fingerprint exists for: a regenerated dataset must be re-indexed."""
+    path = _loaded_db(tmp_path)
+    rag.ensure_index(path, FakeEmbed())
+    built_from = db.vector_store_fingerprint(path)
+
+    rewritten = (*_ROWS[0][:7], "now writes about deep learning infrastructure")
+    _loaded_db(tmp_path, (rewritten, *_ROWS[1:]))
+    assert rag.ensure_index(path, FakeEmbed()) == len(_ROWS)
+
+    assert db.vector_store_fingerprint(path) != built_from
+    assert rag.search_notes_scoped(path, FakeEmbed(), "deep learning", ACME)[0]["user_id"] == 1
+
+
+def test_a_store_built_before_fingerprints_existed_is_treated_as_stale(tmp_path):
+    """None from the reader means "cannot prove it is current", which must re-embed, not skip."""
+    path = _loaded_db(tmp_path)
+    rag.index_notes(path, FakeEmbed())
+    with closing(_ACTIONS.connect(path.with_name(db.VECTOR_DB_NAME))) as conn, conn:
+        conn.execute(f"DROP TABLE {db.VECTOR_META_TABLE}")
+
+    assert db.vector_store_fingerprint(path) is None
+    assert rag.ensure_index(path, FakeEmbed()) == len(_ROWS)
+    assert db.vector_store_fingerprint(path) == rag.corpus_fingerprint(db.notes_for_indexing(path))
+
+
+def test_the_fingerprint_covers_every_field_the_store_serves():
+    """A renamed employee changes the digest too, or the index would serve the stale name."""
+    notes = [db.NoteRow(tenant_id=ACME, user_id=1, name="Ada", note="a note")]
+    renamed = [replace(notes[0], name="Ada Lovelace")]
+    reworded = [replace(notes[0], note="another note")]
+    assert rag.corpus_fingerprint(notes) == rag.corpus_fingerprint(list(notes))
+    assert rag.corpus_fingerprint(renamed) != rag.corpus_fingerprint(notes)
+    assert rag.corpus_fingerprint(reworded) != rag.corpus_fingerprint(notes)
+
+
+def test_the_fingerprint_cannot_be_confused_by_where_one_note_ends():
+    """Separators, not bare concatenation: two different corpora must never share a digest."""
+    split = [
+        db.NoteRow(tenant_id=ACME, user_id=1, name="Ada", note="one"),
+        db.NoteRow(tenant_id=ACME, user_id=2, name="Alan", note="two"),
+    ]
+    joined = [db.NoteRow(tenant_id=ACME, user_id=1, name="Ada", note="one\x1f2\x1fAlan\x1ftwo")]
+    assert rag.corpus_fingerprint(split) != rag.corpus_fingerprint(joined)
 
 
 def test_the_vector_authorizer_allows_only_the_stores_own_storage():
@@ -276,10 +320,11 @@ def test_the_vector_authorizer_leaves_an_untripped_engine_error_alone():
 
 def test_a_mismatched_notes_and_vectors_batch_is_refused(tmp_path):
     notes = [db.NoteRow(tenant_id=ACME, user_id=1, name="Ada", note="a note")]
+    stamp = rag.corpus_fingerprint(notes)
     with pytest.raises(ValueError):
-        db.init_vector_store(tmp_path / "data.db", notes, [])
+        db.init_vector_store(tmp_path / "data.db", notes, [], stamp)
     with pytest.raises(ValueError):
-        db.init_vector_store(tmp_path / "data.db", notes, [[0.0] * _DIM, [0.0] * _DIM])
+        db.init_vector_store(tmp_path / "data.db", notes, [[0.0] * _DIM, [0.0] * _DIM], stamp)
 
 
 def test_ragged_vectors_are_refused_before_the_table_is_declared(tmp_path):
@@ -288,7 +333,10 @@ def test_ragged_vectors_are_refused_before_the_table_is_declared(tmp_path):
         db.NoteRow(tenant_id=ACME, user_id=2, name="Alan", note="another note"),
     ]
     with pytest.raises(ValueError):
-        db.init_vector_store(tmp_path / "data.db", notes, [[0.0] * _DIM, [0.0] * (_DIM - 1)])
+        db.init_vector_store(
+            tmp_path / "data.db", notes, [[0.0] * _DIM, [0.0] * (_DIM - 1)],
+            rag.corpus_fingerprint(notes),
+        )
 
 
 def test_the_pinned_sqlite_vec_version_is_the_one_these_tests_proved():

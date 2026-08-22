@@ -50,9 +50,11 @@ The retrieval path (ADR 0010) adds a second, narrow seam, because this module ow
 - `notes_for_indexing` reads every tenant's notes once at load time, over the same read-only
   connection and the same employees-only authorizer as a served query. It is a load-time
   admin read like `init_db`, not a serving path - nothing but `rag.index_notes` calls it.
-- `init_vector_store` creates `vectors.db`'s `vec0` table on a writable connection, and
-  `vector_store_rows` counts what it holds over the same writable seam - the startup check that
-  makes indexing idempotent (ADR 0010). Neither is a serving path.
+- `init_vector_store` creates `vectors.db`'s `vec0` table on a writable connection and stamps it
+  with the digest of the corpus embedded; `vector_store_rows` and `vector_store_fingerprint`
+  read that back over the same writable seam - together, the startup check that makes indexing
+  idempotent for an unchanged corpus and re-embedding for a changed one (ADR 0010 as amended).
+  None of the three is a serving path.
 - `search_vectors` runs the one fixed KNN shape read-only. The vector store is a SEPARATE
   file from the employees data on purpose: the connection that runs model-generated SQL caps
   attached databases at zero and therefore cannot reach the virtual table at all. That matters
@@ -90,6 +92,7 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parent / "employees.db"
 AUDIT_DB_NAME = "audit.db"
 VECTOR_DB_NAME = "vectors.db"
 VECTOR_TABLE = "note_vectors"
+VECTOR_META_TABLE = "note_index_meta"
 
 VERDICT_APPROVED = "approved"
 VERDICT_REJECTED = "rejected"
@@ -132,6 +135,10 @@ _VECTOR_INSERT = (
     "VALUES (?, ?, ?, ?, ?)"
 )
 _VECTOR_COUNT = f"SELECT COUNT(*) FROM {VECTOR_TABLE}"
+# The corpus digest is stored with the index it was built from, so a stale index is detectable.
+_META_SCHEMA = f"CREATE TABLE {VECTOR_META_TABLE} (fingerprint TEXT NOT NULL)"
+_META_INSERT = f"INSERT INTO {VECTOR_META_TABLE} (fingerprint) VALUES (?)"
+_META_SELECT = f"SELECT fingerprint FROM {VECTOR_META_TABLE}"
 # The one retrieval shape: k and the tenant are bound, so the partition pre-filter runs first.
 _VECTOR_SEARCH = (
     f"SELECT user_id, {TENANT_COLUMN}, name, note, distance FROM {VECTOR_TABLE} "
@@ -349,13 +356,23 @@ def notes_for_indexing(db_path: Path = DEFAULT_DB_PATH) -> list[NoteRow]:
 
 
 def init_vector_store(
-    db_path: Path, notes: Sequence[NoteRow], vectors: Sequence[Sequence[float]]
+    db_path: Path,
+    notes: Sequence[NoteRow],
+    vectors: Sequence[Sequence[float]],
+    fingerprint: str,
 ) -> None:
-    """Rebuild the tenant-partitioned vec0 table beside db_path from notes and their embeddings."""
+    """Rebuild the tenant-partitioned vec0 table beside db_path, stamped with the corpus digest.
+
+    The fingerprint is written in the same transaction as the vectors, so the stamp on disk always
+    describes the embeddings on disk - startup can then tell a current index from a stale one
+    without re-embedding to find out (ADR 0010 as amended).
+    """
     dim = _vector_dimension(notes, vectors)
     with closing(_open_vector_store(_vector_path(db_path))) as conn, conn:
         conn.execute(f"DROP TABLE IF EXISTS {VECTOR_TABLE}")
+        conn.execute(f"DROP TABLE IF EXISTS {VECTOR_META_TABLE}")
         conn.execute(_VECTOR_SCHEMA.format(dim=dim))
+        conn.execute(_META_SCHEMA)
         conn.executemany(
             _VECTOR_INSERT,
             [
@@ -364,6 +381,24 @@ def init_vector_store(
                 for note, vector in zip(notes, vectors, strict=True)
             ],
         )
+        conn.execute(_META_INSERT, (fingerprint,))
+
+
+def vector_store_fingerprint(db_path: Path) -> str | None:
+    """The corpus digest the store beside db_path was built from; None when it carries none.
+
+    A load-time admin read like `vector_store_rows`, over the same writable seam. None covers both
+    a missing store and one built before fingerprints existed - either way the caller re-embeds.
+    """
+    path = _vector_path(db_path)
+    if not path.exists():
+        return None
+    with closing(_open_vector_store(path)) as conn:
+        try:
+            row = conn.execute(_META_SELECT).fetchone()
+        except sqlite3.Error:
+            return None
+    return None if row is None else str(row[0])
 
 
 def vector_store_rows(db_path: Path) -> int:

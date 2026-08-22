@@ -29,8 +29,10 @@ calibrated to citable sources.
   proxies — Software Developers $133,080; Sales Reps $66,780; Marketing
   (between specialist and manager occupations) ~$100,000; HR Specialists
   $72,910 (p10 <$45,440, p90 >$126,540 anchors the spread); Accountants and
-  Auditors $81,680. Sigma ~0.3 and clip bounds are modeling choices consistent
-  with the sourced p10/p90 spread — flagged as such, not sourced figures.
+  Auditors $81,680. Sigma ~0.3 and the truncation bounds are modeling choices
+  consistent with the sourced p10/p90 spread — flagged as such, not sourced
+  figures. The distribution is **truncated by rejection, never clipped** (see
+  the amendment below).
 - **Performance score** (1.0-5.0): left-skewed, clustered 3.5-4.0 with a thin
   low tail — matching documented rating inflation and compression (leniency and
   centrality bias); the IBM reference set itself contains only ratings 3-4 on
@@ -39,7 +41,8 @@ calibrated to citable sources.
 - **Hire date**: tenure drawn from an exponential with median 3.9 years (BLS,
   January 2024), capped, converted to hire_date. Exponential shape is a
   modeling choice consistent with BLS's strong age gradient.
-- **Notes**: templated performance-review snippets with Faker fillers.
+- **Notes**: performance-review prose **composed** from per-band clause pools
+  with Faker fillers, coherent with the row's score (see the amendment below).
 - **Poisoned records**: ~1-2% of rows carry prompt-injection payloads in
   `notes` (second-order injection test data, OWASP LLM01). Their `user_id`s
   are listed openly in `poisoned_manifest.json` next to the CSV — deliberate
@@ -47,6 +50,61 @@ calibrated to citable sources.
   nothing when reading them; the live demo shows it.
 - CI regenerates the CSV and diffs it against the committed file, proving the
   dataset is exactly what the generator produces — nothing hand-edited.
+
+## Amendment (after issue #89): truncate by rejection, and compose the notes
+
+Two realism defects showed up in the live app, both traced to the generator.
+The BLS anchors, the distribution shapes and the sigma above are unchanged and
+stay authoritative; only *how* a draw outside the bounds is handled, and *how* a
+note is written, changed.
+
+**Salary: clipping became rejection sampling.** `np.clip` mapped every draw
+outside the p10/p90-derived bounds *onto* the bound, so the bounds became mass
+points — measured on the old CSV: 862 distinct salaries in 1000 rows, with every
+department's minimum and maximum repeating (Sales min 41620 x19, Finance min
+50910 x16, Marketing min 62320 x16, Engineering min 82940 x13 and max 230970 x9,
+HR min 45440 x9). The Tukey fences that `detect_anomalies` uses then flagged
+exactly those mass points, so the anomaly tool showed a stack of identical
+salaries — acme's list was 7 rows carrying only 2 distinct values, six of them
+230970. That reads as fabricated data, which is the opposite of the point.
+
+The generator now draws the lognormal factor and **redraws** while it falls
+outside the bounds (`_salary_factor`), which is textbook rejection sampling for
+a truncated distribution: the surviving draws are distributed exactly as the
+lognormal conditioned on the interval, so the sourced shape is preserved rather
+than deformed, and no probability mass is moved to the endpoints. Acceptance is
+~91% per draw at sigma 0.3, so the cost is negligible; a loud iteration guard
+(`SALARY_MAX_REDRAWS`) raises rather than silently falling back to a clip, so a
+future sigma that disagrees with the bounds fails visibly instead of quietly
+re-introducing the defect. Measured after the change: 954 distinct salaries in
+1000 rows, no value repeating more than 3 times, every department's minimum and
+maximum unique, and the anomaly lists now carry only distinct values.
+
+**Notes: one template per row became compositional generation.** The old pools
+were 12 templates over three score bands, giving 754 distinct texts in 1000 rows
+with one rendering repeated 9 times, so semantic search returned near-identical
+prose and undercut the retrieval demo. Notes are now assembled from five
+independent per-band clause pools (opening assessment, evidence, development
+area, next step, closing) combined through one of several sentence shapes, so
+length and structure vary per row and the corpus is combinatorially varied:
+1000 distinct texts in 1000 rows, mean length 187 characters against 90 before.
+
+- **Band coherence stays absolute.** The clause pools are disjoint across the
+  three score bands, so no clause from one band can ever describe a score in
+  another — a 4.7 cannot read as underperformance because the sentence it is
+  built from does not exist in the strong pool. This is a structural property of
+  the pools, not a filter, and a test asserts it row by row.
+- Capitalization is applied from the **sentence shape**, which knows where its
+  own sentences begin, rather than inferred from the finished string — inferring
+  it mistook a Faker name suffix (`... Jr. `) for a sentence break.
+- Everything else is unchanged: determinism under the same seed, no emojis, and
+  the injection payloads still appended to otherwise coherent notes and still
+  listed openly in `poisoned_manifest.json`.
+
+Both changes shift every row of the CSV (the rejection loop consumes a variable
+number of draws), so the committed dataset was regenerated and the eval report's
+ground truth must be recomputed — the harness derives it from the CSV, so a
+re-run suffices.
 
 ## Consequences
 
@@ -85,4 +143,11 @@ calibrated to citable sources.
   U.S. OPM on ratings inflation — https://www.opm.gov/news/secrets-of-opm/bad-management/
 - BLS Employee Tenure (median 3.9 years, January 2024) —
   https://www.bls.gov/news.release/pdf/tenure.pdf
+- Rejection (acceptance-rejection) sampling as the standard way to draw from a
+  distribution restricted to an interval, and the reason it preserves the shape
+  rather than piling mass on the endpoints — Devroye, *Non-Uniform Random
+  Variate Generation*, Springer 1986, chapter II.3 (author's free PDF:
+  http://luc.devroye.org/rnbookindex.html); SciPy's truncated-distribution
+  documentation for the same construction in library form —
+  https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.truncnorm.html
 - Faker seeding and version caveat — https://faker.readthedocs.io/en/master/

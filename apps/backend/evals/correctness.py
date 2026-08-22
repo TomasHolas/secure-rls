@@ -575,8 +575,8 @@ ASKS: tuple[Ask, ...] = (
         name="notes-mentoring",
         tool="search_notes",
         question="What do the performance notes say about mentoring juniors?",
-        rule='a retrieved note contains "mentors two juniors"',
-        truth=lambda frame: _note_phrase(frame, "mentors two juniors"),
+        rule='a retrieved note contains "mentoring two juniors"',
+        truth=lambda frame: _note_phrase(frame, "mentoring two juniors"),
     ),
     Ask(
         name="notes-budget",

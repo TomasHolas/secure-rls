@@ -149,8 +149,8 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | SQL validation (allowlist) | `apps/backend/security.py` |
 | Structured analytics (aggregates, Tukey IQR anomalies, chart data) | `apps/backend/analytics.py` — allowlisted args into fixed query templates through `db.py`; never generated SQL |
 | Agent, tools, prompts, retry policy, memory, transcript replay | `apps/backend/agent.py` (`thread_messages` reads the checkpointer back; the API layer never parses checkpoints itself) |
-| Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`) |
-| Dataset generator | `apps/backend/scripts/generate_dataset.py` |
+| Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`). `ensure_index` stamps the store with a digest of the corpus it embedded, so a regenerated dataset re-embeds instead of being searched through stale vectors (ADR 0010 as amended) |
+| Dataset generator | `apps/backend/scripts/generate_dataset.py` — truncated-lognormal salaries by rejection (never clipped) and compositional notes whose clause pools are disjoint per score band (ADR 0008 as amended) |
 | Eval harness | `apps/backend/evals/` — `harness.py` owns the shared bricks (workspace, trace collection, leak check, markdown) that `correctness.py`, `adversarial.py` and `model_gate.py` all import |
 | Tests | `apps/backend/tests/` (pytest), `apps/frontend/src/**/*.test.tsx` (vitest) |
 | Tunable knob | `apps/backend/runtime.json` (typed view in `runtime.py`) — no magic values in code |

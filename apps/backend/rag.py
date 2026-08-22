@@ -21,12 +21,16 @@ The endpoint address stays out of here: `OllamaEmbed` takes `base_url` from the 
 app wiring is the single place that reads `OLLAMA_BASE_URL` (ADR 0005).
 
 Availability (ADR 0010 as amended). The index is built at startup by `ensure_index`, which is
-idempotent: a store that already holds notes is left alone, so a restart costs no embeddings. An
-index that was never built is an operator condition, not a model error - `search_notes_scoped`
-raises `RetrievalUnavailable` for it, which the tool layer turns into a plain statement that
-retrieval is offline instead of an error the model would retry three times.
+idempotent: a store already holding THIS corpus is left alone, so a restart costs no embeddings.
+Which corpus it holds is decided by a fingerprint written with the vectors, so a regenerated
+dataset re-embeds instead of being searched through the old embeddings. An index that was never
+built is an operator condition, not a model error - `search_notes_scoped` raises
+`RetrievalUnavailable` for it, which the tool layer turns into a plain statement that retrieval is
+offline instead of an error the model would retry three times.
 """
 
+import hashlib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -71,18 +75,46 @@ class OllamaEmbed:
         return vectors
 
 
+def corpus_fingerprint(notes: Sequence[db.NoteRow]) -> str:
+    """A digest of the corpus about to be indexed, stable across runs and machines.
+
+    Every field the store serves is hashed, not the note text alone: a renamed employee would
+    otherwise keep being returned under the name the index was built with. The unit separators
+    keep the digest unambiguous, so no pair of corpora can hash to the same concatenation.
+    """
+    digest = hashlib.sha256()
+    for note in notes:
+        digest.update(
+            f"{note.tenant_id}\x1f{note.user_id}\x1f{note.name}\x1f{note.note}\x1e".encode()
+        )
+    return digest.hexdigest()
+
+
 def index_notes(db_path: Path, embedder: EmbedClient) -> int:
     """Embed every tenant's notes and rebuild the partitioned store; returns the number indexed."""
-    notes = db.notes_for_indexing(db_path)
-    vectors = embedder.embed([note.note for note in notes])
-    db.init_vector_store(db_path, notes, vectors)
-    return len(notes)
+    return _index(db_path, embedder, db.notes_for_indexing(db_path))
 
 
 def ensure_index(db_path: Path, embedder: EmbedClient) -> int:
-    """Index the notes unless the store already holds some; returns how many it holds."""
+    """Index the notes unless the store already holds this exact corpus; returns how many it holds.
+
+    The stored fingerprint is what makes skipping safe (ADR 0010 as amended): a store built from
+    a different corpus - a regenerated dataset, an edited note - is stale, and serving its
+    embeddings would answer questions about text that no longer exists. Rows held alone cannot
+    tell the two apart, so it re-embeds whenever the digest differs.
+    """
+    notes = db.notes_for_indexing(db_path)
     held = db.vector_store_rows(db_path)
-    return held or index_notes(db_path, embedder)
+    if held and db.vector_store_fingerprint(db_path) == corpus_fingerprint(notes):
+        return held
+    return _index(db_path, embedder, notes)
+
+
+def _index(db_path: Path, embedder: EmbedClient, notes: Sequence[db.NoteRow]) -> int:
+    """Embed the given notes and rebuild the store, stamped with the digest of what was embedded."""
+    vectors = embedder.embed([note.note for note in notes])
+    db.init_vector_store(db_path, notes, vectors, corpus_fingerprint(notes))
+    return len(notes)
 
 
 def search_notes_scoped(
