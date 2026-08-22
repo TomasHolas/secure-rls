@@ -62,6 +62,21 @@ class AgentConfig:
 
 
 @dataclass(frozen=True)
+class BrowseConfig:
+    """Records and Notes browsing knobs (ADR 0014).
+
+    `page_size` is the default page a listing serves; its ceiling is not a knob but the
+    executor's `db.max_result_rows` row cap (ADR 0007), since a larger page could not be
+    served whole. `max_filter_chars` bounds the text a filter box may send, and
+    `max_search_hits` the hits one notes search may ask the retrieval path for.
+    """
+
+    page_size: int
+    max_filter_chars: int
+    max_search_hits: int
+
+
+@dataclass(frozen=True)
 class RagConfig:
     """Retrieval and embedding knobs (ADR 0010)."""
 
@@ -121,6 +136,7 @@ class Runtime:
     db: DbConfig
     analytics: AnalyticsConfig
     agent: AgentConfig
+    browse: BrowseConfig
     rag: RagConfig
     auth: AuthConfig
     conversations: ConversationsConfig
@@ -136,6 +152,7 @@ def runtime() -> Runtime:
         db=DbConfig(**raw["db"]),
         analytics=AnalyticsConfig(**raw["analytics"]),
         agent=AgentConfig(**raw["agent"]),
+        browse=BrowseConfig(**raw["browse"]),
         rag=RagConfig(**raw["rag"]),
         auth=AuthConfig(**raw["auth"]),
         conversations=ConversationsConfig(**raw["conversations"]),

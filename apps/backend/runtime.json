@@ -30,6 +30,11 @@
     "thinking": true,
     "duration_decimals": 2
   },
+  "browse": {
+    "page_size": 25,
+    "max_filter_chars": 100,
+    "max_search_hits": 25
+  },
   "rag": {
     "top_k": 5,
     "embed_batch_size": 64,

@@ -9,23 +9,39 @@
  *
  * Numeric cells print through `lib/format.ts`, the same formatter the chart axes use, so a
  * salary reads the same whether the trace shows it as a row or as a bar.
+ *
+ * Sorting is optional and server-side: pass `sortable` (the columns the server will sort by),
+ * the `sort`/`direction` it is currently sorting by, and `onSort`, and those headers become
+ * buttons that ask for a sort — the table never reorders rows itself, because it is holding one
+ * page and the order of the rest is the server's to decide. Without those props it is the plain
+ * table the chat trace shows.
  */
 
 import { formatNumber } from "../lib/format";
 
 const DEFAULT_MAX_ROWS = 8;
 const NULL_CELL = "-";
+const ASCENDING = "asc";
+const ARIA_SORT = { asc: "ascending", desc: "descending" } as const;
 
 export function DataTable({
   columns,
   rows,
   maxRows = DEFAULT_MAX_ROWS,
   empty = "No rows returned.",
+  sortable,
+  sort,
+  direction = ASCENDING,
+  onSort,
 }: {
   columns: string[];
   rows: unknown[][];
   maxRows?: number;
   empty?: string;
+  sortable?: string[];
+  sort?: string;
+  direction?: "asc" | "desc";
+  onSort?: (column: string) => void;
 }) {
   if (rows.length === 0) return <p className="data-table-note">{empty}</p>;
   const shown = rows.slice(0, maxRows);
@@ -36,9 +52,20 @@ export function DataTable({
       <table className="data-table">
         <thead>
           <tr>
-            {columns.map((column) => (
-              <th key={column}>{column}</th>
-            ))}
+            {columns.map((column) =>
+              sortable?.includes(column) && onSort ? (
+                <th key={column} aria-sort={column === sort ? ARIA_SORT[direction] : "none"}>
+                  <button type="button" className="th-sort" onClick={() => onSort(column)}>
+                    {column}
+                    {column === sort ? (
+                      <span aria-hidden="true">{direction === ASCENDING ? " ↑" : " ↓"}</span>
+                    ) : null}
+                  </button>
+                </th>
+              ) : (
+                <th key={column}>{column}</th>
+              ),
+            )}
           </tr>
         </thead>
         <tbody>

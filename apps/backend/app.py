@@ -13,6 +13,11 @@ Endpoints:
 - `POST /login`             credentials for a token, or 401.
 - `GET  /models`            the endpoint's live chat-capable models plus the configured default.
 - `POST /chat`              one turn as an SSE stream of ADR 0012 trace events.
+- `GET  /records`           one filtered, sorted page of the caller's own employee rows.
+- `GET  /records/departments` the caller's departments and headcounts, for the filter's options.
+- `GET  /notes`             one page of the caller's note corpus.
+- `GET  /notes/search`      the agent's own retrieval path, run for a reader's query.
+- `GET  /notes/flagged`     which of the caller's rows the committed poison manifest plants.
 - `GET  /conversations`     the caller's threads, newest first.
 - `POST /conversations`     a new thread; the title is the first user message, truncated.
 - `GET  /conversations/{id}` the caller's own thread row plus its replayed transcript.
@@ -51,6 +56,20 @@ A turn that broke mid-flight stores the payloads it did produce, and a storage f
 and never reaches the reader - the answer already streamed, and losing a replayable chart is not
 worth failing a turn over. What stays session-only is the thinking: the reasoning, the retries
 and the node steps are the transport of the turn that produced them and are not stored anywhere.
+
+Browsing the data itself (ADR 0014). The Records and Notes tabs read through `browse.py`, whose
+two allowlisted templates go down the same `db.execute_scoped` path the agent's tools do, and
+the notes search delegates to `rag.search_notes_scoped`, the retrieval path the `search_notes`
+tool uses. So these handlers stay what every other one here is - one call into the module that
+owns the logic - and the tenant reaches them the only way it ever does, from the verified token.
+The filter values arrive as query parameters typed by `browse.Filters`, which is the allowlist:
+a parameter the client invents is not in it and is dropped, exactly as a body field would be.
+
+Three exception handlers turn a refused browse into an honest status without narrating the
+server: `QueryRejected` is a 400 carrying its own reason (a sort outside the allowlist, a date
+that is not one), `RetrievalUnavailable` a 503 saying the note index is not built, and a
+`SecurityViolation` - which on this path would mean one of our own templates is broken, not a
+model misbehaving - a bare 403 that is logged in full server-side and says nothing to the client.
 
 Model selection (ADR 0005 as amended). The client never learns `OLLAMA_BASE_URL`: `/models`
 proxies the endpoint's `/api/tags`, and a client-chosen `model` on `/chat` is honored only if
@@ -105,9 +124,10 @@ or missing one costs embeddings. It needs the embedding endpoint, so a failure t
 logged and boot continues; `search_notes` then reports retrieval as offline rather than raising.
 
 Seams. `create_app` takes the turn runner, the model lister, the capability checker, the
-titler, the registry, the note indexer and the two checkpointer accesses - transcript replay
-and cleanup - as arguments, defaulting to the production wiring. Tests pass fakes and never
-touch Ollama or the filesystem outside tmp_path.
+titler, the registry, the note indexer, the note search and the two checkpointer accesses -
+transcript replay and cleanup - as arguments, defaulting to the production wiring, plus the
+`db_path` every one of them reads the employee data from. Tests pass fakes and a tmp database,
+and never touch Ollama or the filesystem outside tmp_path.
 
 Paths. All state files are resolved here, once: the employee database (`db.DEFAULT_DB_PATH`,
 beside which `db.py` derives its own `audit.db` and `vectors.db`), the registry's `state.db`
@@ -119,6 +139,7 @@ import logging
 import os
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Protocol
 
@@ -153,10 +174,22 @@ from auth import (
     verify_password,
     verify_token,
 )
+from browse import (
+    DEFAULT_DIRECTION,
+    DEFAULT_SORT,
+    BrowsePage,
+    Filters,
+    Flagged,
+    browse_notes,
+    browse_records,
+    departments,
+    flagged_user_ids,
+)
 from conversations import ConversationRegistry, NotFound, Thread, ToolResult
-from db import DEFAULT_DB_PATH
-from rag import OllamaEmbed, ensure_index
+from db import DEFAULT_DB_PATH, SecurityViolation
+from rag import OllamaEmbed, RetrievalUnavailable, ensure_index, search_notes_scoped
 from runtime import runtime
+from security import QueryRejected
 from titles import TitleModel, generate_title
 
 API_VERSION = "0.1.0"
@@ -182,6 +215,7 @@ _TURN_FAILED = (
     "The turn ended in a server-side failure before an answer was composed. Nothing is left "
     "running, the failure is in the server log, and the conversation is unaffected - ask again."
 )
+_REFUSED = "the request was refused by a security layer"
 _INDEX_FAILED = "the note index could not be built at startup; search_notes will say it is offline"
 _INDEX_READY = "the note index holds %d notes"
 
@@ -208,6 +242,14 @@ class ModelLister(Protocol):
 
     def __call__(self) -> list[str]:
         """List the live model ids, raising ModelEndpointError when the endpoint is unusable."""
+        ...
+
+
+class NoteSearch(Protocol):
+    """Runs one notes retrieval for a tenant: the agent's own path, called by the Notes tab."""
+
+    def __call__(self, *, query: str, tenant_id: str, k: int) -> list[dict[str, object]]:
+        """The scoped hits for query, or raise RetrievalUnavailable when no index exists."""
         ...
 
 
@@ -241,6 +283,15 @@ class ConversationRequest(BaseModel):
 
 
 @dataclass(frozen=True)
+class NoteHits:
+    """What `GET /notes/search` serves: the query, the hits asked for, and the scored matches."""
+
+    query: str
+    k: int
+    hits: list[dict[str, object]]
+
+
+@dataclass(frozen=True)
 class Conversation:
     """One thread as `GET /conversations/{id}` serves it: the row, the transcript, the evidence."""
 
@@ -269,7 +320,9 @@ def bounded_model(base_url: str, model: str, *, reasoning: bool) -> ChatOllama:
     )
 
 
-def ollama_chat_runner(base_url: str, thinking: Callable[[str], bool]) -> ChatRunner:
+def ollama_chat_runner(
+    base_url: str, thinking: Callable[[str], bool], db_path: Path
+) -> ChatRunner:
     """The production runner: ChatOllama plus the tenant's graph over the SQLite checkpointer."""
 
     def run(
@@ -283,7 +336,7 @@ def ollama_chat_runner(base_url: str, thinking: Callable[[str], bool]) -> ChatRu
                 checkpointer,
                 embedder=OllamaEmbed(base_url),
                 model_id=model,
-                db_path=DB_PATH,
+                db_path=db_path,
             )
             yield from run_turn(graph, message, thread_id)
 
@@ -405,9 +458,19 @@ def thinking_checker(capabilities: CapabilityChecker) -> Callable[[str], bool]:
     return thinks
 
 
-def build_note_index(base_url: str) -> None:
+def build_note_index(base_url: str, db_path: Path) -> None:
     """The production indexer: embed the notes unless the store already holds them (ADR 0010)."""
-    _LOG.info(_INDEX_READY, ensure_index(DB_PATH, OllamaEmbed(base_url)))
+    _LOG.info(_INDEX_READY, ensure_index(db_path, OllamaEmbed(base_url)))
+
+
+def ollama_note_search(base_url: str, db_path: Path) -> NoteSearch:
+    """The production notes search: `rag.search_notes_scoped`, the agent's retrieval path itself."""
+
+    def search(*, query: str, tenant_id: str, k: int) -> list[dict[str, object]]:
+        """Return the tenant's nearest notes for query, scored, exactly as the tool sees them."""
+        return search_notes_scoped(db_path, OllamaEmbed(base_url), query, tenant_id, k)
+
+    return search
 
 
 def read_transcript(thread_id: str) -> list[Message]:
@@ -432,6 +495,8 @@ def create_app(
     transcript: Callable[[str], list[Message]] | None = None,
     cleanup: Callable[[str], None] | None = None,
     note_index: Callable[[], None] | None = None,
+    note_search: NoteSearch | None = None,
+    db_path: Path = DB_PATH,
 ) -> FastAPI:
     """Build the API, refusing to start without a usable signing secret (ADR 0009).
 
@@ -441,16 +506,19 @@ def create_app(
     """
     jwt_secret()
     base_url = os.environ.get(OLLAMA_ENV_VAR, DEFAULT_OLLAMA_BASE_URL)
-    index_notes = note_index or (lambda: build_note_index(base_url))
+    index_notes = note_index or (lambda: build_note_index(base_url, db_path))
     capabilities = cached_capabilities(
         capability_checker or ollama_capability_checker(base_url)
     )
-    run_chat = chat_runner or ollama_chat_runner(base_url, thinking_checker(capabilities))
+    run_chat = chat_runner or ollama_chat_runner(
+        base_url, thinking_checker(capabilities), db_path
+    )
     list_models = chat_capable_lister(model_lister or ollama_model_lister(base_url), capabilities)
     ask_title = titler or ollama_titler(base_url)
     threads = registry or ConversationRegistry(STATE_DB_PATH)
     replay = transcript or read_transcript
     drop_checkpoints = cleanup or delete_checkpoints
+    search_notes = note_search or ollama_note_search(base_url, db_path)
     try:
         index_notes()
     except Exception:
@@ -466,6 +534,9 @@ def create_app(
     )
     app.add_exception_handler(NotFound, _not_found)
     app.add_exception_handler(ModelEndpointError, _bad_gateway)
+    app.add_exception_handler(QueryRejected, _bad_request)
+    app.add_exception_handler(RetrievalUnavailable, _unavailable)
+    app.add_exception_handler(SecurityViolation, _forbidden)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -513,6 +584,81 @@ def create_app(
         if refreshed is not None:
             stream.headers[REFRESHED_TOKEN_HEADER] = refreshed
         return stream
+
+    @app.get("/records")
+    def records(
+        identity: Annotated[Identity, Depends(_identity)],
+        filters: Annotated[Filters, Depends()],
+        sort: str = DEFAULT_SORT,
+        direction: str = DEFAULT_DIRECTION,
+        page: int = 1,
+        page_size: int | None = None,
+    ) -> BrowsePage:
+        """One page of the caller's own employee rows: the Records tab (ADR 0014).
+
+        The tenant is the token's, so there is nothing to authorize here beyond having a token:
+        the same query for two identities reads two disjoint sets of rows because the executor
+        binds a different tenant into it, not because this handler chose differently.
+        """
+        return browse_records(
+            identity.tenant_id,
+            filters=filters,
+            sort=sort,
+            direction=direction,
+            page=page,
+            page_size=page_size,
+            db_path=db_path,
+        )
+
+    @app.get("/records/departments")
+    def record_departments(
+        identity: Annotated[Identity, Depends(_identity)],
+    ) -> list[dict[str, object]]:
+        """The caller's departments and headcounts, so the filter offers only values it has."""
+        return departments(identity.tenant_id, db_path=db_path)
+
+    @app.get("/notes")
+    def notes(
+        identity: Annotated[Identity, Depends(_identity)],
+        filters: Annotated[Filters, Depends()],
+        sort: str = DEFAULT_SORT,
+        direction: str = DEFAULT_DIRECTION,
+        page: int = 1,
+        page_size: int | None = None,
+    ) -> BrowsePage:
+        """One page of the caller's note corpus - the text the agent retrieves over (ADR 0014)."""
+        return browse_notes(
+            identity.tenant_id,
+            filters=filters,
+            sort=sort,
+            direction=direction,
+            page=page,
+            page_size=page_size,
+            db_path=db_path,
+        )
+
+    @app.get("/notes/search")
+    def note_search_results(
+        identity: Annotated[Identity, Depends(_identity)],
+        q: str,
+        k: int | None = None,
+    ) -> NoteHits:
+        """The agent's own retrieval path, run for a reader's query and scored (ADR 0010).
+
+        Not a second search: `rag.search_notes_scoped` is what the `search_notes` tool calls, so
+        the hits and their distances are what the model would have been handed for that query.
+        """
+        wanted = _hit_count(k)
+        return NoteHits(
+            query=q,
+            k=wanted,
+            hits=search_notes(query=q, tenant_id=identity.tenant_id, k=wanted),
+        )
+
+    @app.get("/notes/flagged")
+    def flagged_notes(identity: Annotated[Identity, Depends(_identity)]) -> Flagged:
+        """Which of the caller's rows the committed poison manifest plants a payload in."""
+        return flagged_user_ids(identity.tenant_id)
 
     @app.get("/conversations")
     def list_conversations(identity: Annotated[Identity, Depends(_identity)]) -> list[Thread]:
@@ -600,6 +746,18 @@ def _identity(
     if refreshed is not None:
         response.headers[REFRESHED_TOKEN_HEADER] = refreshed
     return identity
+
+
+def _hit_count(requested: int | None) -> int:
+    """How many hits one notes search may ask for: the retrieval default, capped by the browse one.
+
+    The default is `rag.top_k` deliberately - unchanged, that is exactly the hit list the agent's
+    `search_notes` tool receives, which is the whole point of showing it (ADR 0014).
+    """
+    config = runtime()
+    if requested is None:
+        return config.rag.top_k
+    return min(max(requested, 1), config.browse.max_search_hits)
 
 
 def _resolve_model(requested: str | None, list_models: ModelLister) -> str:
@@ -713,6 +871,22 @@ async def _bad_gateway(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(
         {"detail": _ENDPOINT_UNAVAILABLE}, status_code=status.HTTP_502_BAD_GATEWAY
     )
+
+
+async def _bad_request(request: Request, exc: Exception) -> JSONResponse:
+    """A refused browse says which allowlist refused it: the reason is about the request only."""
+    return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
+
+
+async def _unavailable(request: Request, exc: Exception) -> JSONResponse:
+    """No note index is an operator condition, so retrieval reports itself offline (ADR 0010)."""
+    return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+async def _forbidden(request: Request, exc: Exception) -> JSONResponse:
+    """An RLS layer tripped: logged in full server-side, and a bare refusal to the client."""
+    _LOG.error("a security layer refused a request", exc_info=exc)
+    return JSONResponse({"detail": _REFUSED}, status_code=status.HTTP_403_FORBIDDEN)
 
 
 def __getattr__(name: str) -> FastAPI:

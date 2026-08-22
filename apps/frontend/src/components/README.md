@@ -21,20 +21,22 @@ components/
   Pill.tsx         the status chip — tones neutral/accent/ok/warn/danger
   CodeBlock.tsx    labelled monospace block with a copy control (SQL lives here)
   Markdown.tsx     render a markdown string as sanitized GFM HTML
-  DataTable.tsx    backend rows as a compact, visually capped table
+  DataTable.tsx    backend rows as a compact, visually capped table (optional server-side sort)
+  NoteList.tsx     employee-written notes as quoted note cards
   TenantPill.tsx   the identity chip (tenant + user) in the header slot
   Modal.tsx        the one dialog brick — portal, backdrop, Escape/backdrop/× dismissal
   ConfirmDialog.tsx  the confirm step in front of a delete, on Modal + Button
-  forms/           FormCard, TextField (+ index barrel)
-  layout/          AppLayout, Header, Sidebar, Page, PageHeader, Section, EmptyState
-                   (+ index barrel)
+  forms/           FormCard, TextField, SelectField (+ index barrel)
+  layout/          AppLayout, Header, Tabs, Sidebar, Page, PageHeader, Section,
+                   EmptyState (+ index barrel)
   charts/          Chart — renders a backend ChartSpec (+ index barrel)
   chat/            ChatMessage, Composer, ModelPicker, TracePanel, TraceStep,
                    ToolResultView (+ index barrel)
 ```
 
 Views live beside them in `src/views/` (`LoginView`, `SessionBadge`, `ChatView`,
-`ConversationsSidebar`); the non-visual bricks they compose are `src/auth.ts` (the
+`ConversationsSidebar`, `RecordsView`, `NotesView`); the non-visual bricks they compose
+are `src/auth.ts` (the
 session), `src/lib/api.ts` (the one HTTP client), `src/lib/sse.ts` (the SSE stream to
 typed trace events), `src/lib/trace.ts` (those events folded into one turn's state),
 `src/lib/conversations.ts` (which thread is open, and the thread list around it) and
@@ -124,6 +126,32 @@ hidden; the server-side cap of ADR 0007 is reported separately by the truncation
 `null` renders as `-`, numbers right-align in mono and print through `lib/format.ts`, the
 same formatter the chart axes use.
 
+Sorting is **optional and server-side**. Pass `sortable` (the columns the server will sort
+by), the `sort`/`direction` it is currently sorting by, and `onSort`, and those headers
+become buttons that request a sort, carrying `aria-sort` for a screen reader:
+
+```tsx
+<DataTable columns={page.columns} rows={page.rows} maxRows={page.page_size}
+  sortable={SORTABLE} sort={page.sort} direction={page.direction} onSort={sortBy} />
+```
+
+The table never reorders rows itself — it is holding one page, and the order of the rest is
+the server's to decide. Without those props it is the plain table the chat trace shows.
+
+### NoteList
+
+```tsx
+<NoteList notes={data.notes} />                          // the chat trace: retrieved notes
+<NoteList notes={hits.hits} flagged={kinds} empty="…" /> // the Notes tab: search hits
+```
+
+Employee-written notes as quoted data, never as instructions — one card per note with its
+name, `#user_id` and, when retrieval produced one, the `distance` it scored. `flagged` is a
+`{user_id: payload_kind}` map (from `GET /notes/flagged`, the committed
+`poisoned_manifest.json`) and marks a planted injection payload with a warn `Pill`, which is
+what lets the demo point at a payload before the agent reads it (ADR 0014). The chat trace
+and the Notes tab share this brick, so a note reads identically wherever it is served.
+
 ### Brand mark
 
 There is no logo component: `Header` renders `public/anteater.png` through an `<img>`,
@@ -178,9 +206,23 @@ form submit, so Enter works from any field.
 </FormCard>
 ```
 
+### forms/SelectField
+
+```tsx
+<SelectField id="records-department" label="Department" value={draft.department}
+  options={departments.map((d) => ({ value: d.department, label: d.department }))}
+  onChange={setDepartment} placeholder="any department" />
+```
+
+`TextField`'s counterpart for a value that comes from a fixed set: the labelled native
+`<select>` on the `.select` metrics `chat/ModelPicker` uses, inside the `.field` + label
+pattern `TextField` owns. It exists because a filter must not let a reader type a department
+the tenant does not have — the options are whatever the server listed, and `placeholder`
+renders the empty "no filter" option.
+
 ### forms/TextField
 
-The labelled text input (`type="text" | "password"`). KB writes this label+input pair
+The labelled text input (`type="text" | "password" | "number" | "date"`). KB writes this label+input pair
 inline in its views; here it is a brick, so no view re-styles an input.
 
 ```tsx
@@ -209,6 +251,18 @@ claims it with `flex: 1` instead (the chat page, whose `.chat-log` is its own sc
   {page}
 </AppLayout>
 ```
+
+### layout/Tabs
+
+```tsx
+<Tabs tabs={[{ id: "chat", label: "Chat", icon: "message-circle" }]} active={tab} onSelect={select} />
+```
+
+The shell's top-level sections (ADR 0014), rendered in the `Header` through `AppLayout`'s
+`tabs` slot rather than by any view — the sections are siblings and none owns the others. A
+`<button role="tab">` each, `aria-selected` carrying the state for a screen reader and
+`.active` for an eye. The shell keeps a visited section mounted and hidden (`.tab-panel`), so
+switching never costs a reader the state of the one they left.
 
 ### layout/Sidebar
 
@@ -449,6 +503,12 @@ every stored payload has structured keys, so the fallback is a live-turn path on
   is its `.md-item` log row with the date gutter turned into an icon rail.
 - `DataTable` is KB's `.usage-table` inside its `.table-scroll` wrapper, without KB's
   `RecordsTable` pagination: a trace step shows a capped peek at the rows, not a browser.
+  Its optional sortable headers are new; KB's tables do not sort, and here the sort is a
+  server request rather than an in-browser reorder (ADR 0014).
+- `layout/Tabs` and `forms/SelectField` are new as bricks: KB is a multi-page router app
+  with no tab strip and no select anywhere. `NoteList` is new too, lifted out of
+  `chat/ToolResultView` when the Notes tab needed the same cards - the trace and the tab now
+  compose one brick instead of two copies drifting apart.
 - `Pill` replaces KB's hardcoded hexes with the state tokens, and **adds the amber
   `.pill-warn` KB lacks** — KB's only alert tone is red, and the truncation notice needs
   its own. The same split applies to `.notice-warn`, where KB's `Notice` collapses

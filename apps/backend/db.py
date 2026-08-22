@@ -14,10 +14,21 @@ the SQL, the model, or the client.
   the order in which the engine binds the parameters cannot matter.
 - layer 4a, `_verify_scope_applied`: refuses to execute unless the AST about to run carries a
   scoping subquery for every employees reference, one placeholder per subquery, and nothing
-  bound but the session tenant. This runs on every call, so the row check below may safely
-  degrade to a no-op for a result that has no tenant_id column: the scoping is proven
-  structurally rather than assumed. A placeholder the model wrote itself trips this check too,
-  because an extra `?` would shift which value the engine binds where.
+  bound but the session tenant and whatever filter values the caller declared. This runs on
+  every call, so the row check below may safely degrade to a no-op for a result that has no
+  tenant_id column: the scoping is proven structurally rather than assumed. A placeholder the
+  model wrote itself trips this check too, because an undeclared `?` would shift which value the
+  engine binds where.
+
+Declared filter parameters (ADR 0002 as amended). A trusted template - `analytics.py`, `browse.py`
+- may bind its own values by passing `params`, so a filter a reader typed travels as a bound
+parameter and never as SQL text. Ordering is not assumed: SQL's grammar puts a SELECT's FROM
+clause before its WHERE, so the scoping placeholders in the FROM subqueries are bound before the
+caller's, and layer 4a proves the arrangement rather than trusting it - the caller's placeholders
+must sit inside the root WHERE and nowhere else (never in the projection, which would render
+ahead of FROM), and a template that binds anything must have exactly one employees reference, so
+"the tenant is the first parameter" is a fact about the rendered statement. `params=()`, the
+default, is the model's path: layer 2 then refuses every parameter, exactly as before.
 - layer 2.5, `_connect`: the engine's own controls, which do not depend on any parse of ours -
   the file opened `mode=ro`, `PRAGMA query_only`, `sqlite3_limit` caps and an authorizer that
   allows nothing but reads of employees. The pragma is set before the authorizer is installed
@@ -310,16 +321,24 @@ def execute_scoped(
     sql: str,
     tenant_id: str,
     *,
+    params: Sequence[object] = (),
     db_path: Path = DEFAULT_DB_PATH,
     clock: Callable[[], datetime] = _utc_now,
 ) -> QueryResult:
-    """Validate, scope, run and audit sql for tenant_id; the one path from a query to the data."""
+    """Validate, scope, run and audit sql for tenant_id; the one path from a query to the data.
+
+    `params` are the filter values a trusted template declares it wrote placeholders for, bound
+    after the tenant (ADR 0002 as amended); model-generated SQL passes none and may carry none.
+    """
     attempt = _Attempt(generated_sql=sql, tenant=tenant_id)
+    filters = tuple(params)
     try:
-        scoped, params = _scope_to_tenant(validate_sql(sql), tenant_id)
-        _verify_scope_applied(scoped, params, tenant_id)
+        scoped, bound = _scope_to_tenant(
+            validate_sql(sql, parameters=len(filters)), tenant_id, filters
+        )
+        _verify_scope_applied(scoped, bound, tenant_id, filters)
         attempt.executed_sql = scoped.sql(dialect=_DIALECT)
-        result = _run(db_path, attempt.executed_sql, _count_sql(scoped), params)
+        result = _run(db_path, attempt.executed_sql, _count_sql(scoped), bound)
         _verify_rows(result, tenant_id)
         attempt.approve(result.returned_count)
         return result
@@ -453,8 +472,8 @@ def _read_csv(csv_path: Path) -> list[tuple[str, ...]]:
 
 
 def _scope_to_tenant(
-    select: exp.Expression, tenant_id: str
-) -> tuple[exp.Expression, tuple[str, ...]]:
+    select: exp.Expression, tenant_id: str, filters: tuple[object, ...]
+) -> tuple[exp.Expression, tuple[object, ...]]:
     """Rewrite every employees reference into a tenant-filtered subquery with a bound parameter."""
     substitutions = 0
 
@@ -466,7 +485,8 @@ def _scope_to_tenant(
         return node
 
     # Layer 2 refuses a CTE that shadows employees, so every such reference is the real table.
-    return select.transform(rewrite, copy=True), (tenant_id,) * substitutions
+    scoped = select.transform(rewrite, copy=True)
+    return scoped, (tenant_id,) * substitutions + filters
 
 
 def _scoped_source(table: exp.Table) -> exp.Subquery:
@@ -478,19 +498,53 @@ def _scoped_source(table: exp.Table) -> exp.Subquery:
 
 
 def _verify_scope_applied(
-    scoped: exp.Expression, params: tuple[str, ...], tenant_id: str
+    scoped: exp.Expression,
+    bound: tuple[object, ...],
+    tenant_id: str,
+    filters: tuple[object, ...],
 ) -> None:
     """Refuse to run anything but a tree whose every employees reference is tenant-scoped."""
     sources = [node for node in scoped.find_all(exp.Subquery) if _is_scoping_source(node)]
     tables = [node for node in scoped.find_all(exp.Table) if node.name.lower() == ALLOWED_TABLE]
     placeholders = list(scoped.find_all(exp.Placeholder))
-    counts_agree = bool(sources) and len(tables) == len(sources) == len(placeholders)
-    if not counts_agree or params != (tenant_id,) * len(sources):
+    counts_agree = (
+        bool(sources)
+        and len(tables) == len(sources)
+        and len(placeholders) == len(sources) + len(filters)
+    )
+    single_source = len(sources) == 1 or not filters
+    if (
+        not counts_agree
+        or not single_source
+        or not _filters_confined(scoped, sources, len(filters))
+        or bound != (tenant_id,) * len(sources) + filters
+    ):
         raise SecurityViolation(
             f"tenant scoping did not apply: {len(tables)} employees references, "
-            f"{len(sources)} scoped, {len(placeholders)} placeholders, {len(params)} bound",
+            f"{len(sources)} scoped, {len(placeholders)} placeholders, {len(bound)} bound "
+            f"of which {len(filters)} declared",
             kind="rewrite_not_applied",
         )
+
+
+def _filters_confined(
+    scoped: exp.Expression, sources: list[exp.Subquery], declared: int
+) -> bool:
+    """Whether every placeholder outside the scoping subqueries sits in the root WHERE clause.
+
+    That is what makes the binding order a property of SQL's grammar rather than an assumption:
+    a WHERE renders after the FROM that carries the tenant, while a placeholder anywhere else -
+    a projection above all - could render before it and silently take the tenant's value.
+    """
+    scoping = {id(node) for source in sources for node in source.find_all(exp.Placeholder)}
+    outside = [node for node in scoped.find_all(exp.Placeholder) if id(node) not in scoping]
+    if len(outside) != declared:
+        return False
+    where = scoped.args.get("where")
+    if where is None:
+        return not outside
+    in_where = {id(node) for node in where.find_all(exp.Placeholder)}
+    return all(id(node) in in_where for node in outside)
 
 
 def _is_scoping_source(node: exp.Subquery) -> bool:
@@ -559,7 +613,7 @@ class _EngineGuard:
         return sqlite3.SQLITE_DENY
 
 
-def _run(db_path: Path, sql: str, count_sql: str, params: tuple[str, ...]) -> QueryResult:
+def _run(db_path: Path, sql: str, count_sql: str, params: tuple[object, ...]) -> QueryResult:
     """Execute the scoped query behind the engine's own controls, naming any engine failure."""
     config = runtime().db
     guard = _EngineGuard(config)
@@ -594,7 +648,7 @@ def _limit_caps(config: DbConfig) -> tuple[tuple[int, int], ...]:
 
 
 def _fetch(
-    conn: sqlite3.Connection, sql: str, count_sql: str, params: tuple[str, ...], cap: int
+    conn: sqlite3.Connection, sql: str, count_sql: str, params: tuple[object, ...], cap: int
 ) -> QueryResult:
     """Run the scoped query, cap the rows, and count the total only when the cap trips."""
     cursor = conn.execute(sql, params)

@@ -8,6 +8,11 @@
  * The retitle fake echoes the title the thread was registered with unless a test scripts one,
  * so only the titling tests below observe a title change - everything else sees the rail the
  * `POST /conversations` title produced.
+ *
+ * The second block covers the section tabs (issue #88, ADR 0014): that a tab a reader has never
+ * opened fetches nothing, that the conversation rail belongs to the chat alone, and above all
+ * that switching away and back costs the reader nothing - the streamed turn is still there,
+ * because a visited tab is hidden rather than unmounted.
  */
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -16,6 +21,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   login: vi.fn(),
   listModels: vi.fn(),
+  browseRecords: vi.fn(),
+  browseNotes: vi.fn(),
+  listDepartments: vi.fn(),
+  listFlaggedNotes: vi.fn(),
+  searchNotes: vi.fn(),
   listConversations: vi.fn(),
   getConversation: vi.fn(),
   createConversation: vi.fn(),
@@ -55,6 +65,22 @@ const REPLAY_CHART = {
   data: [{ x: "Engineering", y: 91000 }],
 };
 const REPLAY_RESULTS = [{ turn: 1, tool: "plot", data: { chart_spec: REPLAY_CHART } }];
+
+const RECORDS_PAGE = {
+  columns: ["user_id", "tenant_id", "name"],
+  rows: [[1, "acme", "Ada Lovelace"]],
+  total: 450,
+  page: 1,
+  page_size: 25,
+  sort: "user_id",
+  direction: "asc",
+  executed_sql: "SELECT user_id FROM (SELECT * FROM employees WHERE employees.tenant_id = ?)",
+};
+const NOTES_PAGE = {
+  ...RECORDS_PAGE,
+  columns: ["user_id", "tenant_id", "name", "department", "notes"],
+  rows: [[1, "acme", "Ada Lovelace", "Engineering", "shipped the compiler"]],
+};
 
 const TURN = [
   { type: "token", text: "There are 331 people." },
@@ -131,6 +157,11 @@ beforeEach(() => {
   );
   api.deleteConversation.mockResolvedValue(undefined);
   api.openChatStream.mockImplementation(() => Promise.resolve(sseResponse(TURN)));
+  api.browseRecords.mockResolvedValue(RECORDS_PAGE);
+  api.browseNotes.mockResolvedValue(NOTES_PAGE);
+  api.listDepartments.mockResolvedValue([{ department: "Engineering", employees: 95 }]);
+  api.listFlaggedNotes.mockResolvedValue({ user_ids: [], kinds: {} });
+  api.searchNotes.mockResolvedValue({ query: "", k: 5, hits: [] });
 });
 
 afterEach(() => {
@@ -364,5 +395,83 @@ describe("the conversation rail", () => {
     fireEvent.click(screen.getByLabelText("Show conversations"));
 
     expect(titles(view.container)).toEqual([NEWEST.title, OLDEST.title]);
+  });
+});
+
+
+function openTab(name: string): void {
+  fireEvent.click(screen.getByRole("tab", { name }));
+}
+
+describe("the section tabs", () => {
+  it("starts on the chat, with nothing fetched for the tabs nobody opened", async () => {
+    await signIn();
+    await screen.findByText(NEWEST.title);
+
+    expect(screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")).toBe("true");
+    expect(api.browseRecords).not.toHaveBeenCalled();
+    expect(api.browseNotes).not.toHaveBeenCalled();
+  });
+
+  it("shows the tenant's rows on the Records tab and hides the conversation rail", async () => {
+    const { view } = await signIn();
+    await screen.findByText(NEWEST.title);
+
+    openTab("Records");
+
+    expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
+    expect(screen.getByText(/450 matching rows/)).toBeTruthy();
+    expect(titles(view.container)).toEqual([]);
+    expect(screen.queryByRole("button", { name: /new chat/i })).toBeNull();
+  });
+
+  it("shows the note corpus on the Notes tab, with the rail still gone", async () => {
+    const { view } = await signIn();
+    await screen.findByText(NEWEST.title);
+
+    openTab("Notes");
+
+    expect(await screen.findByText("shipped the compiler")).toBeTruthy();
+    expect(titles(view.container)).toEqual([]);
+  });
+
+  it("keeps the streamed turn and the rail when the reader comes back to the chat", async () => {
+    const { view } = await signIn();
+    await screen.findByText(OLDEST.title);
+    ask("how many people are there?");
+    await screen.findByText("There are 331 people.");
+
+    openTab("Records");
+    await screen.findByText("Ada Lovelace");
+    openTab("Chat");
+
+    expect(screen.getByText("There are 331 people.")).toBeTruthy();
+    expect(titles(view.container)).toContain(NEWEST.title);
+    expect(api.openChatStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a filter the reader typed on a tab they left", async () => {
+    await signIn();
+    await screen.findByText(NEWEST.title);
+    openTab("Records");
+    await screen.findByText("Ada Lovelace");
+
+    fireEvent.change(screen.getByLabelText("Name contains"), { target: { value: "ada" } });
+    openTab("Chat");
+    openTab("Records");
+
+    expect((screen.getByLabelText("Name contains") as HTMLInputElement).value).toBe("ada");
+    expect(api.browseRecords).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows one section at a time", async () => {
+    const { view } = await signIn();
+    await screen.findByText(NEWEST.title);
+    openTab("Records");
+    await screen.findByText("Ada Lovelace");
+
+    const panels = Array.from(view.container.querySelectorAll(".tab-panel"));
+    expect(panels.map((panel) => panel.getAttribute("aria-label"))).toEqual(["chat", "records"]);
+    expect(panels.filter((panel) => !panel.hasAttribute("hidden"))).toHaveLength(1);
   });
 });
