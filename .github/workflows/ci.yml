@@ -38,8 +38,31 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
-      # The eval harness end to end with a scripted model: no endpoint, no network (ADR 0004)
-      - name: Eval harness (mocked)
+  evals:
+    name: evals (mocked harness)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/backend
+    steps:
+      - uses: actions/checkout@v7
+
+      # setup-uv publishes no moving major tag past v7, so pin the exact release
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          working-directory: apps/backend
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      # Lists every graded ask without building a workspace: the suites still import and render
+      - name: List the graded suites
+        run: uv run python -m evals --dry-run
+
+      # End to end on a scripted model - no endpoint, no network; exits 1 on a leak (ADR 0004)
+      - name: Run the harness (mocked)
         run: uv run python -m evals --mocked --out "$RUNNER_TEMP/evals-report.md"
 
   dataset:
@@ -109,7 +132,7 @@ jobs:
   cd:
     name: cd (publish images to GHCR)
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [backend, dataset, frontend, images]
+    needs: [backend, evals, dataset, frontend, images]
     runs-on: ubuntu-latest
     permissions:
       contents: read
