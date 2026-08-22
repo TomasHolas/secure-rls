@@ -206,8 +206,8 @@ def _reject_parameters(root: exp.Select, declared: int) -> None:
     ]
     if len(found) != declared or len(anonymous) != declared:
         raise QueryRejected(
-            f"the query must carry exactly {declared} anonymous parameters, "
-            f"got {len(found)} of which {len(anonymous)} are anonymous",
+            f"the caller declared {declared} anonymous parameters, but the query carries "
+            f"{len(found)}, of which {len(anonymous)} are anonymous",
             retryable=False,
         )
 

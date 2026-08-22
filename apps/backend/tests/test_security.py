@@ -207,6 +207,66 @@ def test_a_parameter_does_not_soften_a_policy_violation(sql):
     assert caught.value.retryable is False
 
 
+DECLARED = [
+    ("SELECT * FROM employees WHERE name = ?", 1),
+    ("SELECT * FROM employees WHERE salary >= ? AND salary <= ?", 2),
+    ("SELECT COUNT(*) FROM employees WHERE INSTR(LOWER(name), LOWER(?)) > 0", 1),
+]
+
+
+@pytest.mark.parametrize(("sql", "declared"), DECLARED)
+def test_a_declared_parameter_count_is_approved(sql, declared):
+    """A trusted template says how many placeholders it wrote, and that many are allowed."""
+    assert validate_sql(sql, parameters=declared) is not None
+
+
+@pytest.mark.parametrize(("sql", "declared"), DECLARED)
+def test_the_same_query_is_still_refused_when_nothing_is_declared(sql, declared):
+    """The model's path is the default and is unchanged: it declares nothing, so it may bind
+    nothing."""
+    with pytest.raises(QueryRejected) as caught:
+        validate_sql(sql)
+    assert caught.value.retryable is True
+
+
+@pytest.mark.parametrize(
+    ("sql", "declared"),
+    [
+        ("SELECT * FROM employees WHERE name = ?", 2),
+        ("SELECT * FROM employees WHERE name = ? OR name = ?", 1),
+        ("SELECT * FROM employees", 1),
+    ],
+)
+def test_a_count_that_disagrees_with_the_declaration_is_terminal(sql, declared):
+    """Only this repo's own code declares a count, so a mismatch is a bug, not a model mistake."""
+    with pytest.raises(QueryRejected) as caught:
+        validate_sql(sql, parameters=declared)
+    assert caught.value.retryable is False
+    assert str(declared) in caught.value.reason
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM employees WHERE name = :name",
+        "SELECT * FROM employees WHERE name = @name",
+    ],
+)
+def test_only_an_anonymous_placeholder_may_be_declared(sql):
+    """Layer 4a counts anonymous placeholders positionally; a named one would not line up."""
+    with pytest.raises(QueryRejected) as caught:
+        validate_sql(sql, parameters=1)
+    assert caught.value.retryable is False
+
+
+def test_a_declaration_does_not_soften_a_policy_violation():
+    """The parameter check still runs last: declaring one buys no way past the allowlist."""
+    with pytest.raises(QueryRejected) as caught:
+        validate_sql("SELECT * FROM sqlite_master WHERE name = ?", parameters=1)
+    assert caught.value.retryable is False
+    assert "sqlite_master" in caught.value.reason or "employees" in caught.value.reason
+
+
 def test_approved_ast_round_trips_to_equivalent_sql():
     approved = validate_sql("SELECT name FROM employees WHERE salary > 100")
     assert approved.sql(dialect="sqlite") == "SELECT name FROM employees WHERE salary > 100"
