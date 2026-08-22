@@ -30,6 +30,15 @@ served beside the transcript, under the turn the transcript counts. The registry
 the endpoint cannot leak is real too - a foreign fetch is the same 404 that reads nothing. The
 bounds on what is kept belong to `test_conversations.py`, which owns the store.
 
+The browse endpoints (issue #88, ADR 0014) get a real database: a five-row inline dataset loaded
+into tmp_path, two tenants, with beta's rows planted to answer acme's filters. Faking `browse.py`
+here would test the wiring and nothing else - what belongs at this layer is that the tenant the
+rows are fetched for is the token's and never the query string's, so the isolation the tabs
+demonstrate is asserted through the HTTP surface the browser actually uses. The notes search is
+the one browse seam that IS faked, because it is the only one that would need to embed: `FakeNotes`
+records the query, tenant and k it was handed, which is how "the tab calls the agent's retrieval
+path, for the token's tenant, with the configured k" is asserted without an endpoint.
+
 `FakeTitler` is the titling seam (`PATCH /conversations/{id}`, ADR 0012 as amended): it answers
 with a canned title or raises like a dead endpoint, which is how "a titling failure leaves the
 thread with the title it had" is asserted without a model. What belongs here rather than in
@@ -37,6 +46,7 @@ thread with the title it had" is asserted without a model. What belongs here rat
 transcript is read and before the model is called, and the response carries the stored row.
 """
 
+import csv
 import json
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -57,7 +67,10 @@ from app import (
     thinking_checker,
 )
 from auth import SECRET_ENV_VAR, AuthError
+from browse import DEFAULT_SORT
 from conversations import ConversationRegistry
+from db import init_db
+from rag import RetrievalUnavailable
 from runtime import runtime
 
 TEST_SECRET = "a1" * 32
@@ -66,6 +79,7 @@ SHORT_SECRET = "too-short"
 ALICE = ("alice@acme", "demo-acme")
 BOB = ("bob@beta", "demo-beta")
 ACME = "acme"
+BETA = "beta"
 
 CHAT_MODELS = ["fake-model:1b", "other-model:3b"]
 EMBED_MODEL = f"{runtime().agent.embed_model}:latest"
@@ -119,8 +133,37 @@ SECRET_HOST = "http://ollama.internal:11434"
 INDEXED = "note index built"
 GENERATED_TITLE = "Headcount by department"
 
+BROWSE_HEADER = (
+    "user_id",
+    "tenant_id",
+    "name",
+    "department",
+    "salary",
+    "performance_score",
+    "hire_date",
+    "notes",
+)
+BROWSE_ROWS = (
+    (1, ACME, "Ada Lovelace", "Engineering", 100, 4.5, "2019-01-01", "shipped the compiler"),
+    (2, ACME, "Alan Turing", "Engineering", 200, 3.5, "2020-02-02", "strong on theory"),
+    (3, ACME, "Grace Hopper", "Sales", 300, 2.5, "2021-03-03", "owns the pipeline"),
+    (4, BETA, "Adalovelace Beta", "Engineering", 999999, 5.0, "2019-01-01", "beta secret"),
+    (5, BETA, "Grace Beta", "Sales", 1, 1.0, "2024-06-06", "beta secret"),
+)
+ACME_ROWS = 3
+BETA_ROWS = 2
+BETA_SECRET = "beta secret"
+NOTE_HITS = [
+    {"user_id": 1, "name": "Ada Lovelace", "note": "shipped the compiler", "distance": 0.21}
+]
+
 PROTECTED_ROUTES = [
     ("GET", "/models"),
+    ("GET", "/records"),
+    ("GET", "/records/departments"),
+    ("GET", "/notes"),
+    ("GET", "/notes/search?q=compiler"),
+    ("GET", "/notes/flagged"),
     ("POST", "/chat"),
     ("GET", "/conversations"),
     ("POST", "/conversations"),
@@ -215,6 +258,27 @@ class FakeCapabilities:
 
 
 @dataclass
+class FakeNotes:
+    """The notes-search seam: records what it was asked, answers canned hits or reports offline."""
+
+    hits: list[dict] = field(default_factory=lambda: [dict(hit) for hit in NOTE_HITS])
+    offline: bool = False
+    calls: list[dict] = field(default_factory=list)
+
+    def __call__(self, *, query: str, tenant_id: str, k: int) -> list[dict]:
+        """Record the retrieval, then answer as the agent's own path would for that tenant."""
+        self.calls.append({"query": query, "tenant_id": tenant_id, "k": k})
+        if self.offline:
+            raise RetrievalUnavailable("the note index has not been built on this server")
+        return self.hits
+
+    @property
+    def last(self) -> dict:
+        """The most recent retrieval's arguments."""
+        return self.calls[-1]
+
+
+@dataclass
 class BreakingRunner:
     """Yields a prefix of a turn and then raises, the way a broken run reaches the SSE layer."""
 
@@ -236,6 +300,7 @@ class Wiring:
     transcripts: FakeTranscripts
     capabilities: FakeCapabilities
     titler: FakeTitler
+    notes: FakeNotes
     deleted: list[str]
     indexed: list[str]
 
@@ -247,12 +312,26 @@ def _signing_secret(monkeypatch):
 
 
 @pytest.fixture
-def wiring(tmp_path) -> Wiring:
+def browse_db(tmp_path):
+    """A two-tenant database from the inline rows; the committed employees.csv is never read."""
+    csv_path = tmp_path / "employees.csv"
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(BROWSE_HEADER)
+        writer.writerows(BROWSE_ROWS)
+    path = tmp_path / "data.db"
+    init_db(csv_path, path)
+    return path
+
+
+@pytest.fixture
+def wiring(tmp_path, browse_db) -> Wiring:
     """The app with a fake runner and model list, a tmp registry, and recording replay/cleanup."""
     runner = FakeRunner()
     transcripts = FakeTranscripts()
     capabilities = FakeCapabilities()
     titler = FakeTitler()
+    notes = FakeNotes()
     deleted: list[str] = []
     indexed: list[str] = []
     app = create_app(
@@ -264,6 +343,8 @@ def wiring(tmp_path) -> Wiring:
         transcript=transcripts,
         cleanup=deleted.append,
         note_index=lambda: indexed.append(INDEXED),
+        note_search=notes,
+        db_path=browse_db,
     )
     return Wiring(
         client=TestClient(app),
@@ -271,6 +352,7 @@ def wiring(tmp_path) -> Wiring:
         transcripts=transcripts,
         capabilities=capabilities,
         titler=titler,
+        notes=notes,
         deleted=deleted,
         indexed=indexed,
     )
@@ -285,6 +367,8 @@ def _client(
     note_index=None,
     titler=None,
     transcript=None,
+    note_search=None,
+    db_path=None,
 ) -> TestClient:
     """A client wired like the fixture but with the seams a single test wants to vary."""
     return TestClient(
@@ -297,6 +381,8 @@ def _client(
             transcript=transcript or FakeTranscripts(),
             cleanup=lambda thread_id: None,
             note_index=note_index or (lambda: None),
+            note_search=note_search or FakeNotes(),
+            **({} if db_path is None else {"db_path": db_path}),
         )
     )
 
@@ -456,6 +542,176 @@ def test_models_answers_502_generically_when_the_endpoint_is_down(tmp_path):
     response = client.get("/models", headers=_headers(client, ALICE))
     assert response.status_code == 502
     assert "host.example" not in response.text
+
+
+def test_records_serves_only_the_rows_of_the_tokens_tenant(wiring):
+    """The isolation the Records tab demonstrates, asserted through the HTTP surface (ADR 0014)."""
+    acme = wiring.client.get("/records", headers=_headers(wiring.client, ALICE)).json()
+    beta = wiring.client.get("/records", headers=_headers(wiring.client, BOB)).json()
+
+    assert acme["total"] == ACME_ROWS
+    assert beta["total"] == BETA_ROWS
+    assert {row[acme["columns"].index("tenant_id")] for row in acme["rows"]} == {ACME}
+    assert {row[beta["columns"].index("tenant_id")] for row in beta["rows"]} == {BETA}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"tenant_id": BETA},
+        {"tenant": BETA},
+        {"tenant_id": BETA, "name": "grace"},
+        {"db_path": "/etc/passwd"},
+    ],
+)
+def test_a_tenant_the_client_invents_is_ignored(wiring, query):
+    """`Filters` is the allowlist: a parameter that is not one of its fields is not read at all."""
+    response = wiring.client.get(
+        "/records", params=query, headers=_headers(wiring.client, ALICE)
+    )
+
+    assert response.status_code == 200
+    assert BETA not in response.text
+    assert BETA_SECRET not in response.text
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ["' OR 1=1 --", "x' UNION SELECT * FROM employees WHERE tenant_id='beta' --", "%", "?"],
+)
+def test_a_hostile_filter_over_http_leaks_neither_a_row_nor_an_error(wiring, hostile):
+    """No foreign row, no stack, no statement: an ordinary empty page (ADR 0002 as amended)."""
+    response = wiring.client.get(
+        "/records", params={"name": hostile}, headers=_headers(wiring.client, ALICE)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"] == []
+    assert response.json()["total"] == 0
+    assert BETA_SECRET not in response.text
+
+
+def test_records_filters_and_pages_with_the_true_total(wiring):
+    headers = _headers(wiring.client, ALICE)
+
+    filtered = wiring.client.get("/records", params={"name": "ada"}, headers=headers).json()
+    paged = wiring.client.get(
+        "/records", params={"page": 2, "page_size": 1, "sort": "salary"}, headers=headers
+    ).json()
+
+    assert filtered["total"] == 1
+    assert paged["total"] == ACME_ROWS
+    assert paged["page"] == 2
+    assert len(paged["rows"]) == 1
+
+
+def test_a_page_larger_than_the_row_cap_is_clamped_and_says_so(wiring):
+    """ADR 0007 again: the page ceiling is the executor's cap, and the response reports it."""
+    response = wiring.client.get(
+        "/records", params={"page_size": 10**9}, headers=_headers(wiring.client, ALICE)
+    )
+
+    assert response.json()["page_size"] == runtime().db.max_result_rows
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ({"sort": "notes"}, "sort must be one of"),
+        ({"direction": "sideways"}, "direction must be one of"),
+        ({"hired_from": "yesterday"}, "ISO date"),
+        ({"name": "a" * 500}, "characters"),
+    ],
+)
+def test_a_refused_browse_is_a_400_naming_the_allowlist_that_refused_it(wiring, query, expected):
+    response = wiring.client.get(
+        "/records", params=query, headers=_headers(wiring.client, ALICE)
+    )
+
+    assert response.status_code == 400
+    assert expected in response.json()["detail"]
+
+
+def test_records_defaults_to_the_primary_key_sort(wiring):
+    response = wiring.client.get("/records", headers=_headers(wiring.client, ALICE))
+    assert response.json()["sort"] == DEFAULT_SORT
+
+
+def test_the_departments_offered_are_the_callers_own(wiring):
+    acme = wiring.client.get(
+        "/records/departments", headers=_headers(wiring.client, ALICE)
+    ).json()
+
+    assert acme == [
+        {"department": "Engineering", "employees": 2},
+        {"department": "Sales", "employees": 1},
+    ]
+
+
+def test_the_notes_corpus_is_the_callers_own(wiring):
+    acme = wiring.client.get("/notes", headers=_headers(wiring.client, ALICE))
+    beta = wiring.client.get("/notes", headers=_headers(wiring.client, BOB))
+
+    assert acme.json()["total"] == ACME_ROWS
+    assert BETA_SECRET not in acme.text
+    assert BETA_SECRET in beta.text
+
+
+def test_the_notes_search_runs_the_agents_retrieval_path_for_the_tokens_tenant(wiring):
+    """The same call the `search_notes` tool makes, with the configured k (ADRs 0010, 0014)."""
+    response = wiring.client.get(
+        "/notes/search", params={"q": "compiler"}, headers=_headers(wiring.client, ALICE)
+    )
+
+    assert response.status_code == 200
+    assert wiring.notes.last == {
+        "query": "compiler",
+        "tenant_id": ACME,
+        "k": runtime().rag.top_k,
+    }
+    assert response.json()["hits"] == NOTE_HITS
+    assert response.json()["k"] == runtime().rag.top_k
+
+
+def test_the_notes_search_takes_its_tenant_from_the_token_and_nowhere_else(wiring):
+    wiring.client.get(
+        "/notes/search",
+        params={"q": "secret", "tenant_id": BETA},
+        headers=_headers(wiring.client, ALICE),
+    )
+
+    assert wiring.notes.last["tenant_id"] == ACME
+
+
+def test_the_notes_search_holds_k_inside_the_configured_ceiling(wiring):
+    headers = _headers(wiring.client, ALICE)
+
+    wiring.client.get("/notes/search", params={"q": "x", "k": 10**6}, headers=headers)
+    assert wiring.notes.last["k"] == runtime().browse.max_search_hits
+
+    wiring.client.get("/notes/search", params={"q": "x", "k": 0}, headers=headers)
+    assert wiring.notes.last["k"] == 1
+
+
+def test_a_notes_search_without_an_index_reports_retrieval_offline(tmp_path, browse_db):
+    """An operator condition, not a model error and not a leak: 503 and a plain statement."""
+    notes = FakeNotes(offline=True)
+    client = _client(tmp_path, note_search=notes, db_path=browse_db)
+
+    response = client.get(
+        "/notes/search", params={"q": "compiler"}, headers=_headers(client, ALICE)
+    )
+
+    assert response.status_code == 503
+    assert "index" in response.json()["detail"]
+
+
+def test_the_flagged_notes_are_the_callers_own_manifest_rows(wiring):
+    """The committed manifest, filtered to the token's tenant so the tab can mark the payloads."""
+    response = wiring.client.get("/notes/flagged", headers=_headers(wiring.client, ALICE))
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"user_ids", "kinds"}
 
 
 def test_chat_streams_the_trace_events_as_sse(wiring):

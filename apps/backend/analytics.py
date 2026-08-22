@@ -76,7 +76,7 @@ from sqlglot import exp
 
 from db import DEFAULT_DB_PATH, QueryResult, execute_scoped
 from runtime import runtime
-from security import ALLOWED_TABLE, QueryRejected
+from security import ALLOWED_TABLE, QueryRejected, require_allowed
 
 _DIALECT = "sqlite"
 
@@ -174,11 +174,11 @@ def get_stats(
     db_path: Path = DEFAULT_DB_PATH,
 ) -> QueryResult:
     """One aggregate over the tenant's rows, optionally per group, from a fixed query template."""
-    _require(metric, METRICS, "metric")
-    _require(column, NUMERIC_COLUMNS, "column")
+    require_allowed(metric, METRICS, "metric")
+    require_allowed(column, NUMERIC_COLUMNS, "column")
     if group_by is None:
         return execute_scoped(_stats_sql(metric, column, ()), tenant_id, db_path=db_path)
-    _require(group_by, GROUP_BY_COLUMNS, "group_by")
+    require_allowed(group_by, GROUP_BY_COLUMNS, "group_by")
     return execute_scoped(_stats_sql(metric, column, (group_by,)), tenant_id, db_path=db_path)
 
 
@@ -190,8 +190,8 @@ def detect_anomalies(
     db_path: Path = DEFAULT_DB_PATH,
 ) -> list[Anomaly]:
     """The tenant's rows lying beyond 1.5 x IQR from their own group's quartiles (Tukey fences)."""
-    _require(column, NUMERIC_COLUMNS, "column")
-    _require(group_by, GROUP_BY_COLUMNS, "group_by")
+    require_allowed(column, NUMERIC_COLUMNS, "column")
+    require_allowed(group_by, GROUP_BY_COLUMNS, "group_by")
     selections = (
         *(exp.column(name) for name in _IDENTITY_COLUMNS),
         _dimension(group_by),
@@ -216,8 +216,8 @@ def plot_data(
     db_path: Path = DEFAULT_DB_PATH,
 ) -> ChartSpec:
     """The ChartSpec for one chart, its values fetched here so no number passes through a model."""
-    _require(kind, CHART_KINDS, "kind")
-    _require(column, NUMERIC_COLUMNS, "column")
+    require_allowed(kind, CHART_KINDS, "kind")
+    require_allowed(column, NUMERIC_COLUMNS, "column")
     if kind == _HISTOGRAM:
         _refuse_unused(kind, metric=metric, group_by=group_by, series_by=series_by)
         return _histogram(column, tenant_id, bins, db_path)
@@ -242,14 +242,6 @@ def plot_data(
         y_label=f"{metric} {_label(column)}",
         data=[ChartPoint(x=str(group), y=float(value)) for group, value in result.rows],
     )
-
-
-def _require(value: object, allowed: frozenset[str], what: str) -> None:
-    """Refuse anything outside the allowlist, retryably, so the agent can name a valid value."""
-    if value not in allowed:
-        raise QueryRejected(
-            f"{what} must be one of {sorted(allowed)}, not {value!r}", retryable=True
-        )
 
 
 def _refuse_unused(kind: str, **arguments: object) -> None:
@@ -362,9 +354,9 @@ def _grouped_bar(
     metric: str, column: str, group_by: str, series_by: str, tenant_id: str, db_path: Path
 ) -> ChartSpec:
     """One aggregate over two allowlisted dimensions at once: a bar per series within each group."""
-    _require(metric, METRICS, "metric")
-    _require(group_by, GROUP_BY_COLUMNS, "group_by")
-    _require(series_by, GROUP_BY_COLUMNS, "series_by")
+    require_allowed(metric, METRICS, "metric")
+    require_allowed(group_by, GROUP_BY_COLUMNS, "group_by")
+    require_allowed(series_by, GROUP_BY_COLUMNS, "series_by")
     if series_by == group_by:
         raise QueryRejected(
             f"series_by must name a different dimension than group_by, not {series_by!r} twice",
@@ -403,7 +395,7 @@ def _scatter(column: str, tenant_id: str, db_path: Path) -> ChartSpec:
 
 def _box(column: str, group_by: str, tenant_id: str, db_path: Path) -> ChartSpec:
     """Each group's quartiles and whiskers: the spread detect_anomalies judges its outliers by."""
-    _require(group_by, GROUP_BY_COLUMNS, "group_by")
+    require_allowed(group_by, GROUP_BY_COLUMNS, "group_by")
     selections = (_dimension(group_by), exp.column(column))
     groups: dict[str, list[float]] = defaultdict(list)
     for group, value in _scan(selections, tenant_id, db_path):
