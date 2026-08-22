@@ -79,7 +79,7 @@ export type TraceItem = ReasoningItem | CallItem | OrphanItem;
  * may still carry the words the model got out before it. `failed` is a turn that never reached an
  * answer - the backend saying so in its terminal frame, or a stream this client could not read.
  * `replayed` is a turn read back from the server: how it ended is not stored, so it claims
- * nothing about it.
+ * nothing about it - which is also why a replayed turn's `grounded` stays null rather than false.
  */
 export type TurnPhase =
   | "streaming"
@@ -105,6 +105,7 @@ export interface Turn {
   phase: TurnPhase;
   model: string | null;
   usage: TurnUsage | null;
+  grounded: boolean | null;
   error: string | null;
 }
 
@@ -117,6 +118,7 @@ export function startTurn(question: string): Turn {
     phase: "streaming",
     model: null,
     usage: null,
+    grounded: null,
     error: null,
   };
 }
@@ -194,6 +196,7 @@ function done(turn: Turn, event: DoneEvent): Turn {
       outputTokens: event.output_tokens,
       durationS: event.duration_s,
     },
+    grounded: event.grounded,
     error: failed ? event.answer : turn.error,
   };
 }
