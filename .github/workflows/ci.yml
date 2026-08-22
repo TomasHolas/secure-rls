@@ -38,6 +38,10 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
+      # The eval harness end to end with a scripted model: no endpoint, no network (ADR 0004)
+      - name: Eval harness (mocked)
+        run: uv run python -m evals --mocked --out "$RUNNER_TEMP/evals-report.md"
+
   dataset:
     name: dataset (regenerate + diff)
     runs-on: ubuntu-latest

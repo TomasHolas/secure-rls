@@ -1,6 +1,6 @@
 # ADR 0004 — Testing and evaluation strategy: CI never needs a model
 
-Status: accepted (amended 2026-08-21: suite sizes fixed)
+Status: accepted (amended 2026-08-21: suite sizes fixed; both suites run per tenant)
 
 ## Context
 
@@ -37,6 +37,12 @@ floats matched at 1% relative tolerance; ~15 single-turn adversarial prompts
 persisting in conversation memory); plus retrieval attacks on `search_notes`
 and the poisoned-notes cases from the dataset manifest (ADRs 0008, 0010). The
 scored report is committed as markdown, regenerated per model.
+
+Both suites run against **every tenant** (amended): an isolation claim is a
+claim about each tenant's own session, and the correctness ground truth differs
+per tenant, so grading one tenant would prove one third of what is claimed. The
+run shares a single workspace - the CSV loaded once, the notes embedded once,
+one compiled graph per tenant - so the extra tenants cost model time only.
 
 ## Consequences
 

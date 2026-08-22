@@ -92,10 +92,11 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   chat with live trace (generated vs executed SQL side by side), conversation
   history sidebar, tenant badge, charts, transparent security-refusal and
   truncation states, cross-tenant isolation demo via login switch (ADR 0012).
-- `[ ]` **M5 — Evaluation harness.** `evals/`: ~25 correctness questions vs
-  pandas ground truth (1% tolerance) + ~15 single-turn and ~5 multi-turn
-  adversarial cases + retrieval/poisoned-notes attacks; committed scored
-  report (ADR 0004 as amended).
+- `[x]` **M5 — Evaluation harness.** `evals/`: 25 correctness questions vs
+  pandas ground truth (1% tolerance) + 20 single-turn and 5 multi-turn
+  adversarial cases + retrieval/poisoned-notes attacks, every suite run for
+  every tenant over the API's own bounded model client; `--mocked` mode for CI;
+  committed scored report at `evals/report.md` (ADR 0004 as amended).
 - `[ ]` **M6 — CI/CD + README.** GitHub Actions: CI (ruff, pytest, dataset
   regen diff, frontend build, mocked eval dry run, compose build) + CD (images
   to GHCR on main; `docker compose up` as the deployment — ADR 0013); README
@@ -124,8 +125,9 @@ cd apps/frontend && npm install && npm run dev   # http://localhost:3002
 cd apps/backend && uv run pytest -q
 cd apps/frontend && npm test      # vitest + jsdom: bricks, session, HTTP client
 
-# Eval harness (M5+; needs a live Ollama model):
-cd apps/backend && uv run python -m evals
+# Eval harness (M5+; live needs an Ollama model, --mocked and --dry-run need nothing):
+cd apps/backend && uv run python -m evals            # writes evals/report.md
+cd apps/backend && uv run python -m evals --mocked   # scripted model, network-free (what CI runs)
 
 # Model gate (M2+; needs a live Ollama model, --dry-run needs nothing):
 cd apps/backend && uv run python -m evals.model_gate --model <id>
@@ -149,7 +151,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Agent, tools, prompts, retry policy, memory, transcript replay | `apps/backend/agent.py` (`thread_messages` reads the checkpointer back; the API layer never parses checkpoints itself) |
 | Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`) |
 | Dataset generator | `apps/backend/scripts/generate_dataset.py` |
-| Eval harness | `apps/backend/evals/` |
+| Eval harness | `apps/backend/evals/` — `harness.py` owns the shared bricks (workspace, trace collection, leak check, markdown) that `correctness.py`, `adversarial.py` and `model_gate.py` all import |
 | Tests | `apps/backend/tests/` (pytest), `apps/frontend/src/**/*.test.tsx` (vitest) |
 | Tunable knob | `apps/backend/runtime.json` (typed view in `runtime.py`) — no magic values in code |
 | Frontend UI | `apps/frontend/src/` — compose the design bricks (catalogue: `src/components/README.md`); never hand-roll a table/pill/button |

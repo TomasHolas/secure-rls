@@ -9,3 +9,4 @@ dist/
 .DS_Store
 uv.lock.orig
 *.egg-info/
+apps/backend/evals/report-mocked.md
