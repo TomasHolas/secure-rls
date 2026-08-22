@@ -16,8 +16,9 @@ The allowlist, applied to model-generated SQL parsed in the sqlite dialect:
   in that reference's own scope; schema-qualified names and table functions are refused
 - at least one reference to employees, so an approved query always reads the scoped table
 - no forbidden function by name: loading extensions or reaching the filesystem
-- no bound parameter of any style, since layer 4a counts placeholders to prove the tenant
-  binding applied and a parameter the model wrote itself would shift that count
+- no bound parameter of any style unless the caller declared exactly how many it wrote, since
+  layer 4a counts placeholders to prove the tenant binding applied and a parameter the model
+  wrote itself would shift that count
 
 CTE shadowing: a CTE named employees is refused outright, even with an innocuous body.
 Layer 3 rewrites every employees reference into a tenant-filtered subquery, so both layers
@@ -40,6 +41,15 @@ A bare parameter is the one honest error found inside a query that parses: the m
 and the check runs last, after every terminal rule, so a hostile query that also carries a
 parameter stays terminal and buys no retry to probe with. Layer 4a still counts
 placeholders structurally as the fail-closed backstop.
+
+`parameters` is how a trusted template declares the placeholders it wrote itself (ADR 0002 as
+amended): a fixed shape built from an allowlist in `browse.py` or `analytics.py` binds its filter
+values rather than rendering them into SQL. It defaults to zero, which is the model's path and
+the rule above unchanged - generated SQL declares nothing, so any parameter in it is still
+refused. Above zero the rule inverts into an exact count of anonymous `?` placeholders: a named
+or typed parameter is refused outright, and a count that disagrees with the declaration is a
+terminal violation rather than an honest error, because only this repo's own code can declare
+one and a mismatch there is a bug, not a model mistake.
 """
 
 import sqlglot
@@ -84,6 +94,8 @@ _NON_SELECT_ROOTS = (*_STATEMENT_NODES, exp.SetOperation)
 
 # Every parameter style the sqlite dialect parses: ? and :name are Placeholder, @name is Parameter.
 _PARAMETER_NODES = (exp.Placeholder, exp.Parameter)
+# What an anonymous placeholder reports as its name once parsed back out of rendered SQL.
+_ANONYMOUS = "?"
 
 
 class QueryRejected(Exception):
@@ -95,15 +107,37 @@ class QueryRejected(Exception):
         self.retryable = retryable
 
 
-def validate_sql(sql: str) -> exp.Select:
-    """Return the approved SELECT AST for sql, or raise QueryRejected."""
+def require_allowed(
+    value: object, allowed: frozenset[str], what: str, *, retryable: bool = True
+) -> None:
+    """Refuse anything outside an allowlist, so a name a template will use is never free text.
+
+    The one guard both trusted-template modules use before they put a caller's word anywhere
+    near a query: `analytics.py` for a metric, a numeric column or a grouping dimension, and
+    `browse.py` for a sort column or its direction. Retryable by default, because the caller is
+    usually the model and naming a valid value is an honest correction (ADR 0011); the browse
+    layer refuses terminally, because there is no model to correct a query string.
+    """
+    if value not in allowed:
+        raise QueryRejected(
+            f"{what} must be one of {sorted(allowed)}, not {value!r}", retryable=retryable
+        )
+
+
+def validate_sql(sql: str, *, parameters: int = 0) -> exp.Select:
+    """Return the approved SELECT AST for sql, or raise QueryRejected.
+
+    `parameters` is the number of anonymous placeholders the caller declares it wrote into the
+    query itself; zero - the default and the model's path - refuses every parameter (ADR 0002 as
+    amended).
+    """
     try:
-        return _validate(sql)
+        return _validate(sql, parameters)
     except RecursionError as error:
         raise QueryRejected("query is nested too deeply to validate", retryable=False) from error
 
 
-def _validate(sql: str) -> exp.Select:
+def _validate(sql: str, parameters: int) -> exp.Select:
     """Apply the allowlist to sql and return the approved SELECT AST."""
     statements = _parse(sql)
     if not statements:
@@ -122,7 +156,7 @@ def _validate(sql: str) -> exp.Select:
     _reject_nested_statements(root)
     _reject_forbidden_functions(root)
     _check_table_references(root)
-    _reject_parameters(root)
+    _reject_parameters(root, parameters)
     return root
 
 
@@ -156,11 +190,25 @@ def _reject_forbidden_functions(root: exp.Select) -> None:
                 raise QueryRejected(f"function {name} is not allowed", retryable=False)
 
 
-def _reject_parameters(root: exp.Select) -> None:
-    """Refuse a bound parameter the model wrote, as a retryable nudge to inline the value."""
-    if next(root.find_all(*_PARAMETER_NODES), None) is not None:
+def _reject_parameters(root: exp.Select, declared: int) -> None:
+    """Refuse any parameter the caller did not declare, and any style but an anonymous one."""
+    found = list(root.find_all(*_PARAMETER_NODES))
+    if declared == 0:
+        if found:
+            raise QueryRejected(
+                "parameters are not supported - write literal values inline", retryable=True
+            )
+        return
+    anonymous = [
+        node
+        for node in found
+        if isinstance(node, exp.Placeholder) and node.name == _ANONYMOUS
+    ]
+    if len(found) != declared or len(anonymous) != declared:
         raise QueryRejected(
-            "parameters are not supported - write literal values inline", retryable=True
+            f"the query must carry exactly {declared} anonymous parameters, "
+            f"got {len(found)} of which {len(anonymous)} are anonymous",
+            retryable=False,
         )
 
 

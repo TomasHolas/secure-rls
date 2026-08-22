@@ -127,14 +127,16 @@ def tuned(monkeypatch):
 
 def _stand_down_validation(monkeypatch):
     """Hand the executor raw SQL as though layers 2, 3 and 4a had all approved it."""
-    monkeypatch.setattr(db, "validate_sql", lambda sql: sqlglot.parse_one(sql, dialect="sqlite"))
-    monkeypatch.setattr(db, "_scope_to_tenant", lambda select, tenant_id: (select, ()))
-    monkeypatch.setattr(db, "_verify_scope_applied", lambda scoped, params, tenant_id: None)
+    monkeypatch.setattr(
+        db, "validate_sql", lambda sql, **_: sqlglot.parse_one(sql, dialect="sqlite")
+    )
+    monkeypatch.setattr(db, "_scope_to_tenant", lambda select, tenant_id, filters: (select, ()))
+    monkeypatch.setattr(db, "_verify_scope_applied", lambda *_: None)
 
 
 def _stand_down_structural_check(monkeypatch):
     """Let a rewrite through unverified, leaving only the egress row check (layer 4b) standing."""
-    monkeypatch.setattr(db, "_verify_scope_applied", lambda scoped, params, tenant_id: None)
+    monkeypatch.setattr(db, "_verify_scope_applied", lambda *_: None)
 
 
 def test_init_db_loads_every_row_under_the_declared_column_affinities(execute):
@@ -275,7 +277,7 @@ def test_a_query_the_validator_refuses_never_reaches_the_database(execute, db_pa
 
 def test_the_structural_check_refuses_a_query_the_rewrite_skipped(monkeypatch, execute, db_path):
     """Layer 4a: with layer 3 stood down, nothing unscoped is allowed to run at all."""
-    monkeypatch.setattr(db, "_scope_to_tenant", lambda select, tenant_id: (select, ()))
+    monkeypatch.setattr(db, "_scope_to_tenant", lambda select, tenant_id, filters: (select, ()))
     with pytest.raises(SecurityViolation) as caught:
         execute("SELECT * FROM employees")
     assert caught.value.kind == "rewrite_not_applied"
@@ -289,7 +291,7 @@ def test_an_interpolated_tenant_filter_is_refused_even_though_it_scopes_correctl
 ):
     """Layer 4a demands a bound parameter: a literal that happens to be right is still refused."""
 
-    def interpolate(select, tenant_id):
+    def interpolate(select, tenant_id, filters):
         sql = f"SELECT * FROM employees WHERE employees.tenant_id = '{tenant_id}'"
         return sqlglot.parse_one(sql, dialect="sqlite"), ()
 
@@ -305,7 +307,9 @@ def test_a_placeholder_in_the_generated_sql_is_refused(monkeypatch, execute):
     Layer 2 rejects a placeholder first as a retryable honest error (issue #45); standing that
     one rule down leaves layers 3 and 4a to prove the structural backstop still fails closed.
     """
-    monkeypatch.setattr(db, "validate_sql", lambda sql: sqlglot.parse_one(sql, dialect="sqlite"))
+    monkeypatch.setattr(
+        db, "validate_sql", lambda sql, **_: sqlglot.parse_one(sql, dialect="sqlite")
+    )
     with pytest.raises(SecurityViolation) as caught:
         execute("SELECT * FROM employees WHERE name = ?")
     assert caught.value.kind == "rewrite_not_applied"
@@ -321,7 +325,9 @@ def test_a_placeholder_is_refused_as_retryable_before_it_reaches_the_backstop(ex
 
 def test_the_structural_check_refuses_a_rewrite_bound_to_another_tenant(monkeypatch, execute):
     scope = db._scope_to_tenant
-    monkeypatch.setattr(db, "_scope_to_tenant", lambda select, tenant_id: scope(select, BETA))
+    monkeypatch.setattr(
+        db, "_scope_to_tenant", lambda select, tenant_id, filters: scope(select, BETA, filters)
+    )
     with pytest.raises(SecurityViolation) as caught:
         execute("SELECT * FROM employees", ACME)
     assert caught.value.kind == "rewrite_not_applied"
@@ -330,7 +336,9 @@ def test_the_structural_check_refuses_a_rewrite_bound_to_another_tenant(monkeypa
 def test_the_egress_check_refuses_rows_of_another_tenant(monkeypatch, execute, db_path):
     """Layer 4b: with layers 3 and 4a stood down, a foreign row still never reaches the caller."""
     scope = db._scope_to_tenant
-    monkeypatch.setattr(db, "_scope_to_tenant", lambda select, tenant_id: scope(select, BETA))
+    monkeypatch.setattr(
+        db, "_scope_to_tenant", lambda select, tenant_id, filters: scope(select, BETA, filters)
+    )
     _stand_down_structural_check(monkeypatch)
     with pytest.raises(SecurityViolation) as caught:
         execute("SELECT * FROM employees", ACME)
@@ -344,8 +352,8 @@ def test_the_egress_check_refuses_rows_of_another_tenant(monkeypatch, execute, d
 def test_the_egress_check_reads_every_tenant_id_column_a_join_exposes(monkeypatch, execute):
     scope = db._scope_to_tenant
 
-    def scope_second_reference_to_beta(select, tenant_id):
-        scoped, params = scope(select, ACME)
+    def scope_second_reference_to_beta(select, tenant_id, filters):
+        scoped, params = scope(select, ACME, filters)
         assert params == (ACME, ACME)
         return scoped, (ACME, BETA)
 

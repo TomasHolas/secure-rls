@@ -59,6 +59,31 @@ on the language model to propagate tenant information."
   `mode=ro` at file open; layer 2's PRAGMA block is what makes `query_only`
   meaningful as a second belt.
 
+## Declared filter parameters (amended for ADR 0014)
+
+Layer 2 refuses a bound parameter in model-generated SQL and layer 4a counts
+placeholders to prove the tenant binding applied, so originally no query could
+carry a parameter of its own. A trusted template — `analytics.py`, `browse.py` —
+needs to bind values a reader typed, per the OWASP parameterization rule below,
+so both layers now take a **declared count**: `execute_scoped(..., params=(...))`
+passes it to `validate_sql(sql, parameters=n)`, which then demands exactly `n`
+anonymous `?` placeholders and refuses every named or typed style, and layer 4a
+demands `len(scoping) + n` placeholders bound to the session tenant followed by
+exactly those values.
+
+`params=()` is the default and is the model's path unchanged: generated SQL
+declares nothing, so any parameter in it is still refused, and a placeholder the
+model smuggles past layer 2 still trips layer 4a because the count no longer
+agrees.
+
+The binding order is a property of the grammar rather than an assumption. SQL
+renders a SELECT's FROM before its WHERE, so the scoping placeholders inside the
+FROM subqueries bind before the caller's; layer 4a proves the arrangement it
+relies on instead of trusting it, by requiring that a template which binds
+anything have exactly one `employees` reference and that its placeholders sit in
+the root WHERE and nowhere else — never in the projection, which would render
+ahead of FROM and silently take the tenant's value.
+
 ## Consequences
 
 - Each layer is a separately testable brick; the adversarial suite attacks each
