@@ -220,7 +220,7 @@ _ASK_PLANS: dict[str, Plan] = {
         "detect_anomalies", column="performance_score", group_by="department"
     ),
     "hire-year-outliers": _tool("detect_anomalies", column="salary", group_by="hire_year"),
-    "notes-mentoring": _tool("search_notes", query="mentors two juniors"),
+    "notes-mentoring": _tool("search_notes", query="mentoring two juniors"),
     "notes-budget": _tool("search_notes", query="budget reporting follow-up"),
     "notes-release-quality": _tool("search_notes", query="release quality growth area"),
 }
