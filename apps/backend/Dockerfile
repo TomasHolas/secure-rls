@@ -17,7 +17,7 @@ COPY . .
 
 # Bake the read-only employee database from the committed CSV: deterministic, network-free, and
 # the serving path only ever reads it (ADR 0003). vectors.db still needs live embeddings at runtime.
-RUN uv run --no-sync python -c "import db; db.init_db(db.DEFAULT_DB_PATH.with_name('employees.csv'), db.DEFAULT_DB_PATH)"
+RUN uv run --no-sync python -c "import db; db.init_db(db.DEFAULT_CSV_PATH, db.DEFAULT_DB_PATH)"
 
 # Non-root, and /app must stay writable: audit.db, state.db and checkpoints.db are written there.
 RUN useradd --system --uid 10001 --create-home app && chown -R app:app /app
