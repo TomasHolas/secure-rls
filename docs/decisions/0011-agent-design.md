@@ -91,6 +91,74 @@ Precedence when more than one thing ends a turn: a security refusal, then a
 spent retry budget, then a bound. A refusal and a give-up say more about the
 turn than "it ran out of room" does.
 
+### Grounded answers (added after issue #94)
+
+**This section is answer-quality machinery, not enforcement.** Nothing in it is
+a security boundary and none of it protects a tenant: whatever the model recalls
+was already this tenant's own scoped data, and the four RLS layers of ADR 0002
+are what keep tenants apart, exactly as before. What it protects is the one
+claim a data analyst lives on — that a number it states was read from the
+database. It is filed here, beside the retry policy and the bounds, because like
+them it is a rule the graph applies to the model's behavior.
+
+The M5 run and the model gate both caught the same failure: a turn that answers
+with no tool call at all. beta's `headcount-bar-chart` ask ended `ok` after 40.9
+s with `tools=none` and the expected headcounts simply absent, and the gate's
+multi-turn follow-up ("And how does that compare with Sales?") answered with a
+Sales average it never fetched — correct to the cent, because the previous turn's
+grouped `get_stats` result was still in context. Correct and ungrounded is the
+worst shape this failure takes: the reader cannot tell it from a computed answer,
+and the next one will not be correct.
+
+Two parts, one prompt rule and one deterministic step:
+
+- **The prompt states the rule** (two lines, at the top of "How to work"): every
+  claim about the data — a count, a total, an average, a name, a chart — comes
+  from a tool call in *this* turn, and a figure from earlier in the conversation
+  is not evidence even when it is correct, so a follow-up re-queries rather than
+  repeating it. Prompt text is guidance and never a boundary (ADR 0002); this
+  line exists because it is the cheapest thing that moves the model, not because
+  it is relied on.
+- **One grounding nudge per turn, in the graph.** While a turn has spent nothing,
+  `reason` holds the model's prose instead of streaming it. If that first model
+  turn asks for no tool, its words are dropped, one tool round is charged, and
+  `reason` runs again with the grounding instruction appended to the history the
+  model is shown. What was going to be said is dropped rather than added to,
+  because the alternative is streaming two answers at the reader and asking them
+  which one counts.
+
+Four properties make it defensible rather than a hack:
+
+- **It is bounded by the budget it spends.** The nudge is only offered while the
+  turn has spent no tool round, and taking it charges one — so it can fire at
+  most once, a nudged turn reaches `max_tool_iterations` one round earlier than
+  an unnudged one, and no new knob was needed. The derived recursion limit still
+  trips after the iteration cap, because a nudge costs one super-step where a
+  tool round costs four.
+- **Nothing about it is stored.** The instruction is appended to the message list
+  handed to one model call, never to the graph's state, so it is not
+  checkpointed, cannot reach a later turn's context, and cannot appear in a
+  replayed transcript. The dropped prose is not stored either: the turn's history
+  keeps the answer it did give.
+- **The termination invariants of ADR 0012 hold unchanged.** A nudged model turn
+  announced no tool call, so nothing is left unsettled, and the turn still ends
+  in exactly one `done` frame.
+- **A turn that stays ungrounded says so.** `done` carries `grounded` — whether
+  any tool of this turn returned a result the answer could rest on. The SPA
+  renders `ok` plus not-grounded as a warn pill ("answered without querying the
+  data"), and the eval report scores it per ask and per tenant, so a regression
+  is a percentage rather than a footnote. Reporting it is the honest half of the
+  design: the nudge is one attempt, not a guarantee, and a model that will not
+  call a tool is shown as such instead of being dressed up.
+
+The cost is real and worth stating out loud: a turn whose answer legitimately
+needs no data — a greeting, "what can you do?" — is nudged once too, so it costs
+one extra short generation, and the first model turn's words reach the reader in
+one piece rather than token by token. Reasoning still streams live throughout,
+which is what keeps the trace moving while the words wait, and in an analytical
+turn the first model call ends in a tool call, where the held prose is a
+sentence of preamble or nothing at all.
+
 ### Multi-turn memory
 
 LangGraph checkpointer keyed by a `thread_id` derived server-side from the
@@ -169,6 +237,10 @@ renderer.
 - Structured tools (`get_stats`, `plot`, `detect_anomalies`) answer most demo
   questions with no generated SQL at all; `query_db` remains for free-form
   analytics — a defensible two-lane design.
+- Every turn either rests on a tool result of its own or says that it does not,
+  and the eval report carries that number per tenant. The price is one extra
+  model call on a turn that needed no data, and one tool round fewer for a turn
+  that was nudged.
 - More code than the prebuilt agent; accepted for demonstrability.
 
 ## Alternatives
@@ -187,6 +259,26 @@ renderer.
   it raises rather than terminating cleanly, it counts super-steps rather than
   tool rounds (so its meaning shifts whenever the graph gains a node), and it is
   not a `runtime.json` knob.
+- **The prompt rule alone, no mechanism** (issue #94's minimum) — rejected: the
+  prompt already told the model to use its tools and it answered from context
+  anyway, twice, on two different suites. A rule with nothing behind it is how
+  this failure got into the committed report.
+- **Marking an ungrounded turn without re-asking** — rejected as the whole
+  answer, kept as half of it. Marking makes the failure visible; it still serves
+  the ungrounded number, and the two known asks would still fail. The nudge is
+  what makes them pass, and `grounded` is what admits when it did not work.
+- **Nudging only when the answer contains a figure no tool produced** — the more
+  targeted trigger, rejected on two counts: it is a heuristic (it reads "about 92
+  thousand" as figureless and a date as a figure), and it misses the exact shape
+  beta's chart ask failed in, an answer that claims a chart nothing drew. "No
+  tool call at all" needs no interpretation and covers both.
+- **Letting the ungrounded answer stream and appending the nudged one** —
+  rejected: the reader would watch two answers arrive with no way to tell which
+  the agent stands behind, and the discarded one is the one we do not want read.
+  Holding the first model turn's prose is the cost of not doing that.
+- **A second nudge, or a nudge loop** — rejected: it is a model that will not
+  call a tool, and asking a third time spends the turn's budget to make the same
+  discovery. One attempt, then say so.
 - **Model passes data to `plot`** — rejected: every charted number would be an
   LLM transcription, a correctness and trust regression.
 - **Z-score anomalies** — rejected for skewed salaries (normality assumption);
@@ -216,5 +308,17 @@ renderer.
 - OWASP Error Handling Cheat Sheet (generic messages outward, detail to the log
   only) —
   https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html
+- OWASP Top 10 for LLM Applications 2025, LLM09:2025 Misinformation (the entry
+  that absorbed the former Overreliance category) — its first listed mitigation
+  is grounding a response in "relevant and verified information from trusted
+  external databases during response generation", and two more are human
+  cross-verification and communicating the limits of reliability to the user,
+  including "clearly labeling AI-generated content". That is the shape of what
+  the nudge and the `grounded` pill do. The specific mechanism here (hold the
+  prose, re-ask once, charge a tool round) is our own engineering judgment, not
+  a published pattern —
+  https://genai.owasp.org/llmrisk/llm092025-misinformation/ (also in the
+  official list PDF, LLM09:2025, pp. 32-34:
+  https://owasp.org/www-project-top-10-for-large-language-model-applications/assets/PDF/OWASP-Top-10-for-LLMs-v2025.pdf)
 - ADRs 0002 (layers, audit), 0004 (evals), 0007 (result-size), 0008 (dataset
   distributions), 0010 (retrieval) in this repo
