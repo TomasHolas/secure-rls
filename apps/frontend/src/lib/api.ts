@@ -76,6 +76,129 @@ export interface ChatRequest {
   model?: string;
 }
 
+/**
+ * One page of the caller's own rows, as `GET /records` and `GET /notes` serve it (ADR 0014).
+ * `total` is how many rows match the filters at all, counted server-side over the same scoped
+ * query, and `page_size` is the size actually used — the server clamps a page larger than its
+ * row cap and says so here. `executed_sql` is the tenant-scoped statement that produced the
+ * page, which is the same evidence the chat trace shows for a tool call.
+ */
+export interface BrowsePage {
+  columns: string[];
+  rows: unknown[][];
+  total: number;
+  page: number;
+  page_size: number;
+  sort: string;
+  direction: string;
+  executed_sql: string;
+}
+
+/** The filters, sort and window a listing accepts; anything else is not a parameter it reads. */
+export interface BrowseQuery {
+  name?: string;
+  department?: string;
+  salary_min?: string;
+  salary_max?: string;
+  score_min?: string;
+  score_max?: string;
+  hired_from?: string;
+  hired_to?: string;
+  sort?: string;
+  direction?: string;
+  page?: number;
+  page_size?: number;
+}
+
+/** One department of the caller's tenant and its headcount: the filter's only options. */
+export interface DepartmentCount {
+  department: string;
+  employees: number;
+}
+
+/** One retrieved note with its distance — the agent's own retrieval result (ADR 0010). */
+export interface NoteHit {
+  user_id: number;
+  name: string;
+  note: string;
+  distance: number;
+}
+
+/** `GET /notes/search`: the query, how many hits it asked for, and what came back scored. */
+export interface NoteHits {
+  query: string;
+  k: number;
+  hits: NoteHit[];
+}
+
+/** Which of the caller's rows the committed poison manifest plants a payload in, and of what kind. */
+export interface FlaggedNotes {
+  user_ids: number[];
+  kinds: Record<string, string>;
+}
+
+/** GET /records: one filtered, sorted page of the caller's own employee rows (ADR 0014). */
+export async function browseRecords(query: BrowseQuery): Promise<BrowsePage> {
+  return browse("/records", query);
+}
+
+/** GET /notes: one page of the caller's note corpus, filtered and sorted the same way. */
+export async function browseNotes(query: BrowseQuery): Promise<BrowsePage> {
+  return browse("/notes", query);
+}
+
+async function browse(path: string, query: BrowseQuery): Promise<BrowsePage> {
+  const response = await apiFetch(`${path}${queryString(query)}`);
+  if (!response.ok) throw new ApiError(response.status, await detail(response, "The rows could not be loaded."));
+  return (await response.json()) as BrowsePage;
+}
+
+/** GET /records/departments: the caller's departments and headcounts, for the filter's options. */
+export async function listDepartments(): Promise<DepartmentCount[]> {
+  const response = await apiFetch("/records/departments");
+  if (!response.ok) throw new ApiError(response.status, "The department list is unavailable.");
+  const body = (await response.json()) as unknown;
+  return Array.isArray(body) ? (body as DepartmentCount[]) : [];
+}
+
+/** GET /notes/search: the same retrieval the agent's search_notes tool runs, scored. */
+export async function searchNotes(query: string, k?: number): Promise<NoteHits> {
+  const response = await apiFetch(`/notes/search${queryString({ q: query, k })}`);
+  if (!response.ok) throw new ApiError(response.status, await detail(response, "The search failed. Try again."));
+  return (await response.json()) as NoteHits;
+}
+
+/** GET /notes/flagged: the manifest-planted rows of this tenant, so the corpus marks them. */
+export async function listFlaggedNotes(): Promise<FlaggedNotes> {
+  const response = await apiFetch("/notes/flagged");
+  if (!response.ok) throw new ApiError(response.status, "The flagged notes are unavailable.");
+  return (await response.json()) as FlaggedNotes;
+}
+
+/** The query string of a listing: a blank or absent value is not a filter, so it is left out. */
+function queryString(query: object): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query as Record<string, unknown>)) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
+  const rendered = params.toString();
+  return rendered ? `?${rendered}` : "";
+}
+
+/**
+ * The server's own reason for a refusal, when it gave one. A browse is refused by an allowlist
+ * — a sort it does not have, a date that is not one — and that reason is about the request the
+ * reader made, so repeating it verbatim is more honest than a generic sentence.
+ */
+async function detail(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await response.json()) as { detail?: unknown };
+    return isString(body.detail) ? body.detail : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 /** POST /login. Returns the raw JWT; throws ApiError(401) on bad credentials. */
 export async function login(username: string, password: string): Promise<string> {
   const response = await fetch(`${API_BASE_URL}/login`, {
