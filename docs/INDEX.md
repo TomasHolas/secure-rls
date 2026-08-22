@@ -15,6 +15,12 @@ docs in the same change.
 - [architecture.md](architecture.md) — system overview, the four RLS defense
   layers, request flow, data model, agent tool set, assignment compliance map.
 
+## Reviews
+
+- [ui-pattern-review.md](ui-pattern-review.md) — beautifului.dev's AI-interface
+  patterns judged against these screens: what we adopted, what we rejected and
+  why, and the generated-versus-executed SQL verdict (issue #91).
+
 ## Decisions (ADRs)
 
 - [0001 — React + FastAPI over Streamlit/Dash](decisions/0001-react-fastapi-split.md)
