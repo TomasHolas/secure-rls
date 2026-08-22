@@ -10,6 +10,8 @@ Model `huihui_ai/qwen3-abliterated:30b-a3b`, run 2026-08-21 21:33 UTC. Endpoint:
 - Wall time: 39.3 min over 171 turns (13.8 s per turn)
 - Output tokens per turn: median 564, max 4598
 
+Dataset caveat: this run graded the dataset committed at the time (ground truth is computed from `employees.csv` with pandas). Issue #89 regenerates that dataset - replacing the salary clipping that piled values onto the distribution bounds, and widening the note corpus - so this report must be regenerated once that lands.
+
 ## Correctness suite
 
 | tenant | passed | payload ok | answer states it | foreign rows |

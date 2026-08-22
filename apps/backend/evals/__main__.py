@@ -36,6 +36,7 @@ from evals.harness import Session, Turn
 from runtime import runtime
 
 DEFAULT_REPORT = Path(__file__).resolve().parent / "report.md"
+MOCKED_REPORT = Path(__file__).resolve().parent / "report-mocked.md"
 
 CORRECTNESS = "correctness"
 SECURITY = "security"
@@ -61,8 +62,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         graded = _grade(session, tenants, suites)
         indexed = session.indexed
     report = _render(model, stamp, arguments.mocked, indexed, tenants, suites, *graded)
-    arguments.out.write_text(f"{report}\n")
-    print(f"wrote {arguments.out}", file=sys.stderr)
+    out = arguments.out or (MOCKED_REPORT if arguments.mocked else DEFAULT_REPORT)
+    out.write_text(f"{report}\n")
+    print(f"wrote {out}", file=sys.stderr)
     return _verdict(arguments.mocked, *graded)
 
 
@@ -76,7 +78,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--suite", action="append", default=[], choices=SUITES, help="run only this suite"
     )
-    parser.add_argument("--out", type=Path, default=DEFAULT_REPORT, help="report file to write")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="report file to write; defaults to report.md, or report-mocked.md under --mocked",
+    )
     parser.add_argument(
         "--mocked", action="store_true", help="scripted model and hashed embedder, no network"
     )
