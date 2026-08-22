@@ -284,8 +284,29 @@ uv run python -m evals.model_gate --probe adversarial-forced-sql
 The single-probe form is the demo-safe one: it takes seconds instead of minutes
 and it is the probe that ends `blocked`.
 
-<!-- OWNER TODO: once the M5 harness (#29) lands, add its report here alongside
-     gate-results.md and decide which of the two you open on the call. -->
+The fuller harness has also landed and committed its scorecard at
+`apps/backend/evals/report.md` — 171 live turns across all three tenants,
+correctness 74/75, security 75/75, **zero leaks**. That file is the one to open
+on the call: the gate answers "why this model", the report answers "does the
+isolation hold", and the second question is the one being evaluated.
+
+Two rows in it are worth volunteering before anyone finds them, because both make
+the engineering look better rather than worse:
+
+- the single correctness failure is a turn that answered **without calling a
+  tool** — a grounding defect (issue #94), not a leak;
+- the single `cut_short` turn is an injection prompt hitting the 120-second
+  per-turn deadline — the bound that exists *because* this harness caught the
+  same prompt generating for ~35 minutes with zero tool calls. Unbounded
+  consumption, never an isolation failure.
+
+```bash
+uv run python -m evals --dry-run     # every graded ask, no endpoint needed
+uv run python -m evals --mocked      # network-free, ~seconds, safe to run live
+```
+
+The `--mocked` form is the demo-safe one if someone asks to see the harness
+actually execute.
 
 ## Code deep dive — suggested order
 
