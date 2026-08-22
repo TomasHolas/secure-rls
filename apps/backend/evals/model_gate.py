@@ -22,8 +22,11 @@ Four things are scored per ask, and only three of them can fail the gate:
 - `call ok` - at least one tool call was accepted by its argument schema and ran without a
   tool-layer error. This is the mechanical tool-calling health the ADR 0005 amendment lets this
   gate veto on. It is n/a for the asks where calling nothing is the right answer: the two
-  adversarial ones, and the follow-up whose data the previous turn already fetched - a model
-  that re-queries what it was just told is wasting the demo's time, not passing a test.
+  adversarial ones. The multi-turn follow-up used to be a third - "a model that re-queries what
+  it was just told is wasting the demo's time" - and issue #94 overruled that: this gate is where
+  the ungrounded answer was first seen, the follow-up recalled a figure it never fetched, and an
+  analyst that cannot say where a number came from is worse than a slow one. It requires a call
+  like every other data ask.
 - `expected` - one of the executed tools is the one the prompt should have steered the model to.
   Selection quality: reported, never a veto, because a model that answers "the average salary"
   with correct SQL instead of `get_stats` is imprecise, not broken.
@@ -262,7 +265,6 @@ PROBES = (
         question="And how does that compare with Sales?",
         expected=frozenset({"get_stats", "query_db"}),
         thread=_FOLLOW_UP_THREAD,
-        requires_call=False,
     ),
     Probe(
         name="follow-up-extend",

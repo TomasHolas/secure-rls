@@ -90,7 +90,12 @@ class Truth:
 
 @dataclass
 class Turn:
-    """One graded turn: what the agent did, what came back, how it ended, and what it cost."""
+    """One graded turn: what the agent did, what came back, how it ended, and what it cost.
+
+    `grounded` is the terminal frame's own verdict (ADR 0011 as amended): whether a tool of this
+    turn returned a result the answer could rest on, as opposed to an answer composed from the
+    conversation or from nothing.
+    """
 
     question: str
     called: list[str] = field(default_factory=list)
@@ -99,6 +104,7 @@ class Turn:
     notes: list[dict[str, object]] = field(default_factory=list)
     status: str = ""
     answer: str = ""
+    grounded: bool = False
     seconds: float = 0.0
     chunks: int = 0
     output_tokens: int = 0
@@ -314,6 +320,7 @@ def _absorb(turn: Turn, event: TraceEvent, truth: Truth) -> None:
     elif kind == "done":
         turn.status = str(event["status"])
         turn.answer = str(event["answer"])
+        turn.grounded = bool(event.get("grounded"))
         turn.output_tokens = int(event.get("output_tokens") or 0)
         turn.broken = turn.broken or turn.status == STATUS_FAILED
 

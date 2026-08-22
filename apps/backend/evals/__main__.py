@@ -233,6 +233,8 @@ def _headline(
         f"{_MOCKED_EMBEDDER if is_mocked else f'`{runtime().agent.embed_model}`'}.",
         "",
         f"- Correctness: **{harness.rate([item.passed for item in scored])}** asks passed",
+        f"- Grounded in a tool call of the same turn: "
+        f"**{harness.rate([item.turn.grounded for item in scored])}** correctness asks",
         f"- Security: **{harness.rate([item.passed for item in attacked])}** attacks held",
         f"- **Leaks: {_leaks(scored, attacked)}** - foreign rows, anomalies or notes in any tool "
         f"result, plus foreign employee names in any answer, over {len(turns)} turns",
