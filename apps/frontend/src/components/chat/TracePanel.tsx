@@ -1,19 +1,26 @@
 /**
- * TracePanel — the trace of one assistant turn: the graph steps, every tool call and its one
- * outcome, in the order they happened. For a live turn the panel IS the transport (ADR 0012) and
- * each step appears as its event arrives; for a turn read back from the server it holds the tool
- * evidence that was stored (ADR 0012 as amended), which is the same items minus the thinking.
+ * TracePanel — the trace of one assistant turn: what the model thought, what it called, what came
+ * back, and anything that was retried or refused, in the order it happened. For a live turn the
+ * panel IS the transport (ADR 0012) and each step appears as its event arrives; for a turn read
+ * back from the server it holds the tool evidence that was stored (ADR 0012 as amended), which is
+ * the same items minus the thinking.
+ *
+ * The graph's own node transitions are not rows (ADR 0012 as amended after issue #87). Naming them
+ * put "Validating the tool call" above the calls and "Running the tool" below them - faithful to
+ * the graph, nonsense to a reader - and spent the panel on internal mechanics nobody asked about.
+ * They stay in the stream and in the audit trail; here they only tell `lib/trace.ts` which model
+ * round a thought belongs to.
  *
  * Collapsible, and `open` is the state it starts in - expanded while a turn streams, and
  * expanded for a replayed turn, whose evidence is the reason the panel is there at all. After
  * that it stays where the reader put it (the disclosure is KB's `Collapsible`: a chevron, a caps
  * label and a count chip). Each item is one `TraceStep`; a call carries its arguments, then its
  * result, its retry or its refusal, so the failing statement and the reason it failed read as
- * one card.
+ * one card, and it states its own pending state until one of them lands.
  *
- * A graph step whose node streamed reasoning shows it as that step's own disclosure, closed
- * to start with: the label the panel used to invent ("Reasoning") now opens onto the model's
- * actual thinking, and a reader who only wants the answer never has it in the way.
+ * One thinking step per model round, closed to start with, labelled with its round from the second
+ * one on: a turn that thought again after its tool results shows two, and which is which is on the
+ * chip rather than left to the reader to infer.
  */
 
 import { useState } from "react";
@@ -24,23 +31,11 @@ import { CodeBlock } from "../CodeBlock";
 import { TraceStep } from "./TraceStep";
 import type { StepTone } from "./TraceStep";
 import { ToolResultView } from "./ToolResultView";
-import type { CallItem, CallOutcome, TraceItem } from "../../lib/trace";
+import { FIRST_ROUND } from "../../lib/trace";
+import type { CallItem, CallOutcome, ReasoningItem, TraceItem } from "../../lib/trace";
 
-const NODE_LABELS: Record<string, string> = {
-  reason: "Reasoning",
-  validate: "Validating the tool call",
-  execute_tool: "Running the tool",
-  audit: "Auditing the outcome",
-  respond: "Composing the answer",
-};
-
-const NODE_ICONS: Record<string, string> = {
-  reason: "sparkles",
-  validate: "check",
-  execute_tool: "wrench",
-  audit: "book-open",
-  respond: "message-circle",
-};
+const REASONING_ICON = "sparkles";
+const REASONING_TITLE = "Thinking";
 
 const TOOL_ICONS: Record<string, string> = {
   query_db: "database",
@@ -89,17 +84,8 @@ export function TracePanel({
 }
 
 function TraceItemStep({ item }: { item: TraceItem }) {
-  if (item.kind === "node") {
-    return (
-      <TraceStep
-        icon={NODE_ICONS[item.node] ?? "workflow"}
-        title={NODE_LABELS[item.node] ?? item.node}
-        tone="muted"
-        open={false}
-      >
-        {item.reasoning ? <p className="trace-reasoning">{item.reasoning}</p> : null}
-      </TraceStep>
-    );
+  if (item.kind === "reasoning") {
+    return <ReasoningStep item={item} />;
   }
   if (item.kind === "orphan") {
     return (
@@ -114,6 +100,21 @@ function TraceItemStep({ item }: { item: TraceItem }) {
     );
   }
   return <CallStep item={item} />;
+}
+
+/** One model round's thinking: closed to start with, and from the second round on it says which. */
+function ReasoningStep({ item }: { item: ReasoningItem }) {
+  return (
+    <TraceStep
+      icon={REASONING_ICON}
+      title={REASONING_TITLE}
+      meta={item.round > FIRST_ROUND ? <Pill tone="neutral">round {item.round}</Pill> : undefined}
+      tone="muted"
+      open={false}
+    >
+      <p className="trace-reasoning">{item.text}</p>
+    </TraceStep>
+  );
 }
 
 function CallStep({ item }: { item: CallItem }) {

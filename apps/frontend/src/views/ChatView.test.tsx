@@ -347,13 +347,14 @@ describe("the chat view", () => {
     expect(screen.getByText("91,000")).toBeTruthy();
   });
 
-  it("renders the graph steps and the calling tool in the trace", async () => {
-    await renderReady();
+  it("renders the thinking and the calling tool in the trace, never a graph node", async () => {
+    const { view } = await renderReady();
     ask();
 
-    expect(await screen.findByText("Reasoning")).toBeTruthy();
-    expect(screen.getByText("Validating the tool call")).toBeTruthy();
+    expect(await screen.findByText("Thinking")).toBeTruthy();
     expect(screen.getByText("query_db")).toBeTruthy();
+    expect(view.container.textContent).not.toContain("Validating the tool call");
+    expect(view.container.textContent).not.toContain("Composing the answer");
   });
 
   it("puts the trace above the answer it produced", async () => {
@@ -372,7 +373,7 @@ describe("the chat view", () => {
     ask();
     await screen.findByText("Engineering leads at 91000.");
 
-    const step = screen.getByRole("button", { name: /Reasoning/ });
+    const step = screen.getByRole("button", { name: /Thinking/ });
     expect(step.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText(THOUGHT)).toBeNull();
     expect(view.container.querySelector(".msg-text")?.textContent).not.toContain(THOUGHT);
@@ -383,10 +384,10 @@ describe("the chat view", () => {
     ask();
     await screen.findByText("Engineering leads at 91000.");
 
-    fireEvent.click(screen.getByRole("button", { name: /Reasoning/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
 
     expect(screen.getByText(THOUGHT)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Reasoning/ }).getAttribute("aria-expanded")).toBe(
+    expect(screen.getByRole("button", { name: /Thinking/ }).getAttribute("aria-expanded")).toBe(
       "true",
     );
   });

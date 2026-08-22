@@ -369,13 +369,16 @@ picker says so and the turn falls back to the server-side default.
 <TracePanel items={turn.items} streaming={false} open />
 ```
 
-The trace of one turn, folded by `lib/trace.ts`: graph steps, each tool call with its
+The trace of one turn, folded by `lib/trace.ts`: the model's thinking, each tool call with its
 arguments, and the **one** outcome that closes it — a result, a `retry` with its attempt
 counter and fed-back reason, or a `security_event` as a red blocked state naming the layer,
 kind and reason (ADR 0012). Collapsible; `open` is the state it starts in and defaults to
-`streaming`. A graph step that streamed reasoning shows the model's own thinking as that
-step's disclosure, closed to start with. An outcome whose call was never announced still
-renders, so nothing the backend said is dropped.
+`streaming`. **The graph's own node transitions are not rows** (ADR 0012 as amended after
+issue #87): they stay in the stream and the audit trail, and here they only say which model
+round a thought belongs to. One thinking step per model round, closed to start with, chipped
+with `round n` from the second round on; a round that streamed no thinking is no row at all.
+A call that has not settled says `running` on the card itself. An outcome whose call was never
+announced still renders, so nothing the backend said is dropped.
 The same panel renders a **replayed** turn (ADR 0012 as amended): `lib/trace.ts`'s
 `replayTurns` folds `GET /conversations/{id}`'s stored tool results into the same items, so a
 reopened thread shows its SQL pair, tables and charts through these bricks rather than a
@@ -386,7 +389,7 @@ reasoning, retry or step timing, because none of those are stored.
 
 ```tsx
 <TraceStep icon="database" title="query_db" meta={<Pill tone="ok">3 rows</Pill>} tone="blocked">
-<TraceStep icon="sparkles" title="Reasoning" tone="muted" open={false}>
+<TraceStep icon="sparkles" title="Thinking" tone="muted" open={false}>
 ```
 
 One entry on the trace rail: icon, title, right-aligned chips, body. `tone` is `default |

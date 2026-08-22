@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { applyEvent, failTurn, replayTurns, startTurn, tokensPerSecond } from "./trace";
-import type { CallItem, NodeItem, Turn } from "./trace";
+import type { CallItem, ReasoningItem, Turn } from "./trace";
 import type { ChartSpec } from "../components/charts";
 import type { DoneEvent, TraceEvent, TurnStatus } from "./sse";
 
@@ -28,14 +28,15 @@ function calls(turn: Turn): CallItem[] {
   return turn.items.filter((item): item is CallItem => item.kind === "call");
 }
 
-function nodes(turn: Turn): NodeItem[] {
-  return turn.items.filter((item): item is NodeItem => item.kind === "node");
+function thoughts(turn: Turn): ReasoningItem[] {
+  return turn.items.filter((item): item is ReasoningItem => item.kind === "reasoning");
 }
 
 describe("a turn that answers", () => {
   const turn = fold([
     { type: "node_start", node: "reason" },
-    { type: "node_start", node: "reason" },
+    { type: "reasoning", text: "an average " },
+    { type: "reasoning", text: "per group" },
     { type: "node_start", node: "validate" },
     { type: "tool_call", id: "c1", tool: "query_db", args: { sql: GENERATED } },
     { type: "node_start", node: "execute_tool" },
@@ -55,6 +56,7 @@ describe("a turn that answers", () => {
       },
     },
     { type: "node_start", node: "reason" },
+    { type: "reasoning", text: "the table answers it" },
     { type: "token", text: "Engineering " },
     { type: "token", text: "averages 91000." },
     { type: "node_start", node: "respond" },
@@ -71,14 +73,16 @@ describe("a turn that answers", () => {
     expect(turn.error).toBeNull();
   });
 
-  it("collapses consecutive entries into the same node but keeps a later re-entry", () => {
-    expect(nodes(turn).map((item) => item.node)).toEqual([
-      "reason",
-      "validate",
-      "execute_tool",
-      "reason",
-      "respond",
+  it("renders no step for a graph node: the items are the thinking and the call", () => {
+    expect(turn.items.map((item) => item.kind)).toEqual(["reasoning", "call", "reasoning"]);
+  });
+
+  it("groups each round's thinking into one step and numbers the rounds", () => {
+    expect(thoughts(turn)).toEqual([
+      { kind: "reasoning", round: 1, text: "an average per group" },
+      { kind: "reasoning", round: 2, text: "the table answers it" },
     ]);
+    expect(turn.round).toBe(2);
   });
 
   it("reports what the turn cost from its terminal frame", () => {
@@ -201,40 +205,46 @@ describe("streamed reasoning", () => {
     done("ok", "Engineering averages 91000."),
   ]);
 
-  it("accumulates on the step the model was in, not on the answer", () => {
-    expect(nodes(turn)[0]).toEqual({
-      kind: "node",
-      node: "reason",
-      reasoning: "the question asks for an average per group",
-    });
+  it("accumulates into one step of its round, not on the answer", () => {
+    expect(turn.items).toEqual([
+      { kind: "reasoning", round: 1, text: "the question asks for an average per group" },
+    ]);
     expect(turn.answer).toBe("Engineering averages 91000.");
   });
 
-  it("leaves a later step of the same turn with no reasoning of its own", () => {
-    expect(nodes(turn)[1]).toEqual({ kind: "node", node: "respond", reasoning: "" });
-  });
-
-  it("keeps reasoning of a second visit to a node on that visit's step", () => {
+  it("keeps a second round's thinking as its own step, numbered", () => {
     const twice = fold([
       { type: "node_start", node: "reason" },
       { type: "reasoning", text: "first thought" },
+      { type: "node_start", node: "validate" },
+      { type: "node_start", node: "execute_tool" },
       { type: "node_start", node: "audit" },
       { type: "node_start", node: "reason" },
       { type: "reasoning", text: "second thought" },
     ]);
 
-    expect(nodes(twice).map((item) => item.reasoning)).toEqual([
-      "first thought",
-      "",
-      "second thought",
+    expect(twice.items).toEqual([
+      { kind: "reasoning", round: 1, text: "first thought" },
+      { kind: "reasoning", round: 2, text: "second thought" },
     ]);
   });
 
-  it("opens a step for reasoning that arrives before one was announced", () => {
+  it("opens the first round's step for reasoning that arrives before its node was announced", () => {
     const early = fold([{ type: "reasoning", text: "thinking already" }]);
 
-    expect(early.items).toEqual([{ kind: "node", node: "reason", reasoning: "thinking already" }]);
+    expect(early.items).toEqual([{ kind: "reasoning", round: 1, text: "thinking already" }]);
     expect(early.answer).toBe("");
+  });
+
+  it("has nothing to show for a round that streamed no thinking", () => {
+    const silent = fold([
+      { type: "node_start", node: "reason" },
+      { type: "node_start", node: "validate" },
+      { type: "node_start", node: "respond" },
+    ]);
+
+    expect(silent.items).toEqual([]);
+    expect(silent.round).toBe(1);
   });
 });
 
@@ -440,7 +450,7 @@ describe("a reopened thread", () => {
   it("claims nothing a replayed turn cannot know: no thinking, no model, no cost", () => {
     const turns = replayTurns(MESSAGES, RESULTS);
 
-    expect(nodes(turns[0])).toEqual([]);
+    expect(thoughts(turns[0])).toEqual([]);
     expect(turns[0].model).toBeNull();
     expect(turns[0].usage).toBeNull();
     expect(turns[0].error).toBeNull();

@@ -6,7 +6,7 @@
  *
  * The tone carries the state in a second channel next to the icon, per KB's rule that
  * color is never the only signal: `blocked` is the red refusal state, `warn` the amber
- * retry, `muted` a plain graph step.
+ * retry, `muted` a thinking step.
  *
  * A step with something to show is a disclosure of its own (the same chevron the panel
  * head uses): its head is a button carrying `aria-expanded`, so a long step can be folded
