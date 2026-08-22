@@ -23,6 +23,7 @@ import db
 from browse import (
     DEFAULT_SORT,
     Filters,
+    annotate_note_hits,
     browse_notes,
     browse_records,
     departments,
@@ -270,6 +271,58 @@ def test_the_notes_corpus_serves_the_callers_notes_only(db_path):
     assert page.total == _ACME_ROWS
     assert _BETA_SECRET not in " ".join(_column(page, "notes"))
     assert set(_column(page, "tenant_id")) == {ACME}
+
+
+def test_the_notes_corpus_carries_what_a_note_is_verified_against(db_path):
+    """A card the reader can check: whose row, which department, which score, and the text."""
+    page = browse_notes(ACME, sort="name", page_size=_ACME_ROWS, db_path=db_path)
+    assert page.columns == (
+        "user_id",
+        "tenant_id",
+        "name",
+        "department",
+        "performance_score",
+        "notes",
+    )
+    row = page.rows[_column(page, "name").index("Ada Lovelace")]
+    assert row == (1, ACME, "Ada Lovelace", "Engineering", 4.5, "shipped the compiler")
+
+
+def test_a_note_hit_is_annotated_with_its_own_rows_department_and_score(db_path):
+    """The retrieval is untouched; the fields a reader checks it against come off the row."""
+    hits = [{"user_id": 1, "name": "Ada Lovelace", "note": "shipped the compiler", "distance": 0.2}]
+
+    (annotated,) = annotate_note_hits(ACME, hits, db_path=db_path)
+
+    assert annotated["tenant_id"] == ACME
+    assert annotated["department"] == "Engineering"
+    assert annotated["performance_score"] == 4.5
+    assert annotated["distance"] == 0.2
+    assert annotated["note"] == "shipped the compiler"
+
+
+def test_annotating_a_hit_cannot_describe_another_tenants_row(db_path):
+    """The lookup goes through the scoped executor, so a foreign id matches nothing at all."""
+    hits = [{"user_id": 6, "name": "Adalovelace Beta", "note": _BETA_SECRET, "distance": 0.1}]
+
+    (annotated,) = annotate_note_hits(ACME, hits, db_path=db_path)
+
+    assert "tenant_id" not in annotated
+    assert "department" not in annotated
+    assert "performance_score" not in annotated
+
+
+def test_annotating_no_hits_asks_the_database_nothing(db_path):
+    assert annotate_note_hits(ACME, [], db_path=db_path) == []
+
+
+def test_annotating_repeated_ids_binds_each_one_once(db_path):
+    """One placeholder per distinct id, so the declared parameter count always matches."""
+    hit = {"user_id": 1, "name": "Ada Lovelace", "note": "shipped the compiler", "distance": 0.2}
+
+    annotated = annotate_note_hits(ACME, [dict(hit), dict(hit)], db_path=db_path)
+
+    assert [entry["department"] for entry in annotated] == ["Engineering", "Engineering"]
 
 
 def test_the_notes_corpus_takes_the_same_filters_and_sorts(db_path):

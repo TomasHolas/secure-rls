@@ -738,8 +738,38 @@ def test_the_notes_search_runs_the_agents_retrieval_path_for_the_tokens_tenant(w
         "tenant_id": ACME,
         "k": runtime().rag.top_k,
     }
-    assert response.json()["hits"] == NOTE_HITS
+    assert response.json()["hits"] == [
+        {**NOTE_HITS[0], "tenant_id": ACME, "department": "Engineering", "performance_score": 4.5}
+    ]
     assert response.json()["k"] == runtime().rag.top_k
+
+
+def test_a_notes_search_hit_carries_the_department_and_score_of_its_own_row(wiring):
+    """What a reader verifies a hit against: the retrieval's text, plus the row's own fields."""
+    response = wiring.client.get(
+        "/notes/search", params={"q": "compiler"}, headers=_headers(wiring.client, ALICE)
+    )
+
+    (hit,) = response.json()["hits"]
+    assert hit["tenant_id"] == ACME
+    assert hit["department"] == "Engineering"
+    assert hit["performance_score"] == 4.5
+    assert hit["distance"] == NOTE_HITS[0]["distance"]
+
+
+def test_a_hit_naming_a_foreign_row_is_annotated_with_nothing(tmp_path, browse_db):
+    """The annotation reads through the scoped executor, so it cannot describe another tenant."""
+    foreign = [{"user_id": 4, "name": "Adalovelace Beta", "note": "beta secret", "distance": 0.1}]
+    client = _client(tmp_path, note_search=FakeNotes(hits=foreign), db_path=browse_db)
+
+    response = client.get(
+        "/notes/search", params={"q": "secret"}, headers=_headers(client, ALICE)
+    )
+
+    (hit,) = response.json()["hits"]
+    assert "tenant_id" not in hit
+    assert "department" not in hit
+    assert "performance_score" not in hit
 
 
 def test_the_notes_search_takes_its_tenant_from_the_token_and_nowhere_else(wiring):

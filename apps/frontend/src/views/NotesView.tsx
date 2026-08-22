@@ -35,7 +35,10 @@ const RETRIEVAL_NOTE =
   "search_notes tool calls, with the distance it scored each note by.";
 const FIRST_PAGE = 1;
 const USER_ID = "user_id";
+const TENANT_ID = "tenant_id";
 const NAME = "name";
+const DEPARTMENT = "department";
+const SCORE = "performance_score";
 const NOTES = "notes";
 
 export function NotesView({ tenant }: { tenant: string }) {
@@ -198,14 +201,26 @@ export function NotesView({ tenant }: { tenant: string }) {
   );
 }
 
-/** One page of the corpus as note cards; the server names its columns, so read them by name. */
+/**
+ * One page of the corpus as note cards; the server names its columns, so read them by name.
+ *
+ * Every column `GET /notes` serves is carried onto the card — the card is the surface a reader
+ * verifies a retrieval claim on, and a column fetched over the wire and dropped here would take
+ * exactly what they verify against with it (issue #103).
+ */
 function asNotes(page: BrowsePage): NoteEntry[] {
   const id = page.columns.indexOf(USER_ID);
+  const tenant = page.columns.indexOf(TENANT_ID);
   const name = page.columns.indexOf(NAME);
+  const department = page.columns.indexOf(DEPARTMENT);
+  const score = page.columns.indexOf(SCORE);
   const note = page.columns.indexOf(NOTES);
   return page.rows.map((row) => ({
     user_id: Number(row[id]),
+    tenant_id: row[tenant] as string | undefined,
     name: String(row[name]),
+    department: row[department] as string | undefined,
+    performance_score: row[score] as number | undefined,
     note: String(row[note]),
   }));
 }

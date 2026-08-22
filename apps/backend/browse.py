@@ -3,8 +3,8 @@
 The tabs exist so a reader can check the isolation without trusting the agent: sign in as one
 tenant, see its rows and its note corpus, sign in as another and see entirely different ones.
 That only proves something if the tabs are not a second way to reach the data, so this module
-adds no data path at all. Every row it serves comes from one of two fixed templates built from
-the sqlglot AST over the allowlists below and executed by `db.execute_scoped` - the same
+adds no data path at all. Every row it serves comes from one of the fixed templates below, built
+from the sqlglot AST over these allowlists and executed by `db.execute_scoped` - the same
 validator, scoping rewrite, engine controls, egress check, row cap and audit log the agent's own
 tools go through (ADRs 0002, 0003, 0007). Nothing here concatenates SQL a reader typed,
 interpolates a column name, or opens a connection.
@@ -31,9 +31,12 @@ Notes. The corpus listing is the second template over the same table, since a no
 of its employee's row. The search is not a template at all: it delegates to
 `rag.search_notes_scoped`, the agent's own retrieval path (ADR 0010), so what the reader sees -
 the same hits, in the same order, with the same distances - is literally what the `search_notes`
-tool would have returned for that query. `flagged_user_ids` reads the committed poison manifest
-so the tab can mark the planted injection payloads: it is repo metadata rather than tenant data,
-and it is filtered to the caller's tenant anyway.
+tool would have returned for that query. `annotate_note_hits` then reads each hit's own row for
+the fields a claim is checked against, because a name and a paragraph cannot settle whether a
+retrieval was right: the note's tone is composed coherent with the score (ADR 0008), so seeing
+both at once is what makes a hit verifiable. `flagged_user_ids` reads the committed poison
+manifest so the tab can mark the planted injection payloads: it is repo metadata rather than
+tenant data, and it is filtered to the caller's tenant anyway.
 """
 
 import json
@@ -60,7 +63,10 @@ RECORD_COLUMNS = (
     "performance_score",
     "hire_date",
 )
-NOTE_COLUMNS = ("user_id", "tenant_id", "name", "department", "notes")
+# What a note is checked against: its row, department and score (ADR 0008) - salary and date, no.
+NOTE_COLUMNS = ("user_id", "tenant_id", "name", "department", "performance_score", "notes")
+# The same fields, read for the rows a retrieval named rather than for a page of the corpus.
+HIT_CONTEXT_COLUMNS = ("user_id", "tenant_id", "department", "performance_score")
 SORT_COLUMNS = frozenset(
     {"user_id", "name", "department", "salary", "performance_score", "hire_date"}
 )
@@ -78,6 +84,7 @@ _DATE_FILTERS = frozenset({"hired_from", "hired_to"})
 _MANIFEST_TENANT = "tenant_id"
 _MANIFEST_USER = "user_id"
 _MANIFEST_KIND = "payload_kind"
+_HIT_KEY = "user_id"
 
 
 @dataclass(frozen=True)
@@ -171,6 +178,34 @@ def flagged_user_ids(tenant_id: str, *, manifest_path: Path = MANIFEST_PATH) -> 
     )
 
 
+def annotate_note_hits(
+    tenant_id: str,
+    hits: list[dict[str, object]],
+    *,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, object]]:
+    """The retrieval's own hits, each carrying the department and score of the row it came from.
+
+    The vector store holds what was embedded plus the identity of its row (ADR 0010), so the
+    fields a reader checks a hit against are read from the employees row itself - one fixed
+    template, the hit ids bound, through the same scoped executor, egress check and audit entry
+    every other read here gets. `tenant_id` travels with them for the same reason both listing
+    templates select it: a hit then carries the tenant it came from, on the surface built to show
+    that. The retrieval is untouched: the hits, their order and their distances stay exactly what
+    the `search_notes` tool returned. A hit whose row this tenant cannot see gains nothing, which
+    is the scoping doing its job rather than an error.
+    """
+    wanted = tuple(dict.fromkeys(int(hit[_HIT_KEY]) for hit in hits))
+    if not wanted:
+        return hits
+    result = execute_scoped(_context_sql(len(wanted)), tenant_id, params=wanted, db_path=db_path)
+    context = {
+        int(user_id): {"tenant_id": tenant, "department": department, "performance_score": score}
+        for user_id, tenant, department, score in result.rows
+    }
+    return [{**hit, **context.get(int(hit[_HIT_KEY]), {})} for hit in hits]
+
+
 def _page(
     columns: tuple[str, ...],
     tenant_id: str,
@@ -240,6 +275,15 @@ def _page_sql(
         .offset(offset)
         .sql(dialect=_DIALECT)
     )
+
+
+def _context_sql(count: int) -> str:
+    """The lookup template: the verification columns of the rows a retrieval named, ids bound."""
+    named = exp.In(
+        this=exp.column(_HIT_KEY), expressions=[exp.Placeholder() for _ in range(count)]
+    )
+    columns = exp.select(*(exp.column(name) for name in HIT_CONTEXT_COLUMNS))
+    return _select(columns, [named]).sql(dialect=_DIALECT)
 
 
 def _count_sql(predicates: list[exp.Expression]) -> str:

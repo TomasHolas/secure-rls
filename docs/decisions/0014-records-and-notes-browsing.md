@@ -100,6 +100,36 @@ in `src/components/README.md` carries them. Sorting is server-side: a header
 click is a request, never an in-browser reorder of one page — which is the only
 honest thing a table holding page 3 of 18 can do.
 
+## Amendment (after issue #103): a note card carries what it is verified against
+
+The Notes tab shipped showing a name, a `#user_id` and the note text. `GET /notes` already
+served the department; the frontend mapped three columns and dropped it before render. A
+verification surface that omits the field a reader would verify against defeats its own purpose
+— "the mentoring notes in Engineering" cannot be checked on a card that never says Engineering.
+
+- **The card shows the fields a retrieval claim is checked against**: the employee, their
+  `department`, their `performance_score`, the `tenant_id` of the row, and the `distance` when
+  retrieval produced one. The score earns its place from ADR 0008: the notes are composed from
+  clause pools disjoint across score bands, so tone against number is a coherence a reader can
+  falsify at a glance. The tenant earns its place from point 5 above — the row carrying its own
+  tenant is the demo's point in the data — and it is what makes the login-switch comparison
+  visible on the card itself rather than only in the header badge.
+- **`salary` and `hire_date` are deliberately absent.** Neither helps decide whether a text hit
+  is the right one, and a verification surface that shows everything verifies nothing in
+  particular. The omission is stated in `browse.py` beside the column tuple, so the next reader
+  does not have to guess whether it was a decision.
+- **The corpus listing gains the column; the search hits gain a scoped lookup.** The vec0 store
+  holds what was embedded plus the identity of its row (ADR 0010) — deliberately, since its
+  fingerprint covers every field it serves, and storing a department there would make a
+  department change re-embed the corpus. So `browse.annotate_note_hits` reads the tenant,
+  department and score of the hit rows from `employees` through a third fixed template
+  (`user_id IN (?, …)`, the ids bound) down the same `db.execute_scoped` path. The retrieval is
+  untouched: the hits, their order and their distances remain literally what the `search_notes`
+  tool returned, and the annotation cannot describe a row the caller's tenant cannot see —
+  a foreign id simply matches nothing.
+- **One card shape everywhere.** The `NoteList` brick renders every one of these fields when its
+  caller has it, so the chat trace, the corpus listing and the search hits stay the same card.
+
 ## Consequences
 
 - The isolation claim becomes checkable without trusting the agent, and the row
