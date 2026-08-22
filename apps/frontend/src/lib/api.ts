@@ -92,6 +92,17 @@ export interface BrowsePage {
   sort: string;
   direction: string;
   executed_sql: string;
+  ignored: IgnoredParam[];
+}
+
+/**
+ * One parameter the request carried that the listing does not read, and the server's reason.
+ * The server sends the name only, never the value it carried, and `tenant_id`/`tenant` carry
+ * their own reason rather than a generic one (issue #107).
+ */
+export interface IgnoredParam {
+  name: string;
+  reason: string;
 }
 
 /** The filters, sort and window a listing accepts; anything else is not a parameter it reads. */
@@ -144,18 +155,24 @@ export interface FlaggedNotes {
   kinds: Record<string, string>;
 }
 
-/** GET /records: one filtered, sorted page of the caller's own employee rows (ADR 0014). */
-export async function browseRecords(query: BrowseQuery): Promise<BrowsePage> {
-  return browse("/records", query);
+/**
+ * GET /records: one filtered, sorted page of the caller's own employee rows (ADR 0014).
+ *
+ * `probe` is the reader's own `name=value`, sent alongside the filters exactly as typed so the
+ * server can answer what it does with a parameter it does not read (issue #107). It is a
+ * demonstration input, not a filter: nothing here knows or cares what it says.
+ */
+export async function browseRecords(query: BrowseQuery, probe?: string): Promise<BrowsePage> {
+  return browse("/records", query, probe);
 }
 
-/** GET /notes: one page of the caller's note corpus, filtered and sorted the same way. */
-export async function browseNotes(query: BrowseQuery): Promise<BrowsePage> {
-  return browse("/notes", query);
+/** GET /notes: one page of the caller's note corpus, filtered, sorted and probed the same way. */
+export async function browseNotes(query: BrowseQuery, probe?: string): Promise<BrowsePage> {
+  return browse("/notes", query, probe);
 }
 
-async function browse(path: string, query: BrowseQuery): Promise<BrowsePage> {
-  const response = await apiFetch(`${path}${queryString(query)}`);
+async function browse(path: string, query: BrowseQuery, probe?: string): Promise<BrowsePage> {
+  const response = await apiFetch(`${path}${queryString(query, probe)}`);
   if (!response.ok) throw new ApiError(response.status, await detail(response, "The rows could not be loaded."));
   return (await response.json()) as BrowsePage;
 }
@@ -182,12 +199,21 @@ export async function listFlaggedNotes(): Promise<FlaggedNotes> {
   return (await response.json()) as FlaggedNotes;
 }
 
-/** The query string of a listing: a blank or absent value is not a filter, so it is left out. */
-function queryString(query: object): string {
+/**
+ * The query string of a listing: a blank or absent value is not a filter, so it is left out.
+ *
+ * A `probe` the reader typed is appended last, split on its first `=`, and encoded by
+ * `URLSearchParams` like every other parameter — never concatenated into the URL, so a typed
+ * `&` or space cannot compose a request the reader did not write. A probe with no name at all
+ * is nothing to send.
+ */
+function queryString(query: object, probe?: string): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query as Record<string, unknown>)) {
     if (value !== undefined && value !== "") params.set(key, String(value));
   }
+  const [name, ...rest] = (probe ?? "").split("=");
+  if (name.trim()) params.append(name.trim(), rest.join("="));
   const rendered = params.toString();
   return rendered ? `?${rendered}` : "";
 }

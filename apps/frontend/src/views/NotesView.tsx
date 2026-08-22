@@ -11,6 +11,10 @@
  * A missing note index is an operator condition, not a failure of the tab: the server answers
  * 503 with its own sentence and that sentence is what the reader is shown (ADR 0010 as amended).
  *
+ * The corpus listing takes the same filters `/records` does, so it owes a reader the same
+ * honesty about a parameter it does not read: the `ParamProbe` here appends one of the reader's
+ * own to the corpus request and shows what the server reports it ignored, tenant included (#107).
+ *
  * Every request here is guarded against its own staleness the same way - the corpus and the
  * manifest by the effect's `live` flag, the search by a ticket - so a slower earlier answer can
  * never overwrite a newer one and leave hits on screen for a query the reader has moved past.
@@ -20,6 +24,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "../components/Button";
 import { NoteList } from "../components/NoteList";
+import { ParamProbe } from "../components/ParamProbe";
 import { Pill } from "../components/Pill";
 import { TextField } from "../components/forms";
 import { EmptyState, Page, PageHeader, Section } from "../components/layout";
@@ -33,6 +38,7 @@ const SEARCH_FAILURE = "The search failed. Try again.";
 const RETRIEVAL_NOTE =
   "This is rag.search_notes_scoped - the same partition-filtered vector search the agent's " +
   "search_notes tool calls, with the distance it scored each note by.";
+const PROBE_TITLE = "Attack it yourself";
 const FIRST_PAGE = 1;
 const USER_ID = "user_id";
 const TENANT_ID = "tenant_id";
@@ -43,6 +49,7 @@ const NOTES = "notes";
 
 export function NotesView({ tenant }: { tenant: string }) {
   const [page, setPage] = useState(FIRST_PAGE);
+  const [probe, setProbe] = useState("");
   const [corpus, setCorpus] = useState<BrowsePage | null>(null);
   const [flagged, setFlagged] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -70,7 +77,7 @@ export function NotesView({ tenant }: { tenant: string }) {
   useEffect(() => {
     let live = true;
     setLoading(true);
-    browseNotes({ page })
+    browseNotes({ page }, probe)
       .then((serverPage) => {
         if (live) {
           setCorpus(serverPage);
@@ -86,7 +93,7 @@ export function NotesView({ tenant }: { tenant: string }) {
     return () => {
       live = false;
     };
-  }, [page]);
+  }, [page, probe]);
 
   // Only the newest search may write: a slower earlier one must not overwrite it on arrival.
   const latest = useRef(0);
@@ -154,6 +161,15 @@ export function NotesView({ tenant }: { tenant: string }) {
             />
           </>
         ) : null}
+      </Section>
+
+      <Section title={PROBE_TITLE}>
+        <ParamProbe
+          id="notes-probe"
+          ignored={corpus?.ignored ?? []}
+          onSend={setProbe}
+          disabled={loading}
+        />
       </Section>
 
       <Section

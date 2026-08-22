@@ -526,4 +526,8 @@
 /* The Records and Notes cards hold their own padding, unlike the settings rows. */
 .settings-card > .table-scroll, .settings-card > .note-list, .settings-card > .empty,
 .settings-card > .form-error, .settings-card > .data-table-note, .settings-card > .pager,
-.settings-card > .code-block { margin: var(--space-5); }
+.settings-card > .code-block, .settings-card > .notice { margin: var(--space-5); }
+
+/* What the server reports it did not read: one line per parameter, its name in mono. */
+.ignored-list { display: flex; flex-direction: column; gap: var(--space-1); margin: var(--space-2) 0 0; padding-left: var(--space-4); }
+.ignored-list code { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-2); }

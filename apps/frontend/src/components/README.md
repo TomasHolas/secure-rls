@@ -24,6 +24,7 @@ components/
   Markdown.tsx     render a markdown string as sanitized GFM HTML
   DataTable.tsx    backend rows as a compact, visually capped table (optional server-side sort)
   NoteList.tsx     employee-written notes as quoted note cards
+  ParamProbe.tsx   the reader's own query parameter, and what the server ignored of it
   TenantPill.tsx   the identity chip (tenant + user) in the header slot
   Modal.tsx        the one dialog brick — portal, backdrop, Escape/backdrop/× dismissal
   ConfirmDialog.tsx  the confirm step in front of a delete, on Modal + Button
@@ -189,6 +190,25 @@ its caller has. `flagged` is a `{user_id: payload_kind}` map (from `GET /notes/f
 committed `poisoned_manifest.json`) and marks a planted injection payload with a warn `Pill`,
 which is what lets the demo point at a payload before the agent reads it (ADR 0014). The chat
 trace and the Notes tab share this brick, so a note reads identically wherever it is served.
+
+### ParamProbe
+
+```tsx
+<ParamProbe id="records-probe" ignored={page.ignored} onSend={setProbe} disabled={loading} />
+```
+
+The Records and Notes tabs' one control that is not a filter (issue #107). A box appends a raw
+`name=value` of the reader's own choosing to the next listing request, and the notice below it
+names every parameter the response reports as unread, with the server's own reason — verbatim,
+because the reason for `tenant_id` *is* the security claim (the tenant is read from the verified
+token, ADR 0002 layer 1) and paraphrasing it here would weaken the one sentence a reviewer should
+read on screen. `onSend` hands the parent the text as typed; the parent sends it beside its
+filters and feeds `ignored` back. The notice renders nothing when nothing was ignored.
+
+Deliberately not a tenant picker or a "reach another tenant" button: there is no tenant to pick,
+and a control named after one would imply the UI could select it and the server merely declines
+(ADR 0014 as amended). A parameter box implies nothing — a query parameter is what the request
+already is — and it lets a viewer type the attack themselves rather than watch a canned one.
 
 ### Brand mark
 

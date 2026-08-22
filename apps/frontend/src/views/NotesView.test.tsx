@@ -48,6 +48,7 @@ const CORPUS = {
   sort: "user_id",
   direction: "asc",
   executed_sql: "SELECT notes FROM (SELECT * FROM employees WHERE employees.tenant_id = ?)",
+  ignored: [],
 };
 const FLAGGED = { user_ids: [173], kinds: { "173": "ignore_instructions" } };
 const HITS = {
@@ -230,6 +231,26 @@ describe("the notes tab", () => {
       const calls = api.browseNotes.mock.calls;
       expect(calls[calls.length - 1][0]).toMatchObject({ page: 2 });
     });
+  });
+
+  it("sends a parameter the reader appended to the corpus request and reports it back", async () => {
+    await show();
+
+    fireEvent.change(screen.getByLabelText("Extra query parameter"), {
+      target: { value: "tenant=beta" },
+    });
+    api.browseNotes.mockResolvedValue({
+      ...CORPUS,
+      ignored: [{ name: "tenant", reason: "read from your verified token (ADR 0002, layer 1)" }],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      const calls = api.browseNotes.mock.calls;
+      expect(calls[calls.length - 1][1]).toBe("tenant=beta");
+    });
+    expect(await screen.findByText(/read from your verified token/)).toBeTruthy();
+    expect(screen.getAllByText(/450 notes/).length).toBeGreaterThan(0);
   });
 
   it("still lists the corpus when the manifest is unavailable", async () => {

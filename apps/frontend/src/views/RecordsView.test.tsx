@@ -52,6 +52,7 @@ const PAGE = {
   sort: "user_id",
   direction: "asc",
   executed_sql: EXECUTED,
+  ignored: [],
 };
 const DEPARTMENTS = [
   { department: "Engineering", employees: 95 },
@@ -68,6 +69,12 @@ async function show() {
 function lastQuery(): Record<string, unknown> {
   const calls = api.browseRecords.mock.calls;
   return calls[calls.length - 1][0] as Record<string, unknown>;
+}
+
+/** The extra parameter the most recent request carried, which is the second argument. */
+function lastProbe(): string | undefined {
+  const calls = api.browseRecords.mock.calls;
+  return calls[calls.length - 1][1] as string | undefined;
 }
 
 beforeEach(() => {
@@ -207,6 +214,23 @@ describe("the records tab", () => {
 
     expect(await screen.findByText(/No row of this tenant matches those filters/)).toBeTruthy();
     expect(screen.getByText("0 matching rows")).toBeTruthy();
+  });
+
+  it("sends a parameter the reader appended and shows what the server did with it", async () => {
+    await show();
+
+    fireEvent.change(screen.getByLabelText("Extra query parameter"), {
+      target: { value: "tenant_id=beta" },
+    });
+    api.browseRecords.mockResolvedValue({
+      ...PAGE,
+      ignored: [{ name: "tenant_id", reason: "read from your verified token (ADR 0002, layer 1)" }],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(lastProbe()).toBe("tenant_id=beta"));
+    expect(await screen.findByText(/read from your verified token/)).toBeTruthy();
+    expect(screen.getByText("450 matching rows")).toBeTruthy();
   });
 
   it("keeps the rows readable when the department list is unavailable", async () => {
