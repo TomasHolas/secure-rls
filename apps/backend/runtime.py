@@ -54,6 +54,15 @@ class AgentConfig:
     take at all; `turn_deadline_s` is its wall-clock budget; `max_output_tokens` and
     `context_window` are the model client's own generation bounds (`num_predict` / `num_ctx`).
 
+    Three more bound what a turn SENDS, so a long thread trims its oldest turns instead of being
+    refused by the endpoint for overflowing `context_window` (ADR 0011 as amended, issue #131).
+    The budget one model call may occupy is `context_window - max_output_tokens -
+    history_headroom_tokens`, since the window has to hold the answer as well as the prompt;
+    `history_chars_per_token` is the divisor of the deterministic character-count estimate that
+    budget is measured with - an estimate with a margin, never a tokenizer's count; and
+    `min_history_turns` is the floor no trimming goes below, so the newest turns survive even
+    when one of them is huge.
+
     `prompt_guardrails` is the one knob that changes prompt text and nothing else (ADR 0011 as
     amended): on, the rendered system prompt carries the rules that ask the model to police
     data-borne instructions and states the tenant scope; off, those blocks are omitted so the
@@ -68,6 +77,9 @@ class AgentConfig:
     max_tool_iterations: int
     max_output_tokens: int
     context_window: int
+    history_headroom_tokens: int
+    history_chars_per_token: float
+    min_history_turns: int
     turn_deadline_s: float
     thinking: bool
     duration_decimals: int
