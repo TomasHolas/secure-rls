@@ -1,4 +1,4 @@
-"""Browsing the whole dataset: the Records and Notes tabs' data path (ADR 0014 as rewritten).
+"""Browsing the whole dataset: the auditor surface's listings (ADR 0014 as rewritten).
 
 The tabs are the control group for the isolation claim, not a tenant view. They list every row
 of the dataset - all three tenants - so a reader can see exactly what exists, and then watch the
@@ -58,6 +58,14 @@ composed coherent with the score (ADR 0008), so seeing both at once is what make
 verifiable. `flagged_user_ids` reads the committed poison manifest so the tab can mark the
 planted injection payloads, every tenant's, because the listing shows every tenant's: it is repo
 metadata the README already points at rather than tenant data.
+
+Audit. `browse_audit` is the third listing and the same shape: one newest-first page of the audit
+log every read above already writes, read through `db.audit_window` so the store keeps its single
+reader module, paged by the same default and the same row-cap ceiling. It carries no filters -
+a log is read from its head, not queried - and no `reader_tenant`, because reading the log is not
+a read of the dataset and a trail that recorded every look at itself would bury what it is for.
+The rows it serves are statements and metadata: no result row is in that store, so it exposes
+nothing the Records listing does not already show outright.
 """
 
 import json
@@ -68,7 +76,7 @@ from pathlib import Path
 
 from sqlglot import exp
 
-from db import execute_scoped, execute_unscoped_browse
+from db import AuditEntry, audit_window, execute_scoped, execute_unscoped_browse
 from paths import DB_PATH
 from runtime import runtime
 from security import ALLOWED_TABLE, QueryRejected, require_allowed
@@ -171,6 +179,16 @@ class BrowsePage:
 
 
 @dataclass(frozen=True)
+class AuditListing:
+    """One newest-first page of the audit log, with how many rows the log holds in all."""
+
+    entries: list[AuditEntry]
+    total: int
+    page: int
+    page_size: int
+
+
+@dataclass(frozen=True)
 class Flagged:
     """The dataset's rows the committed poison manifest plants an injection payload in."""
 
@@ -230,6 +248,35 @@ def browse_notes(
         page_size,
         requested,
         db_path,
+    )
+
+
+def browse_audit(
+    *,
+    page: int = _FIRST_PAGE,
+    page_size: int | None = None,
+    db_path: Path = DB_PATH,
+) -> AuditListing:
+    """One newest-first page of the audit log: the third listing of the auditor surface.
+
+    The log is the server's own record of every statement the data path ran - the generated SQL,
+    the verdict a layer returned, the statement that actually executed, the row count and the
+    error kind (ADR 0002). It is served newest first because a log is read from its head, and
+    paged by the same rules the row listings use: the same default page and the same ceiling, the
+    executor's row cap (ADR 0007).
+
+    It has no filters, deliberately: this is a log, not a workbench. A tenant chip row would be
+    the same control the row listings carry and can be added when a reader asks for it.
+
+    There is no `reader_tenant` here because there is no data read to attribute: `db.audit_window`
+    reads the audit store, not the dataset, so this listing writes no audit row of its own - a
+    log that recorded every look at itself would bury the rows it exists to show.
+    """
+    size = _page_size(page_size)
+    number = max(page, _FIRST_PAGE)
+    window = audit_window(limit=size, offset=(number - 1) * size, db_path=db_path)
+    return AuditListing(
+        entries=window.entries, total=window.total, page=number, page_size=size
     )
 
 

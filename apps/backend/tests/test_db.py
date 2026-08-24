@@ -519,6 +519,54 @@ def test_the_audit_log_keeps_one_row_per_call_in_order(execute, db_path):
     assert [entry.tenant for entry in entries] == [ACME, ACME, BETA]
 
 
+def test_the_audit_window_reads_the_newest_rows_first_with_the_log_total(execute, db_path):
+    """What the Audit tab reads: a window from the head of the log, and the log's own count."""
+    execute("SELECT * FROM employees")
+    execute("SELECT COUNT(*) FROM employees", BETA)
+    with pytest.raises(QueryRejected):
+        execute("DROP TABLE employees")
+
+    window = db.audit_window(limit=2, offset=0, db_path=db_path)
+
+    assert window.total == 3
+    assert [entry.verdict for entry in window.entries] == [
+        db.VERDICT_REJECTED,
+        db.VERDICT_APPROVED,
+    ]
+    assert [entry.tenant for entry in window.entries] == [ACME, BETA]
+
+
+def test_a_later_audit_window_continues_from_where_the_first_stopped(execute, db_path):
+    """Offset paging over the log's own identity, so no row repeats and none is skipped."""
+    for _ in range(3):
+        execute("SELECT * FROM employees")
+
+    first = db.audit_window(limit=2, offset=0, db_path=db_path)
+    second = db.audit_window(limit=2, offset=2, db_path=db_path)
+
+    assert [entry.id for entry in first.entries] == [3, 2]
+    assert [entry.id for entry in second.entries] == [1]
+    assert second.total == first.total == 3
+
+
+def test_an_audit_row_carries_the_statements_and_never_a_result_row(execute, db_path):
+    """The security property of serving this store: what it holds is SQL and metadata."""
+    execute("SELECT name FROM employees")
+
+    (entry,) = db.audit_window(limit=1, offset=0, db_path=db_path).entries
+
+    assert [field.name for field in fields(entry)] == [
+        "id",
+        "ts",
+        "tenant",
+        "generated_sql",
+        "verdict",
+        "executed_sql",
+        "rowcount",
+        "error_kind",
+    ]
+
+
 def test_an_unexpected_failure_is_still_audited_as_unexplained(monkeypatch, execute, db_path):
     """The audit row is written in a finally and starts unexplained, so no path can skip it."""
 

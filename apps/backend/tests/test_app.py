@@ -81,7 +81,7 @@ from app import (
 from auth import SECRET_ENV_VAR, AuthError
 from browse import DEFAULT_SORT
 from conversations import ConversationRegistry
-from db import init_db
+from db import VERDICT_APPROVED, init_db
 from rag import RetrievalUnavailable
 from runtime import runtime
 
@@ -241,6 +241,7 @@ PROTECTED_ROUTES = [
     ("GET", "/notes"),
     ("GET", "/notes/search?q=compiler"),
     ("GET", "/notes/flagged"),
+    ("GET", "/audit"),
     ("POST", "/chat"),
     ("GET", "/conversations"),
     ("POST", "/conversations"),
@@ -1015,6 +1016,84 @@ def test_the_flagged_notes_are_the_manifests_rows_across_every_tenant(wiring):
 
     assert response.status_code == 200
     assert set(response.json()) == {"user_ids", "kinds"}
+
+
+def test_the_audit_log_is_served_newest_first_with_every_tenants_entries(wiring):
+    """The Audit tab over HTTP: the trail of what ran, whichever token asks for it (ADR 0014).
+
+    Two tokens each browse, so the log holds rows under both tenants, and the listing has to show
+    both - a trail narrowed to the caller could not show that the other tenant's query was scoped
+    to the other tenant, which is the whole reason to serve it.
+    """
+    wiring.client.get("/records", headers=_headers(wiring.client, ALICE))
+    wiring.client.get("/notes", headers=_headers(wiring.client, BOB))
+
+    body = wiring.client.get("/audit", headers=_headers(wiring.client, ALICE)).json()
+
+    assert body["total"] == len(body["entries"]) == 4
+    assert {entry["tenant"] for entry in body["entries"]} == {ACME, BETA}
+    assert [entry["id"] for entry in body["entries"]] == sorted(
+        (entry["id"] for entry in body["entries"]), reverse=True
+    )
+    assert body["entries"][0]["verdict"] == VERDICT_APPROVED
+
+
+def test_an_audit_entry_carries_the_statements_and_no_result_row(wiring):
+    """What the endpoint exposes is SQL and metadata; the rows a statement returned are not in it.
+
+    `beta secret` is a value of the dataset, and the audit store never holds one - which is why
+    serving this trail unfiltered adds no reachable tenant data (ADR 0002 as amended).
+    """
+    wiring.client.get("/records", params={"tenant_id": BETA}, headers=_headers(wiring.client, BOB))
+
+    response = wiring.client.get("/audit", headers=_headers(wiring.client, BOB))
+
+    entry = response.json()["entries"][0]
+    assert set(entry) == {
+        "id",
+        "ts",
+        "tenant",
+        "generated_sql",
+        "verdict",
+        "executed_sql",
+        "rowcount",
+        "error_kind",
+    }
+    assert BETA_SECRET not in response.text
+
+
+def test_the_audit_log_pages_from_its_head_with_the_true_total(wiring):
+    """Paged like every other listing: the same clamped page size, and a total of the log."""
+    for _ in range(3):
+        wiring.client.get("/records", headers=_headers(wiring.client, ALICE))
+    headers = _headers(wiring.client, ALICE)
+
+    first = wiring.client.get("/audit", params={"page_size": 2}, headers=headers).json()
+    second = wiring.client.get("/audit", params={"page": 2, "page_size": 2}, headers=headers).json()
+    clamped = wiring.client.get("/audit", params={"page_size": 10**9}, headers=headers).json()
+
+    assert first["total"] == second["total"] == 6
+    assert [entry["id"] for entry in first["entries"]] == [6, 5]
+    assert [entry["id"] for entry in second["entries"]] == [4, 3]
+    assert clamped["page_size"] == runtime().db.max_result_rows
+
+
+def test_a_browse_the_allowlist_refused_leaves_no_row_in_the_trail(wiring):
+    """A sort outside the allowlist is refused before any statement is built, so nothing ran.
+
+    The trail records what reached the executor. A 400 from `browse.py`'s allowlist never got
+    there, which is why the log shows the one call that did and not the one that was turned away.
+    """
+    refused = wiring.client.get(
+        "/records", params={"sort": "notes"}, headers=_headers(wiring.client, ALICE)
+    )
+    wiring.client.get("/records", headers=_headers(wiring.client, ALICE))
+
+    body = wiring.client.get("/audit", headers=_headers(wiring.client, ALICE)).json()
+
+    assert refused.status_code == 400
+    assert body["total"] == 2
+    assert [entry["verdict"] for entry in body["entries"]] == [VERDICT_APPROVED] * 2
 
 
 def test_chat_streams_the_trace_events_as_sse(wiring):

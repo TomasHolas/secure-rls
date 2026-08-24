@@ -48,7 +48,10 @@ Audit rows are written in a `finally` for every call - approved, rejected, error
 crashed - to `audit.db` beside the data file, the one writable connection here. An attempt
 starts recorded as an unexplained failure and each classified outcome overwrites that, so a
 path nobody anticipated still leaves a row. A failure to audit is raised, never swallowed:
-data read without a trace is the fault we are protecting against.
+data read without a trace is the fault we are protecting against. The trail is read back here
+too and nowhere else: `audit_entries` hands the whole log to the evals, and `audit_window` one
+newest-first page of it to the Audit tab (ADR 0014 as amended), so the store has exactly one
+reader module whichever direction the rows travel.
 
 `audit.db` and `vectors.db` are derived as siblings of whatever database this module was handed,
 which is a relation between files rather than a location: a tmp database keeps its own audit
@@ -195,7 +198,13 @@ _AUDIT_INSERT = (
     f"INSERT INTO audit_log ({', '.join(_AUDIT_COLUMNS)}) "
     f"VALUES ({', '.join(['?'] * len(_AUDIT_COLUMNS))})"
 )
-_AUDIT_SELECT = f"SELECT {', '.join(_AUDIT_COLUMNS)} FROM audit_log ORDER BY id"
+# The row identity is written by the engine, so it is read back rather than inserted.
+_AUDIT_ROW = ("id", *_AUDIT_COLUMNS)
+_AUDIT_SELECT = f"SELECT {', '.join(_AUDIT_ROW)} FROM audit_log ORDER BY id"
+_AUDIT_WINDOW = (
+    f"SELECT {', '.join(_AUDIT_ROW)} FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?"
+)
+_AUDIT_TOTAL = "SELECT COUNT(*) FROM audit_log"
 
 _QUERY_ONLY = "PRAGMA query_only = ON"
 _COUNT_ALIAS = "scoped"
@@ -288,6 +297,7 @@ class VectorMatch:
 class AuditEntry:
     """One persisted audit_log row: the trace of a single execute_scoped call."""
 
+    id: int
     ts: str
     tenant: str
     generated_sql: str
@@ -295,6 +305,14 @@ class AuditEntry:
     executed_sql: str | None
     rowcount: int | None
     error_kind: str | None
+
+
+@dataclass(frozen=True)
+class AuditWindow:
+    """One newest-first slice of the audit log, with how many rows the whole log holds."""
+
+    entries: list[AuditEntry]
+    total: int
 
 
 @dataclass
@@ -555,6 +573,24 @@ def audit_entries(db_path: Path = DB_PATH) -> list[AuditEntry]:
     """Every audit row for db_path's store, oldest first: the trace source for the UI and evals."""
     with closing(_open_audit(_audit_path(db_path))) as conn:
         return [AuditEntry(*row) for row in conn.execute(_AUDIT_SELECT)]
+
+
+def audit_window(*, limit: int, offset: int, db_path: Path = DB_PATH) -> AuditWindow:
+    """One newest-first window of the audit log, with how many rows the log holds in all.
+
+    The reader-facing companion to `audit_entries`: a log grows without a ceiling, so the Audit
+    tab reads it a window at a time (ADR 0014 as amended) instead of loading it whole and slicing
+    it in Python. `limit` and `offset` are bound, never rendered, and the window is what makes the
+    total worth reporting - the count is the log's, not the page's.
+
+    Every tenant's rows come back, because this store is the record of what the executor did and
+    the auditor surface exists to show exactly that. Nothing tenant-readable is in it: an audit
+    row holds statements and metadata, never a result row.
+    """
+    with closing(_open_audit(_audit_path(db_path))) as conn:
+        entries = [AuditEntry(*row) for row in conn.execute(_AUDIT_WINDOW, (limit, offset))]
+        ((total,),) = conn.execute(_AUDIT_TOTAL)
+    return AuditWindow(entries=entries, total=int(total))
 
 
 def _read_csv(csv_path: Path) -> list[tuple[str, ...]]:
