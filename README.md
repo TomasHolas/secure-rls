@@ -62,7 +62,9 @@ in the auth tests.
 
 The Records and Notes tabs show all 1000 rows to every user — what changes with
 the login is what the *agent* can reach, and the two numbers on one screen are
-what make the isolation checkable.
+what make the isolation checkable. The Audit tab is the third view of the same
+surface: the server's own log of every statement the data path ran, its verdict,
+and the statement that actually executed.
 
 ## Evaluation
 

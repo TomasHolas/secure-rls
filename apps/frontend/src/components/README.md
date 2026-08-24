@@ -262,6 +262,17 @@ become buttons that request a sort, carrying `aria-sort` for a screen reader:
 The table never reorders rows itself — it is holding one page, and the order of the rest is
 the server's to decide. Without those props it is the plain table the chat trace shows.
 
+`render` is the one escape hatch: a map from column name to a function drawing that cell,
+which is how the Audit tab puts a `Pill` in a verdict cell and an ellipsised statement in a
+SQL one without a second table brick existing. A column not listed is untouched — same
+formatter, same `num mono` class — so adding one costs no other caller anything.
+
+```tsx
+<DataTable columns={COLUMNS} rows={rows}
+  render={{ verdict: (value) => <Pill tone="danger">{String(value)}</Pill>,
+            generated_sql: (value, row) => <code title={String(value)}>{String(value)}</code> }} />
+```
+
 ### NoteList
 
 ```tsx

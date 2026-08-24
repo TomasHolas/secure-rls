@@ -19,6 +19,10 @@ an ordinary empty result - no error, no leaked statement, and no escape from the
 themselves selected. That they cannot do anything else is structural, since the values never reach
 the SQL as text: they are bound, and the validator still counts them (ADR 0002 as amended).
 
+The audit listing is the third one and is covered at the end: it reads the log every test above
+writes, newest first, paged by the same rules, every tenant's entries, and it writes no audit row
+of its own.
+
 What is NOT here, on purpose: any assertion that a listing hides another tenant's rows. That
 property was deliberately reversed. The properties that replaced it are asserted in
 `tests/test_db.py` (the unscoped read keeps validator, authorizer, row cap, deadline and audit,
@@ -36,6 +40,7 @@ from browse import (
     DEFAULT_SORT,
     Filters,
     annotate_note_hits,
+    browse_audit,
     browse_notes,
     browse_records,
     filter_options,
@@ -612,3 +617,44 @@ def test_a_known_filter_with_a_bad_value_still_refuses_terminally(db_path):
     """Nothing here softens the allowlist: a bad sort raises before a page is built at all."""
     with pytest.raises(QueryRejected):
         _records(db_path, sort="notes", requested=["role", "sort"])
+
+
+def test_the_audit_listing_serves_the_log_newest_first(db_path):
+    """The Audit tab's page: the head of the log, which is where a log is read from."""
+    _records(db_path, filters=Filters(tenant_id=ACME))
+    browse_notes(reader_tenant=BETA, db_path=db_path)
+
+    listing = browse_audit(page_size=2, db_path=db_path)
+    whole = db.audit_entries(db_path)
+
+    assert listing.total == len(whole)
+    assert [entry.id for entry in listing.entries] == [whole[-1].id, whole[-2].id]
+
+
+def test_the_audit_listing_shows_every_tenants_entries(db_path):
+    """No reader tenant narrows it: a trail filtered to the caller shows no comparison at all."""
+    _records(db_path)
+    browse_notes(reader_tenant=BETA, db_path=db_path)
+
+    listing = browse_audit(page_size=runtime().db.max_result_rows, db_path=db_path)
+
+    assert {entry.tenant for entry in listing.entries} == {ACME, BETA}
+
+
+def test_the_audit_listing_pages_the_same_way_the_row_listings_do(db_path):
+    """One default page, one ceiling - the executor's row cap (ADR 0007) - and no page zero."""
+    _records(db_path)
+
+    assert browse_audit(db_path=db_path).page_size == runtime().browse.page_size
+    assert browse_audit(page_size=10**9, db_path=db_path).page_size == runtime().db.max_result_rows
+    assert browse_audit(page=-7, page_size=-3, db_path=db_path).page == 1
+
+
+def test_reading_the_audit_log_writes_no_audit_row_of_its_own(db_path):
+    """A trail that recorded every look at itself would bury the rows it exists to show."""
+    _records(db_path)
+    before = len(db.audit_entries(db_path))
+
+    browse_audit(db_path=db_path)
+
+    assert len(db.audit_entries(db_path)) == before

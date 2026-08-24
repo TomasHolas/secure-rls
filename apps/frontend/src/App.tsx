@@ -1,4 +1,4 @@
-// App shell: logged out shows the login view, logged in the tabs over chat, records and notes.
+// App shell: logged out shows the login view, logged in the tabs over chat, records, notes, audit.
 
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
@@ -7,6 +7,7 @@ import { AppLayout, Tabs } from "./components/layout";
 import type { Tab } from "./components/layout/Tabs";
 import { useConversations } from "./lib/conversations";
 import { clearLocation, pushLocation, replaceLocation, useLocation } from "./lib/location";
+import { AuditView } from "./views/AuditView";
 import { ChatView } from "./views/ChatView";
 import { ConversationsSidebar } from "./views/ConversationsSidebar";
 import { LoginView } from "./views/LoginView";
@@ -17,11 +18,14 @@ import { SessionBadge } from "./views/SessionBadge";
 const CHAT = "chat";
 const RECORDS = "records";
 const NOTES = "notes";
+const AUDIT = "audit";
 
 const TABS: Tab[] = [
   { id: CHAT, label: "Chat", icon: "message-circle" },
   { id: RECORDS, label: "Records", icon: "users" },
   { id: NOTES, label: "Notes", icon: "file-text" },
+  // `activity` is the monitoring glyph and is already in the self-hosted subset (Icon.tsx).
+  { id: AUDIT, label: "Audit", icon: "activity" },
 ];
 
 export default function App() {
@@ -140,6 +144,9 @@ function SignedIn({ session }: { session: Session }) {
       </TabPanel>
       <TabPanel id={NOTES} active={tab} opened={opened}>
         <NotesView tenant={session.tenantId} />
+      </TabPanel>
+      <TabPanel id={AUDIT} active={tab} opened={opened}>
+        <AuditView />
       </TabPanel>
     </AppLayout>
   );

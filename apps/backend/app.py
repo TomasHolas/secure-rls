@@ -20,6 +20,7 @@ Endpoints:
 - `GET  /notes`             one page of the whole note corpus.
 - `GET  /notes/search`      the agent's own retrieval path, run for a reader's query - scoped.
 - `GET  /notes/flagged`     which rows the committed poison manifest plants a payload in.
+- `GET  /audit`             one newest-first page of the audit log, all tenants' entries.
 - `GET  /conversations`     the caller's threads, newest first.
 - `POST /conversations`     a new thread; the title is the first user message, truncated.
 - `GET  /conversations/{id}` the caller's own thread row, its transcript and its turn history.
@@ -79,6 +80,12 @@ tenant scoping and its egress comparison are absent, because returning every ten
 The notes SEARCH is the opposite and stays that way: it delegates to `rag.search_notes_scoped`,
 the `search_notes` tool's own path, for the token's tenant alone. A reader can therefore read
 another tenant's planted payload in the list and watch their own search fail to retrieve it.
+
+`GET /audit` is the third listing of that surface (ADR 0014 as amended): the audit log every read
+above already writes, newest first, paged the same way, all tenants' entries and no filters. An
+audit row is a statement plus metadata and never a result row, so the route adds a window onto
+what the server did rather than a window onto data - and the agent has no way to it, since it is
+an endpoint and not one of its tools.
 
 Nothing about identity moves. The token is still required on every one of these routes, and the
 tenant it carries is what the audit row records and what the search is scoped to; it is simply not
@@ -219,11 +226,13 @@ from auth import (
 from browse import (
     DEFAULT_DIRECTION,
     DEFAULT_SORT,
+    AuditListing,
     BrowsePage,
     Filters,
     Flagged,
     OptionCount,
     annotate_note_hits,
+    browse_audit,
     browse_notes,
     browse_records,
     filter_options,
@@ -804,6 +813,26 @@ def create_app(
         listing shows every tenant's notes. A token is still required to read it.
         """
         return flagged_user_ids()
+
+    @app.get("/audit", dependencies=[Depends(_identity)])
+    def audit(page: int = 1, page_size: int | None = None) -> AuditListing:
+        """One newest-first page of the audit log: what the data path ran (ADRs 0002, 0014).
+
+        Every call through the executor persists a row - the generated SQL, the verdict, the
+        statement that executed, the row count, the error kind - and until now nothing served it.
+        This is that trail, all tenants' entries, for the same reason Records lists all 1000 rows:
+        the tabs are the auditor surface, and a trail filtered to the caller could not show that
+        another tenant's query was scoped to that tenant.
+
+        Serving it exposes nothing new. An audit row holds statements and metadata and never a
+        result row, so there is no tenant data here that Records does not show outright; a token
+        is required exactly as on every other listing; and the agent cannot reach this - it is an
+        endpoint, not a tool, and no tool of its set names it (ADR 0002, layer 1).
+
+        A token is what the route needs, not an identity: the log records who ran what, so
+        narrowing it by the caller would delete the comparison the page exists for.
+        """
+        return browse_audit(page=page, page_size=page_size, db_path=db_path)
 
     @app.get("/conversations")
     def list_conversations(identity: Annotated[Identity, Depends(_identity)]) -> list[Thread]:

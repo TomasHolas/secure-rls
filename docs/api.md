@@ -25,6 +25,7 @@ route accepts a tenant in a body, a path or a query parameter.
 | `GET /records`, `GET /records/departments`, `GET /records/tenants` | The **whole dataset**, paged, filtered and sorted through allowlisted templates, with `tenant_id` a bound filter like `department`; plus the two filter pickers' options and counts — the Records tab, the control group ([ADR 0014](decisions/0014-records-and-notes-browsing.md)) |
 | `GET /notes`, `GET /notes/flagged` | The whole note corpus and every planted injection payload in it, so a reader can see a foreign tenant's before the agent ever reads one |
 | `GET /notes/search` | The agent's own retrieval path — **scoped to the token's tenant**, unlike the listing beside it. That asymmetry is the demonstration |
+| `GET /audit` | The audit log every read above writes ([ADR 0002](decisions/0002-defense-in-depth-rls.md)): newest first, paged, all tenants' entries, no filters — the Audit tab. Statements and metadata only; no result row is in that store, and no tool can reach the route |
 
 ## The chat stream
 
