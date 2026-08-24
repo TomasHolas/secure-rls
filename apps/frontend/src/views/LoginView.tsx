@@ -59,11 +59,8 @@ export function LoginView() {
       />
 
       <Button variant="primary" type="submit" className="btn-block" disabled={pending || !ready}>
-        <Icon
-          name={pending ? "loader" : "check"}
-          size={16}
-          className={pending ? "loader-spin" : undefined}
-        />
+        {/* No glyph at rest: the subset has no authenticate mark, and a wrong one misreads the action. */}
+        {pending && <Icon name="loader" size={16} className="loader-spin" />}
         {pending ? "Signing in..." : "Sign in"}
       </Button>
     </FormCard>
