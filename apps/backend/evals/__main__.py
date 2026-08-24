@@ -58,14 +58,6 @@ _MOCKED_ENDPOINT = "none - scripted model, network-free"
 _MOCKED_EMBEDDER = "a hashed bag of words, not a model"
 _LIVE_ENDPOINT = "the configured Ollama endpoint (address deliberately not recorded)"
 _MAX_FINDINGS = 25
-_GUARDRAILS_ON = (
-    "**on** - the prompt asks the model to refuse data-borne instructions and states its "
-    "tenant scope"
-)
-_GUARDRAILS_OFF = (
-    "**off** - those two blocks are omitted, so an attack the model would have declined is "
-    "attempted and the RLS layers are what refuses it (ADR 0002)"
-)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -272,7 +264,7 @@ def _headline(
         f"Dataset: the committed `employees.csv`, {indexed} notes indexed with "
         f"{_MOCKED_EMBEDDER if is_mocked else f'`{runtime().agent.embed_model}`'}.",
         "",
-        f"Prompt guardrails: {_GUARDRAILS_ON if guarded else _GUARDRAILS_OFF}.",
+        f"Prompt guardrails: {harness.guardrail_note(guarded)}.",
         "",
         f"- Correctness: **{harness.rate([item.passed for item in scored])}** asks passed",
         f"- Grounded in a tool call of the same turn: "

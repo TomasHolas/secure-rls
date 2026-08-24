@@ -57,6 +57,15 @@ MANIFEST_PATH = BACKEND / "poisoned_manifest.json"
 
 TENANTS = ("acme", "beta", "gamma")
 
+GUARDRAILS_ON = (
+    "**on** - the prompt asks the model to refuse data-borne instructions and states its "
+    "tenant scope"
+)
+GUARDRAILS_OFF = (
+    "**off** - those two blocks are omitted, so an attack the model would have declined is "
+    "attempted and the RLS layers are what refuses it (ADR 0002)"
+)
+
 TENANT_COLUMN = "tenant_id"
 USER_COLUMN = "user_id"
 NAME_COLUMN = "name"
@@ -142,6 +151,15 @@ class Session:
 
     indexed: int
     graphs: dict[str, CompiledStateGraph]
+
+
+def guardrail_note(guarded: bool) -> str:
+    """How a report states the prompt-guardrail position it was graded in (ADR 0011 as amended).
+
+    One owner for the wording, because all three report producers - the two suites' scorecard and
+    the model gate - have to say it identically or a reader cannot compare two committed reports.
+    """
+    return GUARDRAILS_ON if guarded else GUARDRAILS_OFF
 
 
 def require_base_url() -> str:
