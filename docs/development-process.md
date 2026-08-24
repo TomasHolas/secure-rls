@@ -54,8 +54,8 @@ This page is the one place the totals are stated, so no other doc can drift from
 them:
 
 ```bash
-cd apps/backend && uv run pytest -q     # MEASURE_BE tests
-cd apps/frontend && npm test            # MEASURE_FE tests, 25 files
+cd apps/backend && uv run pytest -q     # 1076 tests
+cd apps/frontend && npm test            # 399 tests, 25 files
 ```
 
 The backend suite is weighted toward the boundary: 272 tests on the SQL

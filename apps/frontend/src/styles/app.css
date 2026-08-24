@@ -824,9 +824,11 @@
 .pager-state { color: var(--fg-4); font-size: var(--text-xs); }
 
 /* An audit row's statement: one scannable line, the whole of it on the cell's title. A log is
-   read down its verdict column, and two columns of wrapped SQL per row would bury that. */
+   read down its verdict column, and two columns of wrapped SQL per row would bury that. The
+   measure is what keeps both statements plus the verdict, the kind and the row count inside
+   1280px, so the column a reader came for is never the one off the right edge. */
 .audit-sql {
-  display: block; max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: block; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-3);
 }
 
