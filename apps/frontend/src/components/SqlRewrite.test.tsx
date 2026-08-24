@@ -89,6 +89,27 @@ describe("the highlight inside the executed card", () => {
     expect(screen.getByText(/added by the RLS rewrite/)).toBeTruthy();
   });
 
+  it("states it as a quiet caption: the sentence is text, and only a swatch carries the mark", () => {
+    const { container } = render(<SqlRewrite generated={GENERATED} executed={EXECUTED} />);
+    const legend = container.querySelector(".sql-legend") as HTMLElement;
+    const swatch = legend.querySelector(".sql-add") as HTMLElement;
+
+    expect(legend.textContent).toBe(
+      "added by the RLS rewrite - the tenant filter, bound as a parameter",
+    );
+    expect(swatch.textContent).toBe("");
+    expect(swatch.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("puts the same sentence on the marked region, so it survives the caption scrolling away", () => {
+    const { container } = render(<SqlRewrite generated={GENERATED} executed={EXECUTED} />);
+    const mark = container.querySelector(".code-block-body .sql-add") as HTMLElement;
+
+    expect(mark.getAttribute("title")).toBe(
+      "added by the RLS rewrite - the tenant filter, bound as a parameter",
+    );
+  });
+
   it("still shows the pair, unmarked, for a statement too long to align", () => {
     const long = `SELECT ${Array.from({ length: 300 }, (_, index) => `c${index}`).join(", ")} FROM employees`;
     const { container } = render(<SqlRewrite generated={long} executed={long} />);

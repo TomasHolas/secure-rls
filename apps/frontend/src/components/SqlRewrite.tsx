@@ -13,7 +13,10 @@
  * unconditional (issue #121).
  *
  * `lib/sqldiff.ts` owns the alignment and the template's pattern match; this brick only paints
- * them, through one `Mark` and one `Legend`, so neither card can drift from the other. A statement
+ * them, through one `Mark` and one `Legend`, so neither card can drift from the other. The legend is
+ * a caption in the card label's own quiet register, pointed at the highlight by a swatch carrying
+ * the mark's channels, and the sentence rides the marked region as a tooltip so it stays reachable
+ * where the caption has scrolled away. A statement
  * too long to align renders as the plain pair, and a template without the scoping pattern renders
  * unmarked — the highlight is the bonus, the statement is the floor. The copy control on any card
  * always writes plain SQL, never the markup.
@@ -73,17 +76,24 @@ export function SqlTemplate({ sql }: { sql: string }) {
   );
 }
 
-/** What the highlight means, stated once for every card that carries one. */
+/** What the highlight means, stated once for every card that carries one: the swatch points, the caption stays quiet. */
 function Legend() {
   return (
     <p className="sql-legend">
-      <mark className="sql-add">{LEGEND}</mark>
+      <span className="sql-add" aria-hidden="true" />
+      {LEGEND}
     </p>
   );
 }
 
 /** One run of the statement that ran: the model's own words, or what the rewrite inserted. */
 function Mark({ segment }: { segment: DiffSegment }) {
-  if (segment.kind === "add") return <mark className="sql-add">{segment.text}</mark>;
+  if (segment.kind === "add") {
+    return (
+      <mark className="sql-add" title={LEGEND}>
+        {segment.text}
+      </mark>
+    );
+  }
   return <>{segment.text}</>;
 }
