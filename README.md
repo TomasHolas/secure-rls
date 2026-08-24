@@ -378,6 +378,7 @@ thread, and three adversarial asks.
 cd apps/backend
 uv run python -m evals.model_gate --dry-run          # list the suite, no endpoint needed
 uv run python -m evals.model_gate --model <id>       # score a model, append to the report
+uv run python -m evals.model_gate --model <id> --no-guardrails   # the same, guardrails off
 ```
 
 | Model | Passed | Valid tool call | Expected tool | **Foreign rows** | Median wall/ask |

@@ -146,7 +146,7 @@ cd apps/backend && uv run python -m evals --mocked   # scripted model, network-f
 cd apps/backend && uv run python -m evals --no-guardrails   # writes evals/report-no-guardrails.md
 
 # Model gate (M2+; needs a live Ollama model, --dry-run needs nothing):
-cd apps/backend && uv run python -m evals.model_gate --model <id>
+cd apps/backend && uv run python -m evals.model_gate --model <id>   # --no-guardrails grades the off position
 
 # Dataset regeneration (M1+; deterministic, seeded):
 cd apps/backend && uv run python scripts/generate_dataset.py
@@ -165,10 +165,10 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | SQL validation (allowlist) | `apps/backend/security.py` |
 | Records/Notes browsing (allowlisted filters, sorts, paging, the poison manifest) | `apps/backend/browse.py` — fixed templates with bound filter values through `db.py`; sort and direction are allowlisted words, never bound values; the notes search delegates to `rag.py`, and `annotate_note_hits` joins each hit's tenant, department and score off its row so a retrieval claim is checkable. `ignored_params` reports the parameters a listing did not read — names only, `tenant_id`/`tenant` with the layer-1 reason no request can name a tenant — so a discarded parameter is stated rather than swallowed (ADR 0014 as amended) |
 | Structured analytics (aggregates, Tukey IQR anomalies, chart data) | `apps/backend/analytics.py` — allowlisted args into fixed query templates through `db.py`; never generated SQL |
-| Agent, tools, prompts, retry policy, memory, transcript replay | `apps/backend/agent.py` (`thread_messages` reads the checkpointer back; the API layer never parses checkpoints itself). `_system_prompt` is the ONLY place the prompt is composed and the only reader of `agent.prompt_guardrails`; no enforcement module may name that knob (ADR 0011 as amended) |
+| Agent, tools, prompts, retry policy, memory, transcript replay | `apps/backend/agent.py` (`thread_messages` reads the checkpointer back; the API layer never parses checkpoints itself). `_system_prompt` is the ONLY place the system prompt is composed and the only reader of `agent.prompt_guardrails`; no enforcement module may name that knob. A tool docstring in `_build_tools` is bound as the tool's `description` and reaches the model in BOTH guardrail positions, so it states what the tool does and never a rule the model is asked to follow (ADR 0011 as amended) |
 | Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`). `ensure_index` stamps the store with a digest of the corpus it embedded, so a regenerated dataset re-embeds instead of being searched through stale vectors (ADR 0010 as amended) |
 | Dataset generator | `apps/backend/scripts/generate_dataset.py` — truncated-lognormal salaries by rejection (never clipped) and compositional notes whose clause pools are disjoint per score band (ADR 0008 as amended) |
-| Eval harness | `apps/backend/evals/` — `harness.py` owns the shared bricks (workspace, trace collection, leak check, markdown) that `correctness.py`, `adversarial.py` and `model_gate.py` all import. `--no-guardrails` grades the off position and writes its own report file, so neither position overwrites the other's numbers (ADR 0004 as amended) |
+| Eval harness | `apps/backend/evals/` — `harness.py` owns the shared bricks (workspace, trace collection, leak check, markdown) that `correctness.py`, `adversarial.py` and `model_gate.py` all import. `--no-guardrails` grades the off position - on the suites, where each position writes its own report file, and on `model_gate`, whose sections state their position because `gate-results.md` is append-only. `harness.guardrail_note` is the one owner of that wording, so all three reports say it identically (ADR 0004 as amended) |
 | Tests | `apps/backend/tests/` (pytest), `apps/frontend/src/**/*.test.tsx` (vitest) |
 | Tunable knob | `apps/backend/runtime.json` (typed view in `runtime.py`) — no magic values in code |
 | Frontend UI | `apps/frontend/src/` — compose the design bricks (catalogue: `src/components/README.md`); never hand-roll a table/pill/button |

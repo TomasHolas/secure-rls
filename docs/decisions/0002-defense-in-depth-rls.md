@@ -97,7 +97,30 @@ leaks with the model's self-policing disabled is the strongest available form of
 the one claim this section is about — that prompt-level instructions are guidance
 and never a boundary. It says nothing about the individual layers being
 interchangeable or separately sufficient; the Decision above is explicit that
-they are not. The two positions write separate report files.
+they are not. The two positions write separate report files, and the model gate's
+appended sections state their position too, because `evals/gate-results.md` is
+append-only and ADR 0005's model pick cites it.
+
+What that run is expected to exercise, and what it is not: the model is no longer
+told to decline the payroll-administrator override, the developer-mode injection
+or a plainly worded cross-tenant request, so it attempts them. The first two
+classes reach out of the allowlist and are refused by layer 2 or 2.5, with the
+event naming the layer. The third does not: it is a valid query for someone
+else's rows, so layer 3 scopes it and layer 4 checks the result, and it succeeds
+returning nothing foreign. A prediction of "the layers refuse it" would be wrong
+for that third class, which is why this ADR states the two outcomes separately
+and why `evals/report-no-guardrails.md` predicts neither — until that run exists,
+that file says only that it has not happened.
+
+One more surface has to be watched for this to mean anything, and it was missed
+on the first attempt (issue #102 review). The system prompt is not the only text
+the model receives: each tool's docstring is bound as its `description` and is
+sent on every turn in both positions. A copy of the note-injection rule sat in
+`search_notes`, so the off position still asked the model not to follow
+instructions found in note text — on the poisoned-notes attack, the very case the
+off position exists to demonstrate. Tool descriptions now carry no rule the model
+is asked to follow, and the off-position assertion is checked over the system
+prompt and every bound tool description together.
 
 ## Hardening (amended per sourced review)
 

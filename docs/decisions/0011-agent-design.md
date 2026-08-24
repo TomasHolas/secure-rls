@@ -239,8 +239,25 @@ Everything else is unchanged: the schema card, the sample rows, the grounding
 rule, aggregation push-down, column selection, the truncation rule, the inline-
 literal rule, the set-operation rule, the single-table rule, and the whole
 "How to answer" output discipline. `_system_prompt` is the single composition
-point; the two blocks are two named constants filling two slots in one template,
-so there is no second copy of a prompt line anywhere.
+point for the system prompt, and the two blocks are two named constants filling
+two slots in one template, so neither guardrail block exists twice.
+
+**The system prompt is not the only model-facing text, and the switch only
+reaches the system prompt.** Each tool's docstring is bound as its `description`
+and is sent on every turn in both positions, so a rule written there is a rule
+the switch cannot remove. Issue #102's review found exactly that: `search_notes`
+carried a character-for-character copy of the note-injection rule, which meant
+the off position still asked the model to refuse instructions found in note text
+— on the poisoned-notes attack, the flagship case for the off position. The rule
+is now: a tool description states what the tool does and returns, never a rule
+the model is asked to follow. Saying which tool suits which question is
+description and stays. `query_db`'s description does restate three rules in
+paraphrase (aggregate in SQL, select only what you need, write literals inline);
+those three are deliberately kept in the off position anyway, so the duplication
+costs the demonstration nothing — but it is duplication, and it is why the claim
+above is scoped to the guardrail blocks rather than to every prompt line. The
+off-position assertion is checked over the system prompt and every bound tool
+description together, so this class of leak fails a test rather than a demo.
 
 **Why the knob exists.** Since the prompt gained the data-borne-instruction rule
 the model usually declines the obvious attack itself, so a demo of the RLS
