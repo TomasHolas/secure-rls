@@ -17,11 +17,11 @@ route accepts a tenant in a body, a path or a query parameter.
 | `GET /health` | Liveness, the API version and the prompt-guardrail position. Open by design; also the container health check |
 | `POST /login` | Demo credentials in, JWT with the `tenant_id` claim out. A wrong user and a wrong password return the same 401 |
 | `GET /models` | The endpoint's live chat-capable models plus the default a turn resolves from that same list. The SPA never learns `OLLAMA_BASE_URL` |
-| `POST /chat` | One turn as an SSE stream of typed trace events |
+| `POST /chat` | One turn as an SSE stream of typed trace events. The turn runs on the server independently of the stream, so a reader who leaves does not interrupt it; a second question on a thread that is still answering is a 409 |
 | `GET /conversations` | The caller's own threads, newest first |
 | `POST /conversations` | Register a thread for the caller |
 | `PATCH /conversations/{id}` | Name a thread, in two modes: a title in the body is the reader's own and final, and a body without one asks the model for a label. The titling lifecycle is [ADR 0012](decisions/0012-api-and-chat-ux.md) |
-| `GET/DELETE /conversations/{id}` | Replay or delete the caller's own thread. A foreign id and a missing id return the same 404 |
+| `GET/DELETE /conversations/{id}` | Replay or delete the caller's own thread. The replay carries `in_flight`, whether a turn is running on it right now. A foreign id and a missing id return the same 404 |
 | `GET /records`, `GET /records/departments`, `GET /records/tenants` | The **whole dataset**, paged, filtered and sorted through allowlisted templates, with `tenant_id` a bound filter like `department`; plus the two filter pickers' options and counts — the Records tab, the control group ([ADR 0014](decisions/0014-records-and-notes-browsing.md)) |
 | `GET /notes`, `GET /notes/flagged` | The whole note corpus and every planted injection payload in it, so a reader can see a foreign tenant's before the agent ever reads one |
 | `GET /notes/search` | The agent's own retrieval path — **scoped to the token's tenant**, unlike the listing beside it. That asymmetry is the demonstration |
@@ -52,6 +52,17 @@ as amended) — 0 when it lost none.
 The `done` frame also carries the turn's cost, whether the answer was grounded in
 a tool call of its own turn, and the prompt-guardrail position that produced it,
 so no trace can be read as the other mode's.
+
+The stream is a window onto the turn, not the turn's lifetime
+([ADR 0012](decisions/0012-api-and-chat-ux.md) as amended). The turn runs on a
+worker of its own and is recorded there, so a viewer who switches threads,
+reloads or signs out mid-generation stops receiving frames and changes nothing
+else: the turn finishes, the history keeps its whole trace including the terminal
+frame, and reopening the thread replays it complete. What still bounds it is the
+per-turn deadline and the tool-round cap inside the graph
+([ADR 0011](decisions/0011-agent-design.md)). One turn per thread runs at a time
+— a second `POST /chat` for a thread that is still answering is refused with 409
+rather than interleaved onto the same conversation memory.
 
 ## Sessions
 

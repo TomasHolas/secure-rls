@@ -115,6 +115,62 @@ mid-sentence). It is not `gave_up` either: no retry budget was spent and the
 model made no error. The SPA renders it as a warn pill, "stopped at its turn
 limit", beside the answer it did get.
 
+### The turn outlives the stream (amended after issue #143)
+
+The live pass showed what chaining the two together costs: clicking out of a
+chat before the model finished — a thread switch, a reload, a sign-out — killed
+the turn. The SPA's `fetch` was the only thing pulling the generator, so the
+disconnect cancelled the response, the response closed the generator, and the
+graph died wherever it stood. The thread then reopened as a question with no
+stored answer and the SPA's honest "history not kept" pill over it, because the
+turn never produced a terminal frame to store.
+
+**The stream is a window onto the turn, not its lifetime.** `POST /chat` starts
+the turn on a worker of its own (`inflight.py`) and the SSE response reads a
+bounded queue of its frames. The worker drains the turn to completion whatever
+the reader does, feeding the turn recorder first and the queue second, so the
+history and the audit trail are written from the turn rather than from the
+watching. A reader who leaves stops receiving frames and nothing else.
+
+Why this way round: an interrupted viewer must not be able to corrupt the
+record. The audit trail and the replayable history are the product this repo
+claims — a demo that loses a turn's trace because somebody clicked away is
+claiming something it cannot do. It is also the honest reading of the transport:
+SSE is a one-way delivery channel, and the ASGI `http.disconnect` it ends with
+says a client stopped listening, never that the work it asked for should be
+abandoned. Decoupling the work from the reply is the standard shape for a
+request whose processing outlives its response (Azure's asynchronous
+request-reply pattern); what this borrows from it is only the decoupling — the
+turn is still one request, watched live, with no polling endpoint.
+
+Bounds do not change. The turn is bounded from inside the graph, as it always
+was: the per-turn wall-clock deadline (`agent.turn_deadline_s`, 600s) and the
+tool-round cap of ADR 0011. A backgrounded turn therefore cannot run forever;
+what it can do is finish. The forwarding side carries the one new bound,
+`api.turn_queue_frames`: a reader that is not draining is cut off whole rather
+than sampled, so an abandoned response costs a bounded queue and never back
+pressure on the turn (OWASP LLM10, unbounded consumption). The reader that was
+cut sees a stream that stops, a state the SPA already models; its history is
+unaffected. A process restart is the one thing that still ends a turn early —
+the workers are daemon threads and nothing is queued to disk.
+
+**One turn per thread, refused with 409.** Backgrounding makes a second turn on
+the same thread reachable: the reader returns to a thread still answering and
+asks again. Two turns interleaving on one LangGraph thread would write the
+memory this change exists to protect from two places at once, so a `POST /chat`
+for a thread with a turn in flight is refused with 409 and a reason, keyed by
+`thread_id`. The claim is taken before the worker starts and released when the
+turn ends — before its last frame reaches the reader, so a client asking its
+next question the moment the stream closes is never told the thread is busy.
+
+**`GET /conversations/{id}` says whether a thread is answering.** A turn's
+history is stored when it ends, so a thread reopened mid-turn has a newest
+question with no record behind it — which read as the "history not kept" state
+above, a running turn presenting itself as a lost one. The response carries
+`in_flight` off the same claim the 409 is keyed by, and the SPA renders that
+last question as still being answered. One fact, one source: the flag and the
+refusal cannot disagree.
+
 ### Conversations: full history sidebar, tenant-scoped
 
 - Conversations persist server-side: a registry table (thread_id, user,
@@ -573,6 +629,26 @@ about the marking is unchanged; three things follow.
 - LangGraph streaming (`astream_events`) and persistence (checkpointers) —
   https://docs.langchain.com/oss/python/langgraph/overview
 - WHATWG HTML: Server-Sent Events — https://html.spec.whatwg.org/multipage/server-sent-events.html
+- ASGI HTTP specification, the `http.disconnect` message a server sends when the
+  client closes the connection — what a departed reader actually is, and why it
+  says nothing about the work the request started —
+  https://asgi.readthedocs.io/en/latest/specs/www.html
+- Starlette `StreamingResponse`, which listens for that message and cancels the
+  response body iterator — the mechanism that used to take the turn with it —
+  https://www.starlette.io/responses/
+- Azure Architecture Center, Asynchronous Request-Reply pattern — the standard
+  decoupling of processing from the response for work that outlives its request;
+  adopted only in that shape (the turn stays one request, watched live) —
+  https://learn.microsoft.com/en-us/azure/architecture/patterns/async-request-reply
+- LangGraph persistence: one checkpointer thread is one conversation's state,
+  written per super-step — the basis for allowing only one turn per thread at a
+  time — https://docs.langchain.com/oss/python/langgraph/persistence
+- OWASP Top 10 for LLM Applications 2025, LLM10 Unbounded Consumption — the
+  reason the abandoned reader's backlog is a bounded knob rather than a growing
+  queue — https://genai.owasp.org/llmrisk/llm102025-unbounded-consumption/
+- RFC 9110, 409 Conflict — the status for a request that conflicts with the
+  current state of the target resource, which is what a second turn on a thread
+  already answering is — https://www.rfc-editor.org/rfc/rfc9110#name-409-conflict
 - OWASP REST Security Cheat Sheet (error-handling context for the
   transparency judgment) —
   https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html
