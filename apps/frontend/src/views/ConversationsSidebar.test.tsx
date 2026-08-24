@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConversationsSidebar } from "./ConversationsSidebar";
 import { getSession, startSession } from "../auth";
 import type { ConversationsStore } from "../lib/conversations";
-import "../styles/app.css";
+import { reducedMotionStyle } from "../test/styles";
 
 const NEWEST = { thread_id: "t2", title: "median salary in engineering", created: "2026-08-20T12:15:00+00:00" };
 const OLDEST = { thread_id: "t1", title: "average salary per department", created: "2026-08-19T12:40:00+00:00" };
@@ -110,6 +110,30 @@ describe("collapsing the rail", () => {
     const container = rail();
 
     expect(getComputedStyle(container.querySelector(".sidebar")!).overflow).toBe("clip");
+  });
+
+  // The other defect a screenshot found: the clip cut the copy mid-word. It fades instead, and
+  // the identity chip's own spans are part of that list, so this is also what catches a rename
+  // inside TenantPill breaking the collapsed rail.
+  it("fades the copy the clip would otherwise cut off mid-word", () => {
+    const container = rail();
+    const faded = () =>
+      [".sidebar-title", ".sidebar-body", ".rail-search", ".tenant-pill-user"].map(
+        (selector) => getComputedStyle(container.querySelector(selector)!).opacity,
+      );
+    expect(faded()).toEqual(["1", "1", "1", "1"]);
+
+    collapse();
+
+    expect(faded()).toEqual(["0", "0", "0", "0"]);
+  });
+
+  it("stops travelling under reduced motion, in the one block that owns that", () => {
+    rail();
+
+    const still = reducedMotionStyle(".sidebar, .rail-copy, .rail-search-input, .rail-glide");
+
+    expect(still?.transition).toBe("none");
   });
 
   it("takes the labels out of the accessibility tree and the controls out of the Tab order", () => {
