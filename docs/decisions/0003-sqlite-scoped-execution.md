@@ -1,6 +1,6 @@
 # ADR 0003 — SQLite with emulated RLS via a scoped executor
 
-Status: accepted
+Status: accepted (amended after issues #96 and #125)
 
 ## Context
 
@@ -59,12 +59,21 @@ answer would be an error is strictly worse than refusing to boot.
 
 Keeping the bake in the image as well is the
 [twelve-factor build/release/run](https://12factor.net/build-release-run)
-separation: deriving fixed data at build time keeps container start instant and
-the running container's filesystem uninteresting. Where to put the *dev-mode*
-build — a documented manual step, a separate script, or the process itself — is a
-modeling judgment with no authoritative source; the process itself was chosen
-because a step a reviewer has to read about is a step a reviewer can miss, which
-is exactly how this was found.
+separation: deriving fixed data at build time keeps container start instant.
+
+Since issue #125 that baked file lands in the container's mounted data directory
+rather than its writable layer, because `db.py` derives `audit.db` and
+`vectors.db` beside whichever database it is handed and those two must survive a
+restart ([ADR 0013](0013-deployment-cicd.md) as amended). Nothing about the
+lifecycle changes — the row count still decides, and a first boot on a machine
+with no volume yet still loads the CSV — but one consequence is worth stating:
+because a populated database is left alone, a regenerated dataset reaches a
+running deployment only after the volume is reset, not after an image rebuild.
+
+Where to put the *dev-mode* build — a documented manual step, a separate script,
+or the process itself — is a modeling judgment with no authoritative source; the
+process itself was chosen because a step a reviewer has to read about is a step a
+reviewer can miss, which is exactly how this was found.
 
 ## Consequences
 

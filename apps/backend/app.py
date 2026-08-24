@@ -153,9 +153,12 @@ checkpointer accesses - transcript replay and cleanup - as arguments, defaulting
 production wiring, plus the `db_path` every one of them reads the employee data from. Tests
 pass fakes and a tmp database, and never touch Ollama or the filesystem outside tmp_path.
 
-Paths. All state files are resolved here, once: the employee database (`db.DEFAULT_DB_PATH`,
-beside which `db.py` derives its own `audit.db` and `vectors.db`), the registry's `state.db`
-and the LangGraph checkpointer's `checkpoints.db`.
+Paths. This module resolves none of them: `paths.py` owns the data directory every state file
+sits in, and this module reads the three it wires up - the employee database (beside which
+`db.py` derives its own `audit.db` and `vectors.db`), the registry's `state.db` and the
+LangGraph checkpointer's `checkpoints.db`. In the deployment that directory is a mounted
+volume, so a rebuilt image finds the conversations, the memory, the audit trail and the
+embeddings it left behind (ADR 0013 as amended).
 """
 
 import json
@@ -209,7 +212,8 @@ from browse import (
     flagged_user_ids,
 )
 from conversations import ConversationRegistry, NotFound, Thread, TurnHistory
-from db import DEFAULT_CSV_PATH, DEFAULT_DB_PATH, SecurityViolation, employee_rows, init_db
+from db import DEFAULT_CSV_PATH, SecurityViolation, employee_rows, init_db
+from paths import CHECKPOINT_DB_PATH, DB_PATH, STATE_DB_PATH
 from rag import OllamaEmbed, RetrievalUnavailable, ensure_index, search_notes_scoped
 from runtime import runtime
 from security import QueryRejected
@@ -221,10 +225,6 @@ FRONTEND_ORIGIN = "http://localhost:3002"
 REFRESHED_TOKEN_HEADER = "X-Refreshed-Token"
 OLLAMA_ENV_VAR = "OLLAMA_BASE_URL"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-
-DB_PATH = DEFAULT_DB_PATH
-STATE_DB_PATH = DB_PATH.with_name("state.db")
-CHECKPOINT_DB_PATH = DB_PATH.with_name("checkpoints.db")
 
 _TAGS_PATH = "/api/tags"
 _SHOW_PATH = "/api/show"

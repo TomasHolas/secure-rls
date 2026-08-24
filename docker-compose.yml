@@ -18,6 +18,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env - generate with openssl rand -hex 32}
     ports:
       - "8002:8002"
+    volumes:
+      # Everything the backend writes lives in one data directory - the conversations and their
+      # turn history, the LangGraph memory, the audit trail and the note embeddings - so this
+      # volume is what makes a rebuild replace code without destroying data (issue #125). The
+      # path is the image's SECURE_RLS_DATA_DIR (apps/backend/Dockerfile). `docker compose down`
+      # keeps it; `docker compose down -v` DELETES it and the next boot starts empty.
+      - backend-state:/app/data
 
   frontend:
     build:
@@ -32,3 +39,6 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+volumes:
+  backend-state:

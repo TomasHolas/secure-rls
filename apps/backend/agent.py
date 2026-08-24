@@ -194,7 +194,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 import analytics
 import rag
 from analytics import ChartSpec
-from db import DEFAULT_DB_PATH, QueryResult, SecurityViolation, execute_scoped
+from db import QueryResult, SecurityViolation, execute_scoped
+from paths import DB_PATH
 from runtime import runtime
 from security import ALLOWED_TABLE, QueryRejected
 
@@ -598,7 +599,7 @@ def build_agent(
     *,
     embedder: rag.EmbedClient,
     model_id: str | None = None,
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path = DB_PATH,
     prompt_guardrails: bool | None = None,
 ) -> CompiledStateGraph:
     """Compile the agent graph for one tenant, with every tool closed over that tenant.

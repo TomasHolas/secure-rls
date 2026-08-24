@@ -263,6 +263,40 @@ The frontend image bakes its API URL at build time. Pointing the SPA at a
 backend other than `http://localhost:8002` means rebuilding with
 `VITE_API_URL` set.
 
+#### State survives a rebuild
+
+Everything the backend writes lives in one data directory, and compose mounts the
+named volume `backend-state` on it, so a `down` / `up --build` cycle replaces the
+code and keeps the data ([ADR 0013](docs/decisions/0013-deployment-cicd.md) as
+amended):
+
+| Store | What is in it |
+|---|---|
+| `state.db` | conversations, their titles, and every turn's tool evidence for replay |
+| `checkpoints.db` | LangGraph's multi-turn memory — what the agent remembers of a thread |
+| `audit.db` | the audit trail: every generated SQL, its verdict, the rewritten SQL |
+| `vectors.db` | the note embeddings, so a restart does not re-embed the corpus |
+| `employees.db` | the tenant data, rebuilt from the committed CSV when the volume is empty |
+
+```bash
+docker compose down                     # keeps the volume
+docker compose up --build -d            # new code, same conversations and audit trail
+docker compose down -v                  # DESTRUCTIVE: deletes the volume
+```
+
+`down -v` is the reset: it deletes every conversation, the memory, the audit trail
+and the embeddings, and the next boot reloads the CSV and re-embeds the notes
+(which needs the embedding model on the endpoint). Nothing else deletes them —
+`down` and `up --build` do not.
+
+Because a populated database is left alone (issue #96), regenerating the dataset
+reaches a running deployment only after that reset, not after an image rebuild.
+
+The directory is configuration, not a hardcoded path: the image sets
+`SECURE_RLS_DATA_DIR=/app/data`, which is where the volume is mounted. In dev it
+defaults to `apps/backend/` itself, so the dev path below needs no extra
+variable.
+
 ### 3. Run — dev mode
 
 Prerequisites: [uv](https://docs.astral.sh/uv/) and Node 20+ (CI and the image

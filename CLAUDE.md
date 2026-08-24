@@ -131,8 +131,16 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
 cp apps/backend/.env.example .env    # then fill both; compose refuses to run otherwise
 docker compose up --build            # backend :8002, frontend :3002
 
+# The backend's state lives on the named volume backend-state, mounted at the image's data
+# directory (ADR 0013 as amended): conversations and their turn history, the LangGraph memory,
+# the audit trail and the note embeddings. So a rebuild keeps them:
+docker compose down && docker compose up --build -d   # same data, new code
+docker compose down -v                                # DESTRUCTIVE: wipes the whole volume,
+                                                      # next boot reloads the CSV and re-embeds
+
 # Backend dev (M3+). The first start builds employees.db from the committed CSV and the note
 # index from those notes (ADR 0003 as amended, ADR 0010); later starts find both and are instant.
+# No new variable: the data directory defaults to apps/backend itself (SECURE_RLS_DATA_DIR).
 cd apps/backend && uv sync && uv run uvicorn app:app --reload --port 8002
 
 # Frontend dev (M4+, talks to VITE_API_URL, default http://localhost:8002):
@@ -173,6 +181,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Dataset generator | `apps/backend/scripts/generate_dataset.py` — truncated-lognormal salaries by rejection (never clipped) and compositional notes whose clause pools are disjoint per score band (ADR 0008 as amended) |
 | Eval harness | `apps/backend/evals/` — `harness.py` owns the shared bricks (workspace, trace collection, leak check, markdown) that `correctness.py`, `adversarial.py` and `model_gate.py` all import. `--no-guardrails` grades the off position - on the suites, where each position writes its own report file, and on `model_gate`, whose sections state their position because `gate-results.md` is append-only. `harness.guardrail_note` is the one owner of that wording, so all three reports say it identically (ADR 0004 as amended) |
 | Tests | `apps/backend/tests/` (pytest), `apps/frontend/src/**/*.test.tsx` (vitest) |
+| Where a state file lives | `apps/backend/paths.py` — the ONE owner of state-path derivation: the data directory (`SECURE_RLS_DATA_DIR`, defaulting to the package directory so dev needs no variable) and `employees.db`, `state.db`, `checkpoints.db` inside it. `db.py` still derives `audit.db` and `vectors.db` as siblings of the database it was handed, which is why a tmp database keeps its own. In the deployment the directory is a named volume (ADR 0013 as amended) |
 | Tunable knob | `apps/backend/runtime.json` (typed view in `runtime.py`) — no magic values in code |
 | Frontend UI | `apps/frontend/src/` — compose the design bricks (catalogue: `src/components/README.md`); never hand-roll a table/pill/button |
 | Frontend session (token, display-only JWT claims, logout) | `apps/frontend/src/auth.ts` |
@@ -185,7 +194,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
 | A metric KB does not define (the shared control height) | `apps/frontend/src/styles/app.css` — its own `:root` block, because `tokens.css` is KB's verbatim copy and a token added there would be lost on the next sync. A row mixing an input with a button carries `control-row` and every control in it takes `--control-height` (ADR 0014 as amended), asserted by `src/styles/controls.test.ts` |
 | CI / CD | `.github/workflows/ci.yml` |
-| Images / the deployment unit | `apps/backend/Dockerfile`, `apps/frontend/Dockerfile` + `nginx.conf`, `docker-compose.yml` |
+| Images / the deployment unit / the state volume | `apps/backend/Dockerfile`, `apps/frontend/Dockerfile` + `nginx.conf`, `docker-compose.yml` (the `backend-state` volume; `down -v` is the destructive reset) |
 | A design decision | `docs/decisions/` — new ADR, linked from `docs/INDEX.md` |
 | Assignment-facing docs | `README.md` — security model, quickstart, creds, evaluation, deliverables map, challenges, time spent |
 
