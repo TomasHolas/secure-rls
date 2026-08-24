@@ -188,6 +188,44 @@ returns the same 450 acme rows, the same total, and the server's own sentence ab
 can name a tenant. Typing `sort=notes` still gets the 400. Both tabs carry it, because both
 listings take the same filters and owe a reader the same account of them.
 
+## Amendment (after issue #115): the filter block is laid out, and a date is ISO text
+
+The filters shipped as an `auto-fit` grid of eight equal boxes with the actions as a ninth cell.
+At most widths that produced an odd number of columns, so `Score from` sat on one row and
+`Score to` on the next while the salary pair stayed together, and `Apply`/`Reset` landed in the
+middle of the last row with the rest of it empty. Measured on the running app, the row also
+carried three different control heights - 47px inputs, 49px native date inputs, 32px buttons -
+and the Notes search and `ParamProbe` buttons sat a further 16px below the box beside them,
+because the field's bottom margin was providing the row's rhythm.
+
+- **A bound pair is one grid cell, not two.** The `FieldPair` brick holds `from` and `to`
+  together, so the grid lays out six cells - three single filters (tenant, name, department) and
+  three pairs - and six is a full grid at three, two and one column. The pair cannot be split by
+  a wrap because the wrap never sees two items, and no cell is ever stranded beside dead space.
+- **The actions close the form on their own full-width row**, ending where the last column ends,
+  in the `[Reset] [Apply]` order a terminal action reads in. Nothing sits mid-grid.
+- **One height, from one custom property.** `--control-height` is declared once and every control
+  in an element carrying `control-row` takes it, matched by element rather than by class, so a
+  control added later cannot opt out; the fields drop their bottom margin inside such a row, which
+  is what puts an input, a select and a button on one baseline. It lives in `app.css` rather than
+  `tokens.css` because that file is KB's verbatim copy (ADR 0006). `styles/controls.test.ts`
+  asserts it against the real stylesheet in jsdom, so the claim is tested, not eyeballed.
+- **The date filters are ISO text, not native date inputs.** The trade-off, stated because it is
+  a real loss: the native control brings a calendar popover and its own keyboard handling for
+  free, and a text box brings neither. What it also brings is a placeholder rendered in the
+  viewer's locale (`dd.mm.yyyy` here, `mm/dd/yyyy` on a US machine) and the OS calendar glyph,
+  which is a demo whose first frame differs per laptop and disagrees with the ISO dates in the
+  cells below it, the ISO date bound into the executed statement, and the server's own refusal
+  (`hired_from must be an ISO date such as 2020-01-31`). Since the value on the wire was already
+  a string the server parses - the browser never interpreted it - what changes is only what the
+  reader sees, and it now matches the data. Nothing is validated client-side: a bad date still
+  reaches the server and comes back as its own 400, which a blocking HTML `pattern` would have
+  swallowed.
+- **A tenant control is in the grid, disabled.** The listings are being changed to show the whole
+  dataset with `tenant_id` as a first-class filter (issue #117). The control is laid out now so
+  the grid is not rearranged twice; until that issue lands it holds no value, so nothing is added
+  to any request - an unfilled filter is not sent at all, which `lib/api.test.ts` pins.
+
 ## Consequences
 
 - The isolation claim becomes checkable without trusting the agent, and the row

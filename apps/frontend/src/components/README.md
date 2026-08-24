@@ -28,7 +28,7 @@ components/
   TenantPill.tsx   the identity chip (tenant + user) in the header slot
   Modal.tsx        the one dialog brick — portal, backdrop, Escape/backdrop/× dismissal
   ConfirmDialog.tsx  the confirm step in front of a delete, on Modal + Button
-  forms/           FormCard, TextField, SelectField (+ index barrel)
+  forms/           FormCard, TextField, SelectField, FieldPair (+ index barrel)
   layout/          AppLayout, Header, Tabs, Sidebar, Page, PageHeader, Section,
                    EmptyState (+ index barrel)
   charts/          Chart — renders a backend ChartSpec (+ index barrel)
@@ -47,6 +47,15 @@ through) and `src/lib/sqldiff.ts` (the token alignment `SqlRewrite` paints).
 
 CSS for every brick lives in `styles/app.css`; colors, spacing, radii, motion and
 fonts come from `styles/tokens.css`.
+
+**A row of controls carries `control-row`.** Any element that puts an input, a select and a
+button on one line — the Records filter grid, the Notes search, `ParamProbe` — adds that class
+beside its own layout class, and every control inside takes one height from `--control-height`
+and loses the field's bottom margin, so the row is one height and one baseline (issue #115). The
+property is declared once, at the top of `app.css` rather than in `tokens.css`, because that file
+is KB's verbatim copy (ADR 0006) and a metric KB does not define would be lost on the next sync.
+`styles/controls.test.ts` asserts the contract against the real stylesheet in jsdom, so a control
+that escapes the rule or a second declaration of the height fails the suite rather than a review.
 
 ## Bricks
 
@@ -282,13 +291,33 @@ renders the empty "no filter" option.
 
 ### forms/TextField
 
-The labelled text input (`type="text" | "password" | "number" | "date"`). KB writes this label+input pair
+The labelled text input (`type="text" | "password" | "number"`). KB writes this label+input pair
 inline in its views; here it is a brick, so no view re-styles an input.
 
 ```tsx
 <TextField id="login-password" label="Password" type="password" value={password}
   onChange={setPassword} autoComplete="current-password" disabled={pending} />
 ```
+
+There is deliberately **no `date`**: a native date input renders its placeholder in the viewer's
+locale (`dd.mm.yyyy` on this machine, `mm/dd/yyyy` on the next) with the OS calendar glyph, while
+the table cells, the executed SQL and the server's own refusal all speak ISO. A date filter is a
+text field carrying an ISO placeholder instead, so what a reader types is what they read back
+(issue #115). Nothing is validated in the browser: the server owns the format and answers a bad
+one with a sentence naming it, and a blocking `pattern` would swallow that refusal.
+
+### forms/FieldPair
+
+```tsx
+<FieldPair>
+  <TextField id="records-salary-min" label="Salary from" type="number" ... />
+  <TextField id="records-salary-max" label="Salary to" type="number" ... />
+</FieldPair>
+```
+
+The two bounds of one filter as a **single grid cell**, so a wrap can never leave `from` on one
+row and `to` on the next: the filter grid lays out the pair, not the fields (issue #115). Purely
+presentational — each field keeps its own label and id, so nothing changes for a screen reader.
 
 ### layout/AppLayout
 

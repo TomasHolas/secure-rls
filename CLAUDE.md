@@ -181,6 +181,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Number formatting a reader sees (axis ticks, bin edges, table cells, elapsed seconds, singularized counts) | `apps/frontend/src/lib/format.ts` — the only formatter; the backend emits raw numbers and never a locale-specific string |
 | The generated-versus-executed SQL money shot | `apps/frontend/src/components/SqlRewrite.tsx` paints it, `lib/sqldiff.ts` aligns it — the tenant scoping marked inside the statement that ran, with the two cards one click behind `show both` (ADR 0012 as amended, and `docs/ui-pattern-review.md`) |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
+| A metric KB does not define (the shared control height) | `apps/frontend/src/styles/app.css` — its own `:root` block, because `tokens.css` is KB's verbatim copy and a token added there would be lost on the next sync. A row mixing an input with a button carries `control-row` and every control in it takes `--control-height` (ADR 0014 as amended), asserted by `src/styles/controls.test.ts` |
 | CI / CD | `.github/workflows/ci.yml` |
 | Images / the deployment unit | `apps/backend/Dockerfile`, `apps/frontend/Dockerfile` + `nginx.conf`, `docker-compose.yml` |
 | A design decision | `docs/decisions/` — new ADR, linked from `docs/INDEX.md` |
