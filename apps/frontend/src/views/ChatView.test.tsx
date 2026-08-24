@@ -478,6 +478,16 @@ describe("the chat view", () => {
     expect(screen.getByText(/ended without a stored answer/i)).toBeTruthy();
   });
 
+  it("says a reopened thread is still answering rather than that its history was lost", async () => {
+    const running = replayTurns([{ role: "user", content: REPLAY_QUESTION }], [], true);
+
+    await renderReady({ threadId: "t7", replay: running });
+
+    expect(screen.getByText("still answering on the server")).toBeTruthy();
+    expect(screen.queryByText("history not kept")).toBeNull();
+    expect(screen.queryByText(/ended without a stored answer/i)).toBeNull();
+  });
+
   it("does not explain when the replayed turn still has its answer text", async () => {
     const textOnly = replayTurns(
       [

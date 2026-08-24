@@ -171,10 +171,16 @@ class ConversationsConfig:
 
 @dataclass(frozen=True)
 class ApiConfig:
-    """REST edge knobs (ADR 0012): the model-list proxy timeout and the untitled-thread title."""
+    """REST edge knobs (ADR 0012): the model-list proxy, the untitled-thread title, the window.
+
+    `turn_queue_frames` is how many frames a turn may hold for a reader that is not draining
+    them before forwarding is cut (ADR 0012 as amended). It bounds the memory one abandoned
+    stream can cost; it never bounds the turn, which runs to its end either way.
+    """
 
     models_timeout_s: float
     default_title: str
+    turn_queue_frames: int
 
 
 @dataclass(frozen=True)

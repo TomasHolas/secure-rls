@@ -54,8 +54,8 @@ This page is the one place the totals are stated, so no other doc can drift from
 them:
 
 ```bash
-cd apps/backend && uv run pytest -q     # 1076 tests
-cd apps/frontend && npm test            # 399 tests, 25 files
+cd apps/backend && uv run pytest -q     # 1087 tests
+cd apps/frontend && npm test            # 417 tests, 26 files
 ```
 
 The backend suite is weighted toward the boundary: 272 tests on the SQL
@@ -63,7 +63,7 @@ validator alone (a hostile-SQL corpus), 174 on the executor — including the on
 that prove the browse tabs' unscoped read still answers to the validator, the
 authorizer, the row cap and the deadline, that it is audited, and that no built
 agent tool is closed over it, plus the newest-first audit window the Audit tab
-reads — 90 on the browse templates, and 137 on the API
+reads — 90 on the browse templates, and 141 on the API
 edge including JWT tampering — wrong signature, `alg=none`, expired, missing —
 mapped one-to-one onto the RFC 8725 requirements.
 

@@ -31,6 +31,11 @@
  * server kept no history for at all - a replayed turn must never read as complete when it is not.
  * Switching threads (a new `chatKey`) drops the live turns with it.
  *
+ * A reopened thread can also still be answering (issue #143): a turn runs to its end on the server
+ * whether or not this browser is watching, so the store marks that last question as still running
+ * and it renders as a pending answer instead of a turn with no trace. Asking again before it ends
+ * is refused by the server, and the refusal is what this view shows on the turn that asked.
+ *
  * A turn reads top down in the order it happened: the trace of the steps first, then the answer
  * they produced, then what the turn cost beside the model that answered it. The reasoning inside
  * a step is the model's own, streamed live and collapsed until the reader asks for it.
@@ -72,6 +77,8 @@ import type { Turn, TurnUsage } from "../lib/trace";
 const STREAM_CUT = "The stream ended before the turn finished.";
 /** The answer card before its first token: the one place in the chat that carries the pixel grid. */
 const PENDING_LABEL = "working on it";
+/** The same card for a turn that is running on the server without this browser watching it. */
+const BACKGROUND_LABEL = "still answering on the server";
 const UNKEPT_TEXT =
   "This turn ended without a stored answer, and its trace is older than the kept history.";
 const GENERIC_FAILURE = "The turn failed. Try again.";
@@ -371,7 +378,7 @@ function TurnView({
       >
         {!turn.answer && turn.phase === "streaming" ? (
           <p className="msg-pending">
-            <Loader label={PENDING_LABEL} />
+            <Loader label={replayed ? BACKGROUND_LABEL : PENDING_LABEL} />
           </p>
         ) : null}
         {!turn.answer && turn.items.length === 0 && turn.phase === "replayed" ? (

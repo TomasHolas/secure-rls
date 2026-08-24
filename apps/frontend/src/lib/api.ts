@@ -85,10 +85,15 @@ export interface TurnRecord {
  * A thread as `GET /conversations/{id}` serves it: the registry row, the replayed exchanges, and
  * the trace each of those turns produced - its reasoning, its calls with the arguments the model
  * wrote, their outcomes, and the terminal frame with the turn's status and cost.
+ *
+ * `in_flight` is the server saying a turn is running on this thread at this moment. A turn's
+ * history is stored when it ends, so a thread reopened mid-turn has a newest question with no
+ * record behind it yet; this is what tells that apart from a turn whose trace is gone.
  */
 export interface Conversation extends Thread {
   messages: Message[];
   turns: TurnRecord[];
+  in_flight: boolean;
 }
 
 /** One `POST /chat` turn. No tenant field exists to send: the server takes it from the JWT. */
@@ -448,6 +453,8 @@ export async function openChatStream(request: ChatRequest): Promise<Response> {
 function chatFailure(status: number): string {
   if (status === 400) return "The selected model is not available on the endpoint any more.";
   if (status === 404) return "This conversation no longer exists. Start a new one.";
+  if (status === 409)
+    return "This conversation is still answering the previous question. Wait for it to finish.";
   if (status === 502) return "The model endpoint is unavailable.";
   return "The chat request failed. Try again.";
 }
