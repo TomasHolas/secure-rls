@@ -101,10 +101,11 @@ ollama pull huihui_ai/qwen3-abliterated:30b-a3b   # agent.model, the default
 ollama pull nomic-embed-text                      # agent.embed_model, no fallback
 ```
 
-> Serving Ollama from another host means `OLLAMA_HOST=0.0.0.0`, which exposes an
-> **unauthenticated** inference API to every network that host is on. Do that
-> only behind a private overlay network (Tailscale/WireGuard) or a host firewall
-> admitting the one client, never on an untrusted LAN.
+> Ollama binds `127.0.0.1`; serving it to another host means
+> `OLLAMA_HOST=0.0.0.0`, which exposes an **unauthenticated** inference API to
+> every network that host is on. Do that only behind a private overlay network
+> (Tailscale/WireGuard) or a host firewall admitting the one client, never on an
+> untrusted LAN.
 
 The chat model is switchable at runtime from a UI picker, and `agent.model` is
 only a preference. Model choice never affects RLS: every layer is
@@ -256,8 +257,8 @@ Challenge, decision, outcome — one bullet per wave; full write-ups in
 
 ## Known limitations
 
-The ones that would matter first in production. The full list, with the reasoning
-and the ADR each is recorded in:
+The ones that would matter first in production. The full list, each with its
+reasoning and the ADR that records it:
 [docs/challenges.md](docs/challenges.md#known-limitations).
 
 - **Prompt rules are UX guidance, not enforcement** — every security claim here is independent of them.
