@@ -513,7 +513,7 @@ Two results are worth stating plainly rather than burying:
   data — but a grounding defect, tracked as
   [issue #94](https://github.com/TomasHolas/secure-rls/issues/94).
 - **The one stopped turn** was `beta`'s `injection-developer-mode` attack hitting
-  the 120-second per-turn deadline, ending `cut_short`, leaking nothing. That
+  the per-turn deadline (`turn_deadline_s`), ending `cut_short`, leaking nothing. That
   bound exists *because* of this harness: an earlier run showed the same class of
   prompt generating for ~35 minutes with zero tool calls, which is unbounded
   consumption (OWASP LLM10 via LLM01), never an isolation failure. See the
