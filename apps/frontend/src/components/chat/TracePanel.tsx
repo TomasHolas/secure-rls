@@ -49,6 +49,8 @@ const FOR = "for";
 const TRUNCATED_LABEL = "thinking capped";
 const TRUNCATED_TITLE =
   "The server kept this round's thinking up to its history character cap; what came after it is not stored.";
+const WITHHELD_TITLE =
+  "The table here is the whole result. The model's own copy of it was cut to fit its context window, so it read fewer lines than you can see.";
 
 const TOOL_ICONS: Record<string, string> = {
   query_db: "database",
@@ -214,6 +216,7 @@ function OutcomeChips({ outcome }: { outcome: CallOutcome }) {
     );
   }
   const { returned_count, total_count, truncated } = outcome.data;
+  const withheld = outcome.withheld ?? 0;
   return (
     <>
       {truncated ? (
@@ -223,6 +226,11 @@ function OutcomeChips({ outcome }: { outcome: CallOutcome }) {
       ) : null}
       {returned_count !== undefined && !truncated ? (
         <Pill tone="ok">{formatCount(returned_count, "row")}</Pill>
+      ) : null}
+      {withheld > 0 ? (
+        <Pill tone="warn" title={WITHHELD_TITLE}>
+          {formatCount(withheld, "line")} withheld from the model
+        </Pill>
       ) : null}
     </>
   );

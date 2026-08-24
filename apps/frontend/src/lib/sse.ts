@@ -72,11 +72,19 @@ export interface ToolResultData {
   notes?: NoteMatch[];
 }
 
+/**
+ * One tool's outcome. `data` is the whole result, every row the server's cap allowed; `content` is
+ * what the MODEL was handed, which for a wide result is less: one reply may occupy only so much of
+ * the model's context window, so the server cuts its copy at a line boundary (ADR 0007 as amended,
+ * issue #142). `withheld` is how many lines that cost, and absent on a turn stored before the cap
+ * existed - so the panel can say the model read less than the table beside it.
+ */
 export interface ToolResultEvent {
   type: "tool_result";
   id: string;
   tool: string;
   content: string;
+  withheld?: number;
   data: ToolResultData;
 }
 
