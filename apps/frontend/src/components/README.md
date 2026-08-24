@@ -398,7 +398,7 @@ region, vertically as well as horizontally.
 ```
 
 `TextField`'s counterpart for a value that comes from a fixed set: the labelled native
-`<select>` on the `.select` metrics `chat/ModelPicker` uses, inside the `.field` + label
+`<select>` on the shared `.select` metrics, inside the `.field` + label
 pattern `TextField` owns. It exists because a filter must not let a reader type a value the
 data does not hold — the options are whatever the server listed (`GET /records/departments`,
 `GET /records/departments`, `FilterOption[]`), and `placeholder` renders the empty "no filter"
@@ -643,11 +643,22 @@ in the trace, where it is the real thing rather than model-written markup.
 ### chat/Composer
 
 ```tsx
-<Composer onSend={send} disabled={streaming} />
+<Composer onSend={send} models={models} model={model} onModelChange={setModel}
+  disabled={streaming} />
 ```
 
-The question box: Enter sends, Shift+Enter starts a line, and the whole control is
-disabled while a turn streams so a second turn cannot race the first on one thread.
+The prompt bar (issue #159): one rounded bar carrying the question, the model picker and
+the send control, in that keyboard order. Enter sends, Shift+Enter starts a line, and the
+whole bar is disabled while a turn streams so a second turn cannot race the first on one
+thread. The textarea starts one line tall and grows with the draft — measured off
+`scrollHeight`, the way the reference does — to the `--composer-cap` ceiling on
+`.composer-bar`, past which it scrolls inside itself instead of pushing the transcript up.
+The **focus ring is on the bar** (`focus-within`) and the textarea inside carries none, so
+the three controls read as one field. Send is an arrow in a filled square: the inverse
+surface while there is something to send, the muted register when there is not. There is no
+hint line — the key that sends is in the placeholder and the whole contract is on send's
+tooltip, because a placeholder spelling out both keys wraps at 900px and costs the bar its
+one line at rest.
 
 ### chat/ModelPicker
 
@@ -658,7 +669,11 @@ disabled while a turn streams so a second turn cannot race the first on one thre
 The options are whatever `GET /models` listed — never a hardcoded list (ADR 0005 as
 amended) — with the `default` from the same response preselected; switching
 mid-conversation is allowed. An empty list means the endpoint was unreachable: the
-picker says so and the turn falls back to the server-side default.
+picker says so and the turn falls back to the server-side default. It lives **inside the
+prompt bar** (issue #159), where it is the quiet trigger the bar's own border allows: the
+`.select` metrics with the chrome stripped off, `appearance: none`, and our own chevron
+`Icon` in place of the platform's. `Composer` is its only caller — those rules follow
+`.select`'s in `app.css` deliberately, since at equal specificity the later block wins.
 
 ### chat/TracePanel
 
@@ -785,7 +800,12 @@ every stored payload has structured keys, so the fallback is a live-turn path on
   **KB has no copy-to-clipboard control anywhere**, so the copy button is new, in a new
   `.btn-xs` register (KB's smallest button is still card-sized).
 - `ModelPicker` uses a native `<select>`: **KB has no select, dropdown or listbox
-  anywhere**, so it borrows `.cfg-input`'s metrics and its border-only focus instead.
+  anywhere**, so it borrows `.cfg-input`'s metrics and its border-only focus instead — and
+  strips both back off inside the prompt bar, where the bar is what carries the border.
+- `Composer` is KB's `.bm-composer` turned into a prompt bar (issue #159): **KB has no
+  auto-growing box and no icon-square submit anywhere**, so the `scrollHeight` growth, the
+  `--composer-cap` ceiling and `.composer-send`'s inverse-surface square are ours, on the
+  existing `.btn-icon` hit area rather than a second icon-button register.
 - `SqlRewrite`'s pair is KB's two-column `.usage-grid` at `1fr 1fr`; KB's own diff
   (`.prop-diff`) is inline before/after chips, which cannot hold two SQL statements, and it
   has no in-place marking of a changed run anywhere, so `.sql-add` is new on our accent
