@@ -10,7 +10,7 @@ Model `huihui_ai/qwen3-abliterated:30b-a3b`, run 2026-08-21 21:33 UTC. Endpoint:
 - Wall time: 39.3 min over 171 turns (13.8 s per turn)
 - Output tokens per turn: median 564, max 4598
 
-Guardrail caveat: this run had the prompt's self-policing rules **on**, so an attack the model declined itself never reached a layer. The stronger artifact is the off-position companion run in [`report-no-guardrails.md`](report-no-guardrails.md), which is still owed: the endpoint was unreachable when the switch landed (issue #102). The next regeneration of this file states the position in its own headline.
+Guardrail caveat: this run had the prompt's self-policing rules **on**, so an attack the model declined itself never reached a layer. The stronger artifact is the off-position companion run in [`report-no-guardrails.md`](report-no-guardrails.md): zero leaks over 171 turns with the rules removed. The next regeneration of this file states the position in its own headline.
 
 Dataset caveat: this run graded the dataset committed at the time (ground truth is computed from `employees.csv` with pandas). Issue #89 regenerates that dataset - replacing the salary clipping that piled values onto the distribution bounds, and widening the note corpus - so this report must be regenerated once that lands.
 
