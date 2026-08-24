@@ -24,7 +24,14 @@ from typing import Any
 
 import pytest
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import Field
@@ -91,6 +98,8 @@ _BETA_MARKER = "beta secret"
 
 _DIM = 32
 _RAMBLE = "and on and on "
+# A stand-in system prompt of a known size, for the history-fitting boundaries.
+_SYSTEM = SystemMessage(content="s" * 10)
 _CALL_ID = "call-1"
 _THREAD = "thread-1"
 _OUTCOMES = ("tool_result", "retry", "security_event")
@@ -235,6 +244,37 @@ def _nudged(said: str, again: str = "") -> tuple[AIMessage, AIMessage]:
     return AIMessage(content=said), AIMessage(content=again or said)
 
 
+def _costing(marker: str, estimated: int) -> list[BaseMessage]:
+    """One stored turn - a question and its answer - worth exactly `estimated` tokens.
+
+    The `budget` fixture divides characters by one, so a turn of n characters is a turn of n
+    estimated tokens and every boundary below is exact. The marker is what tells the turns apart
+    once one of them has been dropped.
+    """
+    return [HumanMessage(content=marker * (estimated - 1)), AIMessage(content=marker)]
+
+
+def _three_tool_turns(build, checkpointer) -> tuple[Any, ScriptedLLM, list[dict]]:
+    """Three tool-using turns on one thread: the graph, the model, and the last turn's trace.
+
+    Every turn calls a tool, so each one stores four messages - question, call, result, answer -
+    and the thread the third turn assembles is what a trimmed history has to be cut out of
+    without leaving a result behind.
+    """
+    script = [
+        message
+        for answer in ("the first answer", "the second answer", "the third answer")
+        for message in (
+            _tool_call("get_stats", metric="avg", column="salary"),
+            AIMessage(content=answer),
+        )
+    ]
+    graph, llm = build(*script, checkpointer=checkpointer)
+    list(run_turn(graph, "first question", _THREAD))
+    list(run_turn(graph, "second question", _THREAD))
+    return graph, llm, list(run_turn(graph, "third question", _THREAD))
+
+
 def _spent(message: AIMessage, prompt: int, completion: int) -> AIMessage:
     """The same assistant message carrying the usage an endpoint would report for it."""
     return AIMessage(
@@ -372,6 +412,41 @@ def tuned(monkeypatch):
         )
         monkeypatch.setattr(agent, "runtime", lambda: patched)
         monkeypatch.setattr(db, "runtime", lambda: patched)
+
+    return apply
+
+
+@pytest.fixture
+def budget(monkeypatch):
+    """Set what one model call may be sent, in the knobs `_fit_history` derives it from.
+
+    `history_chars_per_token` defaults to one here, so a character is an estimated token and the
+    boundaries these tests assert are exact rather than rounded. The two subtracted knobs default
+    to zero for the same reason: a test about the floor should not have to do the window's
+    arithmetic, and the one test that is about that arithmetic sets them itself.
+    """
+
+    def apply(
+        *,
+        context_window,
+        max_output_tokens=0,
+        history_headroom_tokens=0,
+        min_history_turns=1,
+        history_chars_per_token=1.0,
+    ):
+        config = runtime()
+        patched = replace(
+            config,
+            agent=replace(
+                config.agent,
+                context_window=context_window,
+                max_output_tokens=max_output_tokens,
+                history_headroom_tokens=history_headroom_tokens,
+                min_history_turns=min_history_turns,
+                history_chars_per_token=history_chars_per_token,
+            ),
+        )
+        monkeypatch.setattr(agent, "runtime", lambda: patched)
 
     return apply
 
@@ -1138,6 +1213,136 @@ def test_a_different_thread_starts_clean(build, checkpointer):
     second = [message.text for message in llm.seen[2]]
     assert "first question" not in second
     assert second[-1] == "second question"
+
+
+def test_a_history_that_fits_what_one_call_may_send_goes_whole(budget):
+    """At exactly the budget nothing is dropped: the bound trims what overflows, not what fills."""
+    budget(context_window=30)
+    history = [*_costing("a", 10), *_costing("b", 10)]
+
+    fitted = agent._fit_history(_SYSTEM, history)
+
+    assert fitted.dropped == 0
+    assert fitted.messages == history
+
+
+def test_one_estimated_token_past_the_budget_drops_the_oldest_turn(budget):
+    """The boundary is the budget itself, and what goes first is the thread's oldest turn."""
+    budget(context_window=30)
+    oldest = _costing("a", 10)
+    newest = _costing("b", 11)
+
+    fitted = agent._fit_history(_SYSTEM, [*oldest, *newest])
+
+    assert fitted.dropped == 1
+    assert fitted.messages == newest
+
+
+def test_the_send_budget_leaves_room_for_the_answer_and_for_the_estimate_being_wrong(budget):
+    """What may be sent is the window less the generation cap less the headroom, never the window.
+
+    This is the arithmetic issue #131 was missing: the eval failures were requests of 16421 to
+    16921 tokens against a 16384-token window, so the prompt alone overflowed it. A budget that
+    did not subtract `max_output_tokens` would leave the same turn dead.
+    """
+    budget(context_window=100, max_output_tokens=40, history_headroom_tokens=10)
+    fits = [*_costing("a", 20), *_costing("b", 20)]
+
+    assert agent._fit_history(_SYSTEM, fits).dropped == 0
+    assert agent._fit_history(_SYSTEM, [*_costing("a", 21), *_costing("b", 20)]).dropped == 1
+
+
+def test_the_floor_keeps_the_newest_turns_even_when_they_still_do_not_fit(budget):
+    """A thread too big at the floor is sent as it is rather than trimmed away or looped over.
+
+    That is the stated edge: one enormous turn still meets the endpoint's own refusal, exactly as
+    it does today, but a long thread of ordinary turns no longer does.
+    """
+    budget(context_window=10, min_history_turns=2)
+    history = [*_costing("a", 100), *_costing("b", 100), *_costing("c", 100)]
+
+    fitted = agent._fit_history(_SYSTEM, history)
+
+    assert fitted.dropped == 1
+    assert fitted.messages == history[2:]
+
+
+def test_the_estimate_divisor_is_a_runtime_knob(budget):
+    """The characters-per-token divisor is configuration, not a constant buried in the graph."""
+    history = [*_costing("a", 20), *_costing("b", 20)]
+
+    budget(context_window=30, history_chars_per_token=1.0)
+    assert agent._fit_history(_SYSTEM, history).dropped == 1
+    budget(context_window=30, history_chars_per_token=4.0)
+    assert agent._fit_history(_SYSTEM, history).dropped == 0
+
+
+def test_a_thread_too_long_to_send_drops_whole_turns_and_orphans_no_tool_result(
+    build, checkpointer, budget
+):
+    """Trimming works in whole turns, so what the model reads never loses a call's other half."""
+    budget(context_window=1, min_history_turns=2)
+    _, llm, _ = _three_tool_turns(build, checkpointer)
+
+    sent = llm.seen[-1]
+    assert isinstance(sent[0], SystemMessage)
+    assert [message.text for message in sent if isinstance(message, HumanMessage)] == [
+        "second question",
+        "third question",
+    ]
+    answered = {
+        call["id"]
+        for message in sent
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+    }
+    results = [message for message in sent if isinstance(message, ToolMessage)]
+    assert results, "the surviving turns did call tools, or this proves nothing"
+    assert all(message.tool_call_id in answered for message in results)
+
+
+def test_the_current_question_and_the_system_prompt_are_never_trimmed(
+    build, checkpointer, budget
+):
+    """No budget is small enough to drop the prompt or the question the turn exists to answer."""
+    budget(context_window=1, min_history_turns=1)
+    _, llm, _ = _three_tool_turns(build, checkpointer)
+
+    sent = llm.seen[-1]
+    assert isinstance(sent[0], SystemMessage)
+    assert "Schema of employees" in sent[0].text
+    assert sent[1].text == "third question"
+
+
+def test_a_turn_that_trimmed_its_history_says_so_on_its_terminal_frame(
+    build, checkpointer, budget
+):
+    """Memory is never shortened silently: the signal rides the frame that closes the turn."""
+    budget(context_window=1, min_history_turns=1)
+    _, _, events = _three_tool_turns(build, checkpointer)
+
+    assert _one(events, "done")["history_trimmed"] is True
+
+
+def test_a_turn_that_sent_its_whole_history_claims_no_trimming(build, checkpointer):
+    """The signal is a report, not a decoration: an ordinary turn says its memory was whole."""
+    graph, _ = build(*_nudged("ready"), checkpointer=checkpointer)
+
+    events = list(run_turn(graph, "one question", _THREAD))
+
+    assert _one(events, "done")["history_trimmed"] is False
+
+
+def test_trimming_shortens_what_is_sent_and_never_what_is_stored(build, checkpointer, budget):
+    """The checkpointer keeps every turn, so a trimmed turn replays the whole thread (issue #90)."""
+    budget(context_window=1, min_history_turns=1)
+    _three_tool_turns(build, checkpointer)
+
+    replayed = [message.content for message in thread_messages(checkpointer, _THREAD)]
+
+    assert "first question" in replayed
+    assert "the first answer" in replayed
+    assert "third question" in replayed
 
 
 def test_the_retry_budget_resets_between_turns(build, checkpointer, tuned):
