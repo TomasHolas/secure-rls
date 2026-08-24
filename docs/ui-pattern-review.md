@@ -94,56 +94,20 @@ screen whose subject is a refusal; declined on both counts. Its **demo autoplay 
 types a canned prompt on a timer - reference-site furniture, and here it would put words the
 reader did not write into the box that sends them.
 
-### Adopted - the pipeline canvas (owner request, no issue)
+### Adopted, then withdrawn - the pipeline canvas (owner request, no issue)
 
-The reviews above judged the reference against the transcript, the rail and the prompt bar. The
-one screen none of them looked at is the one a demo opens on: an **empty** chat, which was the
-`EmptyState` brick - a `chat_bubble` glyph and the sentence telling the reader what to ask, in the
-middle of the tallest region in the app. The owner's ruling is the standing one: port the
-reference's **Flowchart** pattern into our own CSS and tokens - no Tailwind, no dependency, none
-of its hex colours and none of its ice-cream content.
-
-**What fills that region now is the query pipeline**: six cards on a dotted canvas - the model's
-statement, layers 2, 2.5, 3 and 4, and the rows that survive them - each carrying one line lifted
-from the README's security table, joined by measured connectors, with a selected card lighting the
-connectors on both of its sides. The hint sentence stays, above the canvas, because it is the
-instruction; what the canvas replaced is the empty space and the lone icon. A thread with any turn
-in it renders exactly as before.
-
-**This is not the pattern this review rejected, and the line matters.** Issue #91 rejected *agent
-task tracking* - numbered step rings and a `2/N` progress count over a **live** run - because our
-agent decides its next tool from what the last one returned, so any plan drawn before the turn
-ends is fiction. That objection is about a claim, not about a shape: a diagram of steps is only a
-lie when the steps it draws are being chosen as you watch. This canvas draws the **enforcement
-path**, which is fixed in `security.py` and `db.py`, identical for every question, and derived
-from the docs rather than from a turn. Nothing on it is fed by a run; it is gone the moment one
-starts. The rejection stands unchanged for the trace, which still shows what actually happened,
-in the order it happened, with no step it has not yet seen.
-
-| Pattern | What we did | Why |
-|---|---|---|
-| **A dotted editor canvas** | `.pipeline-canvas` takes the reference's radial-gradient dot grid, its colour a border token and its spacing a custom property | The dots say "this is a surface you can move things on" before anything is dragged, which is the whole invitation. A flat panel with cards on it does not |
-| **Measured bezier connectors** | Every card reports its own box through a `ResizeObserver`; an edge is one cubic bezier between two of those boxes, its control points a clamped fraction of the span it crosses | The alternative is positioning a curve from numbers a designer typed, which is wrong the first time a card wraps to a third line or the rail collapses. Measured means the copy can change and the picture stays true - the same argument as the rail's collapse being one layout rather than two |
-| **0-1 x positions scaled from the container** | A card's x is a fraction in the brick and `clamp(...)` in the stylesheet, so a narrow canvas keeps every card whole inside itself | The gentle left-right stagger is what makes the connectors bow instead of stacking into one straight line - and at 900px it has to fold to the middle rather than clip. Verified on screenshots at 1680, 1280 and 900, where the page never scrolls sideways |
-| **Selection lights the connected edges** | Clicking a card presses it (`aria-pressed`) and its two edges take the accent stroke; clicking again releases it | It answers "what is this step next to" without a second panel, and it is the one interaction on the canvas that carries information rather than delight |
-| **Drag, clamped, pointer-captured, and not a click** | Ported whole: the pointer slop that separates a drag from a click, the swallowed click at the end of a drag, the clamp against the canvas box | A card that can be moved makes a static picture feel like a surface, and all three mechanics are what stop that costing the selection. **One correction to the reference**: it captures the pointer on the node *around* the card, and a capture retargets the compatibility mouse events too - so on a live click every click landed on the node and the button inside it was never pressed. Ours captures on the card. Found on the first real click, in a browser; jsdom does not model it, so the test pins the element rather than the outcome |
-| **Kind pill above the card, hue on the card** | The pill is our `Pill` brick (`layer 2`, `layer 2.5`, ...); the reference's per-step hue moved onto the card's glyph, from `--chart-*` plus `--caution-500` for the model's untrusted statement and `--positive-500` for the rows | CLAUDE.md forbids hand-rolling a pill, and the brick has tones rather than hues. Putting the hue on the glyph keeps the reference's colour-coded read without a second pill implementation, and every colour is one our token set already ships |
-
-**What we left, and why.** Its **condition chips with real dropdowns** (`If flavor is Rocky Road`)
-- those are controls that edit a workflow, and this pipeline is not configurable by anyone,
-least of all from a browser: a picker there would imply the layers are settings. Its **row/branch
-model** (a node with two outputs) - our enforcement path has no branch; every layer either passes
-the statement on or refuses it, and the refusal is in the trace, not a second lane on a diagram.
-Its **hover-raised shadow on the condition card only** - one card behaving differently from its
-neighbour for no reason a reader can name. Its **`glimm`/gradient trim** and its **drag handle
-glyph** - the handle is a six-dot decoration promising a grab that the whole card already accepts.
-
-**Two costs, stated.** The canvas is ~763px tall at every width, and the chat log at a 950px
-viewport is ~453px, so the reader scrolls it to see the last two cards - the hint and the first
-cards are what is above the fold, which is the right order, but it is a scroll where there used to
-be none. And the empty transcript no longer pins itself to the bottom: the follow-the-stream
-effect now runs only once a turn exists, because a log with nothing in it is read from the top and
-without that change the canvas opened scrolled past its own first card.
+The Flowchart pattern (draggable cards on a dotted canvas, measured bezier
+connectors, selection lighting the connected edges) was ported as the chat's
+empty state: the six-step query pipeline as the map a reader sees before the
+first question. The owner liked the drawing and moved it: the map duplicated
+what the trace could state more honestly per statement, and a diagram behind
+the chat read as background noise once real turns existed. What survives is
+the pattern's substance in `PipelineStrip` - the same six steps
+(`components/pipelineSteps.ts`, one owner), lit per executed statement from
+the turn's real events, under the SQL it describes. The canvas brick itself
+was deleted rather than left unmounted (CLAUDE.md's dead-code rule); this
+paragraph is the record that it existed, worked, and made way for the
+journey-over-map version the owner preferred.
 
 ### Adopted - the pipeline strip (owner request, follow-up to the canvas)
 

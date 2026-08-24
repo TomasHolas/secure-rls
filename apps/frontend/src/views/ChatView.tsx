@@ -47,10 +47,9 @@
  * backend cannot say - a stream that stopped without any terminal frame, and a request the API
  * refused before the turn began.
  *
- * A thread with no turn yet is the one place this view renders something other than turns: the
- * hint that says what to ask, and the `PipelineCanvas` brick under it - the fixed path every SQL
- * the model writes takes before a row comes back. It is on screen only while the thread is empty;
- * the first turn replaces it, and a thread with any turn renders exactly as it always has.
+ * A thread with no turn yet renders only the hint that says what to ask; the pipeline is shown
+ * where it happened instead - the `PipelineStrip` under each executed statement (owner ruling:
+ * the journey per query, no map in the chat's background).
  *
  * `.chat-log` is the view's only scroll container and this view follows its bottom only
  * while the reader is already there: a token arrives many times a second and each one can
@@ -63,7 +62,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMessage, Composer, TracePanel } from "../components/chat";
 import { Page, PageHeader } from "../components/layout";
 import { Loader } from "../components/Loader";
-import { PipelineCanvas } from "../components/PipelineCanvas";
 import { Pill } from "../components/Pill";
 import { ApiError, getHealth, listModels, openChatStream } from "../lib/api";
 import { readTraceEvents } from "../lib/sse";
@@ -278,7 +276,6 @@ export function ChatView({
               Ask a question to start. Try an aggregate ("average salary per department"), a
               chart ("plot headcount by department"), or a note search.
             </p>
-            <PipelineCanvas />
           </div>
         ) : null}
         {replay.length > 0 ? (
