@@ -59,6 +59,14 @@ in the auth tests.
 | `alice@acme` | `demo-acme` | `acme` | 450 of 1000 |
 | `bob@beta` | `demo-beta` | `beta` | 350 of 1000 |
 | `carol@gamma` | `demo-gamma` | `gamma` | 200 of 1000 |
+| `admin` | `demo-admin` | all tenants | 1000 of 1000 |
+
+The admin login demonstrates that scope is a **signed claim, not a second code
+path**: its token carries `scope: "all"`, the same five layers run on every query
+it makes, and the model still cannot influence which rows it reaches — the tools
+are bound to the wider data path before it is called, from the token alone
+([ADR 0009](docs/decisions/0009-auth-implementation.md),
+[ADR 0002](docs/decisions/0002-defense-in-depth-rls.md)).
 
 The Records and Notes tabs show all 1000 rows to every user — what changes with
 the login is what the *agent* can reach, and the two numbers on one screen are

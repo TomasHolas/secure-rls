@@ -17,12 +17,12 @@ React SPA (:3002)   POST /login                       POST /chat   (Bearer JWT)
    Notes / Audit tabs    v                                  v
 FastAPI (:8002)     auth.py                            app.py  (thin handler)
                     PBKDF2 check                             │  tenant from JWT
-                    JWT {sub, tenant_id}                     v
+                    JWT {sub, tenant_id, scope}              v
                                              agent.py — explicit LangGraph graph
                                              reason -> validate -> execute_tool
                                                     -> audit -> respond
                                                              │  tools bound with
-                                                             │  tenant_id by closure
+                                                             │  tenant + scope by closure
           ┌──────────────────────┬───────────────────────────┴────────────┐
           v                      v                                        v
      query_db             get_stats / plot /                         search_notes
@@ -45,7 +45,7 @@ FastAPI (:8002)     auth.py                            app.py  (thin handler)
   token / node_start / tool_call / tool_result / security_event / retry / done
 
   Paths that never reach the agent:
-  GET /records, /notes  ─> browse.py ─> db.execute_unscoped_browse ─> employees.db
+  GET /records, /notes  ─> browse.py ─> db.execute_unscoped ─> employees.db
                            the control group: every tenant's rows, by design
   GET /notes/search     ─> browse.py ─> rag.py — scoped, the agent's own path
   /conversations        ─> conversations.py + turns.py + titles.py ─> state.db
@@ -79,7 +79,7 @@ CTE shadowing `employees`, no bound parameter in generated SQL.
 
 | # | Layer | Module | Mechanism | Survives |
 |---|---|---|---|---|
-| 1 | Identity | `auth.py` / `agent.py` | `tenant_id` read from the verified JWT server-side; tools receive it by closure — it is never an LLM-fillable argument and never accepted in a request body. | Prompt injection, malicious NL, a lying client |
+| 1 | Identity | `auth.py` / `agent.py` | `tenant_id` and the scope claim read from the verified JWT server-side; tools receive both by closure, which is also what binds them to the scoped or the unscoped data path — neither is an LLM-fillable argument and neither is accepted in a request body. | Prompt injection, malicious NL, a lying client |
 | 2 | Validation | `security.py` | sqlglot parse; allowlist: single SELECT statement, `employees` table only; rejects ATTACH, PRAGMA, mutation, multi-statement, table functions. CTEs and JOINs are allowed — every table reference is scoped by layer 3 regardless of query shape. | Malicious or malformed generated SQL |
 | 2.5 | Engine authorizer | `db.py` | SQLite `set_authorizer` enforces the table/operation allowlist inside the engine itself. | A parser differential — sqlglot reading a statement differently than SQLite executes it |
 | 3 | Scoped execution | `db.py` | Every `employees` reference in the validated AST is rewritten to `(SELECT * FROM employees WHERE tenant_id = ?)` with the tenant bound as a parameter; runs on a read-only connection (`mode=ro` at open — the load-bearing control — plus `PRAGMA query_only`). | A validator bypass — the query still only sees the caller's rows |
@@ -132,7 +132,7 @@ belongs to.
 | Layer | Component | Responsibility |
 |---|---|---|
 | Transport | `apps/backend/app.py` | FastAPI edge: `/login`, `/chat` (SSE stream of typed trace events), `/conversations`, `/records` and `/notes`, `/models`, `/health`. Thin handlers, no logic ([api.md](api.md)). |
-| Transport | `apps/backend/auth.py` | Hardcoded demo users, PBKDF2 password check, JWT issue/verify with the `tenant_id` claim (ADR 0009). |
+| Transport | `apps/backend/auth.py` | Hardcoded demo users, PBKDF2 password check, JWT issue/verify with the `tenant_id` and `scope` claims (ADR 0009 as amended). |
 | Orchestration | `apps/backend/agent.py` | Explicit LangGraph graph: system prompt with schema card + per-tenant sample rows, tool definitions, retry policy, per-turn bounds, trace collection, transcript replay from the checkpointer (ADR 0011). |
 | Orchestration | `apps/backend/titles.py` | The model's few-word label for a thread, sanitized, with the fallback to the title it already has; called by `PATCH /conversations/{id}`, never from the stream. |
 | Data access | `apps/backend/security.py` | The SQL validator brick (layer 2). Pure function: SQL text in, validated AST or a typed rejection out. |
@@ -204,14 +204,17 @@ That asymmetry is the demonstration: read beta's planted injection payload in th
 list, search for its exact text as `alice@acme`, get nothing back — and the tabs
 show 1000 rows while the agent answers 450, or 350 as `bob@beta`.
 
-The unscoped read is named as such — `db.execute_unscoped_browse`, called by
-nothing but the two listing templates in `browse.py`. It keeps the validator, the
-engine authorizer, the read-only connection, the limit caps, the query deadline,
-the row cap and the audit row; it drops only the tenant scoping, its structural
-proof and the tenant egress check, because returning every tenant is the point.
-Tests assert that no agent tool is closed over it and that no other module can
-reach it, so the claim being defended — the *agent* cannot leave its tenant — is
-untouched. Every listing response also names the query parameters it did **not**
+The unscoped read is named as such — `db.execute_unscoped`, reached by the two
+listing templates in `browse.py` and, since the `admin` identity of ADR 0009, by
+the tools of a session whose verified token grants every tenant. It keeps the
+validator, the engine authorizer, the read-only connection, the limit caps, the
+query deadline, the row cap and the audit row; it drops only the tenant scoping,
+its structural proof and the tenant egress check, because returning every tenant
+is the point. Tests assert that no other module can reach it and that the tool
+binding follows the token in both directions — a tenant identity's tools reach
+only the scoped executor, an all-scope identity's only the unscoped one, and no
+tool argument or model output moves either — so the claim being defended, that
+*the model* cannot choose what it reaches, is untouched. Every listing response also names the query parameters it did **not**
 read, so a stray parameter is reported rather than silently discarded
 (`browse.ignored_params`).
 

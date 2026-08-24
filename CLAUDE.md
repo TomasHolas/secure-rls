@@ -43,8 +43,8 @@ generated SQL, not via tool arguments, not via prompt injection.
 - **Security model**: five RLS layers with no single point of trust — layer 3
   scopes every query, layer 4 independently proves it applied, and layers 2 and
   2.5 remove the shapes that could sidestep layer 3
-  (ADR 0002). `tenant_id` comes only from the verified JWT — never from the
-  LLM, never from the request body.
+  (ADR 0002). `tenant_id` and the scope it grants come only from the verified
+  JWT — never from the LLM, never from the request body.
 
 ## Core design
 
@@ -185,14 +185,14 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Conversation registry (scoped threads, titles, rename, per-turn history) | `apps/backend/conversations.py` (own app-state store `state.db`, beside the LangGraph checkpointer; access always verified against the JWT identity). `rename_thread` is the reader's own name and stamps the row's `renamed` flag; `retitle_thread` is the model's label and never writes over a stamped row (ADR 0012 as amended). Keeps one row per turn holding the trace events history kept, so a reopened thread replays the whole conversation — pruned to the newest `conversations.max_history_turns` turns (ADR 0012 as amended). It stores what it is handed and never inspects it; a row it cannot parse raises rather than replaying a partial turn as a whole one |
 | What a turn's history keeps, and the caps on it | `apps/backend/turns.py` — `TurnLog` reduces the live trace events to the stored record: reasoning concatenated per model round, every call with the arguments the model wrote, each call's one outcome, the terminal frame always; tokens and the model-facing result text dropped. Owns all four per-turn caps and counts every piece they refuse, and is the one place a storage failure is logged and swallowed (the answer has already streamed) |
 | Generated thread titles | `apps/backend/titles.py` — the model's few-word label for a thread, sanitized, falling back to the title the thread already has (the first message only while it is still unnamed); `should_title` is the window, so a thread is named again after each of its first `conversations.title_turns` turns and never after. Called by `PATCH /conversations/{id}`, never from the `/chat` stream (ADR 0012 as amended) |
-| Auth / JWT / tenant users | `apps/backend/auth.py` |
-| Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection. `init_db` loads the CSV (accepting `str` or `Path`) and `employee_rows` is how `create_app` tells a populated database from one that was never built (ADR 0003 as amended). `execute_unscoped_browse` is the one deliberately unscoped read, for `browse.py`'s listings only — see the hard rule below |
+| Auth / JWT / demo users / scope | `apps/backend/auth.py` — the four hardcoded users, the PBKDF2 records, and the `tenant_id` + `scope` claims. `Identity.all_tenants` is the ONLY source of all-tenant scope in the repo: `admin` carries it, every other identity is one tenant, and it travels from `verify_token` to `build_agent` and nowhere else (ADR 0009 as amended) |
+| Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection. `init_db` loads the CSV (accepting `str` or `Path`) and `employee_rows` is how `create_app` tells a populated database from one that was never built (ADR 0003 as amended). `execute_unscoped` is the one deliberately unscoped read, for `browse.py`'s listings and an all-scope identity's tools — see the hard rule below; `search_vectors_unscoped` is its retrieval counterpart |
 | SQL validation (allowlist) | `apps/backend/security.py` |
 | Audit tab data path (the log a reader can see) | `apps/backend/db.py`'s `audit_window` (one newest-first `LIMIT`/`OFFSET` window plus the log's total; `db.py` stays the only reader of `audit.db`), `browse.py`'s `browse_audit` (the same paging rules the row listings use, no filters, no `reader_tenant` — reading the trail is not a data read and writes no row), `app.py`'s thin `GET /audit`. All tenants' entries by design: statements and metadata only, never a result row (ADR 0002 as amended, ADR 0014 section 12) |
-| Records/Notes browsing (allowlisted filters, sorts, paging, filter options, the poison manifest) | `apps/backend/browse.py` — fixed templates with bound filter values. The LISTINGS run through `db.execute_unscoped_browse` and show the whole dataset, with `tenant_id` a bound filter and a sortable column like `department` (ADR 0014 as rewritten); the notes SEARCH stays scoped, delegating to `rag.py`, and `annotate_note_hits` joins each hit's tenant, department and score off its row through `db.execute_scoped` so a retrieval claim is checkable. Sort, direction and an options column are allowlisted words, never bound values. `filter_options` serves the tenant and department pickers from the same read, so no count describes a set nobody asked for. `ignored_params` reports the parameters a listing did not read — names only — so a discarded parameter is stated rather than swallowed |
-| Structured analytics (aggregates, Tukey IQR anomalies, chart data) | `apps/backend/analytics.py` — allowlisted args into fixed query templates through `db.py`; never generated SQL |
-| Agent, tools, prompts, retry policy, memory, transcript replay | `apps/backend/agent.py` (`thread_messages` reads the checkpointer back; the API layer never parses checkpoints itself). `_system_prompt` is the ONLY place the system prompt is composed and the only reader of `agent.prompt_guardrails`; no enforcement module may name that knob. A tool docstring in `_build_tools` is bound as the tool's `description` and reaches the model in BOTH guardrail positions, so it states what the tool does and never a rule the model is asked to follow (ADR 0011 as amended). `_fit_history` is the one place the history is bounded before a model call: it drops whole oldest turns, never the system prompt and never the current question, never below `agent.min_history_turns`, and only from what is SENT — the checkpointer keeps every message and replay is untouched. Its sibling `_fit_reply` is the one place a single tool result is bounded: it cuts the MODEL's copy at a line boundary to `agent.max_tool_reply_chars` and reports the lines withheld on the `tool_result` event, while `data` keeps every row the reader is shown (ADR 0007 as amended) |
-| Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`). `ensure_index` stamps the store with a digest of the corpus it embedded, so a regenerated dataset re-embeds instead of being searched through stale vectors (ADR 0010 as amended) |
+| Records/Notes browsing (allowlisted filters, sorts, paging, filter options, the poison manifest) | `apps/backend/browse.py` — fixed templates with bound filter values. The LISTINGS run through `db.execute_unscoped` and show the whole dataset, with `tenant_id` a bound filter and a sortable column like `department` (ADR 0014 as rewritten); the notes SEARCH stays scoped, delegating to `rag.py`, and `annotate_note_hits` joins each hit's tenant, department and score off its row through `db.execute_scoped` so a retrieval claim is checkable. Sort, direction and an options column are allowlisted words, never bound values. `filter_options` serves the tenant and department pickers from the same read, so no count describes a set nobody asked for. `ignored_params` reports the parameters a listing did not read — names only — so a discarded parameter is stated rather than swallowed |
+| Structured analytics (aggregates, Tukey IQR anomalies, chart data) | `apps/backend/analytics.py` — allowlisted args into fixed query templates through `db.py`; never generated SQL. `all_tenants` is keyword-only, defaults to one tenant, and only picks which executor a template runs through (ADR 0002 as amended) |
+| Agent, tools, prompts, retry policy, memory, transcript replay | `apps/backend/agent.py` (`thread_messages` reads the checkpointer back; the API layer never parses checkpoints itself). `_system_prompt` is the ONLY place the system prompt is composed and the only reader of `agent.prompt_guardrails`; no enforcement module may name that knob. A tool docstring in `_build_tools` is bound as the tool's `description` and reaches the model in BOTH guardrail positions, so it states what the tool does and never a rule the model is asked to follow (ADR 0011 as amended). `_build_tools` is also where the caller's verified scope picks the data path every tool of that set runs on - scoped or unscoped - once, before the model is called; the schemas the model sees are identical either way. `_fit_history` is the one place the history is bounded before a model call: it drops whole oldest turns, never the system prompt and never the current question, never below `agent.min_history_turns`, and only from what is SENT — the checkpointer keeps every message and replay is untouched. Its sibling `_fit_reply` is the one place a single tool result is bounded: it cuts the MODEL's copy at a line boundary to `agent.max_tool_reply_chars` and reports the lines withheld on the `tool_result` event, while `data` keeps every row the reader is shown (ADR 0007 as amended) |
+| Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`). `search_notes_scoped` is the partition-filtered search and `search_notes_unscoped` the partition-less one an all-scope identity's `search_notes` is bound to, whose hits carry `tenant_id` because the result is mixed (ADR 0010 as amended). `ensure_index` stamps the store with a digest of the corpus it embedded, so a regenerated dataset re-embeds instead of being searched through stale vectors (ADR 0010 as amended) |
 | Dataset generator | `apps/backend/scripts/generate_dataset.py` — truncated-lognormal salaries by rejection (never clipped) and compositional notes whose clause pools are disjoint per score band (ADR 0008 as amended) |
 | Eval harness | `apps/backend/evals/` — `harness.py` owns the shared bricks (workspace, trace collection, leak check, markdown) that `correctness.py`, `adversarial.py` and `model_gate.py` all import. `--no-guardrails` grades the off position - on the suites, where each position writes its own report file, and on `model_gate`, whose sections state their position because `gate-results.md` is append-only. `harness.guardrail_note` is the one owner of that wording, so all three reports say it identically (ADR 0004 as amended). `--case` re-runs named asks or attacks only and insists on `--out`, so a subset can never overwrite or be mistaken for a scorecard |
 | Tests | `apps/backend/tests/` (pytest), `apps/frontend/src/**/*.test.tsx` (vitest) |
@@ -230,24 +230,32 @@ evals → the same service modules                   (no second code path)
 
 ## Hard rules
 
-- **`tenant_id` never comes from the LLM or the client.** It is read from the
-  verified JWT server-side and passed to tools by closure. No tool exposes a
-  tenant parameter the model could fill; no endpoint accepts one in the body.
+- **`tenant_id` and the scope never come from the LLM or the client.** Both are
+  read from the verified JWT server-side and passed to tools by closure — the
+  scope (one tenant, or all of them for `admin`) is what binds a tool set to the
+  scoped or the unscoped data path, decided before the model is called. No tool
+  exposes a tenant or a scope parameter the model could fill; no endpoint accepts
+  either in the body.
 - **All data access through `db.py`'s scoped executor.** No other module —
   agent, evals, tests included — opens a SQLite connection or bypasses the
   validator + scoping + egress check. Exactly two exceptions, both named here
   because a rule that contradicts the code is worse than no rule:
   1. `conversations.py` owns the separate app-state store `state.db`, which
      holds no tenant rows.
-  2. `db.execute_unscoped_browse` — the ONE deliberately unscoped read, used
-     only by `browse.py`'s Records/Notes listings, which are the demo's control
-     group and show the whole dataset (ADR 0014 as rewritten). It keeps the
-     validator, the engine authorizer, the read-only connection, the limit caps,
-     the query deadline, the row cap and the audit row; it drops only the
-     tenant scoping, the structural proof of it, and the tenant egress
-     comparison, because returning every tenant is its purpose. No agent tool
-     is closed over it and no other module may call it — both are asserted in
-     `tests/test_db.py`, and the agent's reach is unchanged.
+  2. `db.execute_unscoped` — the ONE deliberately unscoped read. Two callers:
+     `browse.py`'s Records/Notes listings, which are the demo's control group and
+     show the whole dataset (ADR 0014 as rewritten), and the tools of an identity
+     whose verified token carries all-tenant scope (`admin`, ADR 0009 as
+     amended), through `analytics.py`'s templates and `agent.py`'s tool binding.
+     It keeps the validator, the engine authorizer, the read-only connection, the
+     limit caps, the query deadline, the row cap and the audit row; it drops only
+     the tenant scoping, the structural proof of it, and the tenant egress
+     comparison, because returning every tenant is its purpose. The fence is
+     asserted in `tests/test_db.py`, in both directions: only the declared
+     modules name it, a tenant identity's tools are bound to `execute_scoped` and
+     reach nothing else, an all-scope identity's are bound to this one at build
+     time, and NO tool argument, request field or model output moves a tool set
+     from one to the other.
 - **Never commit to `main` directly.** Every change lands via branch → commit →
   push → PR → merge (`feat/<issue>-<slug>`, `fix/<slug>`, `docs/<slug>`).
 - **Everything is a lego brick — frontend and backend alike.** One concern = one

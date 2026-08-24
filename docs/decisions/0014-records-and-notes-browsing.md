@@ -10,7 +10,10 @@ the endpoints do is untouched by that amendment — including the ignored-parame
 still in every listing response. Amended the same day once more, on the owner's question "do we
 have a logs tab? we were saving the logs right?": the audit log of ADR 0002 was persisted from the
 first RLS commit and nothing served it, so it gains a fourth tab and a listing of its own — see
-section 12. Nothing above changes.)
+section 12. Nothing above changes. Amended 2026-08-25 for the all-tenant identity of ADR 0009: the
+unscoped read gains a second caller and loses the `_browse` in its name, and the fence of section 3
+is restated - a tool reaches it only under a verified all-tenant scope. The listings themselves are
+untouched.)
 
 ## Context
 
@@ -75,9 +78,11 @@ one read, so it needs per-tenant paging underneath the reader's paging. Clever, 
 out loud in a 60-minute call — which by this repo's own standard is a reason to reject it.
 
 **(b) One explicitly named unscoped read, used only by the dataset listings.** Chosen.
-`db.execute_unscoped_browse` lives in `db.py` beside `execute_scoped`, is named so its nature
-cannot be misread, and is documented there as the single deliberate exception. It is simpler and
-it is honest about what the surface is.
+`db.execute_unscoped` lives in `db.py` beside `execute_scoped`, is named so its nature cannot be
+misread, and is documented there as the single deliberate exception. It is simpler and it is
+honest about what the surface is. (It was `execute_unscoped_browse` until 2026-08-25, when the
+all-tenant identity of ADR 0009 became its second caller and the name stopped being true; see
+section 3.)
 
 **Unscoped means "not filtered to one tenant" and nothing else.** What the exception keeps:
 
@@ -102,19 +107,33 @@ absence of the scoping subquery in it. Nothing is bypassed quietly.
 
 ### 3. What bounds the exception
 
-An exception is only as good as the fence around it, so the fence is tested rather than asserted:
+An exception is only as good as the fence around it, so the fence is tested rather than asserted.
+It was rewritten on 2026-08-25 when the all-tenant identity of ADR 0009 became the read's second
+caller: what changed is the fence's *meaning*, not its strength. It used to say "no tool can reach
+the unscoped read"; it now says "a tool reaches it only when the verified identity carries
+all-tenant scope, and never through any input the model or the client controls".
 
-- **One caller.** A source sweep over every committed Python file parses each module and asserts
-  that only `db.py` (the definition), `browse.py` (the listings) and the suite that tests them
-  reach the name at all. The sweep is over the parsed tree, not the text, so a module may *explain*
-  the exception in a docstring — `app.py` does — without counting as a caller of it.
-- **No tool can reach it.** The agent's tool set is built and every name each tool's code reaches
-  — nested code objects and closure free variables included — is collected.
-  `execute_scoped` is in that set, which is what stops the assertion from passing vacuously; the
-  unscoped read is not. No tool description mentions it either, so the model is never told the
-  name. This is proof at the binding rather than a claim about the prompt.
-- **The model cannot get there by writing SQL.** The function takes no model-produced statement:
-  every string it runs is one of `browse.py`'s fixed templates, built from the sqlglot AST.
+- **Declared callers only.** A source sweep over every committed Python file parses each module
+  and asserts that only `db.py` (the definition), `browse.py` (the listings), `analytics.py` and
+  `agent.py` (the all-scope tool binding) and the suite that tests them reach the name at all. The
+  sweep is over the parsed tree, not the text, so a module may *explain* the exception in a
+  docstring — `app.py` does — without counting as a caller of it.
+- **A tool reaches it only by grant, and the grant is bound before the model speaks.** The tool
+  set is built for each identity and the data path each tool closed over is read back off the
+  objects. A tenant identity's set holds `execute_scoped` and the partition-filtered retrieval and
+  nothing else — the unscoped read appears nowhere in the names its code reaches, and no tool
+  description mentions it, so the model is never even told the name. An all-scope identity's set
+  holds the unscoped read, bound at build time from `auth.Identity.all_tenants`. This is proof at
+  the binding rather than a claim about the prompt.
+- **No runtime input moves a set from one to the other.** Both sets present the model the same
+  tools with the same argument names, and none of those names is a tenant or a scope; an argument
+  that invents one is refused by the schema rather than ignored. What each set reads is what its
+  binding decided, on the identical statement.
+- **The model cannot get there by writing SQL.** The function takes no model-produced statement
+  from the listings: every string those run is one of `browse.py`'s fixed templates, built from
+  the sqlglot AST. It does run an all-scope identity's generated SQL — that is what that grant is
+  — through layer 2, layer 2.5, the caps, the deadline and the audit row, exactly as
+  `execute_scoped` runs a tenant's.
 
 ### 4. `tenant_id` still never comes from the LLM
 
