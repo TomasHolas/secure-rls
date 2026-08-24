@@ -20,7 +20,7 @@ route accepts a tenant in a body, a path or a query parameter.
 | `POST /chat` | One turn as an SSE stream of typed trace events |
 | `GET /conversations` | The caller's own threads, newest first |
 | `POST /conversations` | Register a thread for the caller |
-| `PATCH /conversations/{id}` | Name a thread: the reader's own title from the body (final - nothing generated overwrites it), or the model's label from the thread's exchanges when the body carries none. Generated naming runs after each of the thread's first `conversations.title_turns` turns and then stops; a failed call leaves the standing title |
+| `PATCH /conversations/{id}` | Name a thread, in two modes: a title in the body is the reader's own and final, and a body without one asks the model for a label. The titling lifecycle is [ADR 0012](decisions/0012-api-and-chat-ux.md) |
 | `GET/DELETE /conversations/{id}` | Replay or delete the caller's own thread. A foreign id and a missing id return the same 404 |
 | `GET /records`, `GET /records/departments`, `GET /records/tenants` | The **whole dataset**, paged, filtered and sorted through allowlisted templates, with `tenant_id` a bound filter like `department`; plus the two filter pickers' options and counts — the Records tab, the control group ([ADR 0014](decisions/0014-records-and-notes-browsing.md)) |
 | `GET /notes`, `GET /notes/flagged` | The whole note corpus and every planted injection payload in it, so a reader can see a foreign tenant's before the agent ever reads one |
