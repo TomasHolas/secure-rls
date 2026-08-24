@@ -237,6 +237,13 @@ The chat model is also switchable at runtime from a picker in the UI, populated
 live from the endpoint and filtered to chat-capable models. Model choice has no
 effect on RLS — every layer is model-agnostic.
 
+`agent.model` is a preference rather than a hard requirement: if the endpoint
+does not serve it, the API answers on a served chat model instead of refusing
+the turn, and both `GET /models` and the turn's model pill name the id that
+actually ran (ADR 0005 as amended). An endpoint serving no chat-capable model at
+all is a 502 saying so. The embedding model has no fallback — retrieval needs
+that exact model.
+
 ### 2. Run — compose (the primary path)
 
 ```bash
@@ -294,7 +301,7 @@ Everything but `/health` and `/login` requires `Authorization: Bearer <jwt>`.
 |---|---|
 | `GET /health` | Liveness, the API version and the prompt-guardrail position. Open by design; also the container health check |
 | `POST /login` | Demo credentials in, JWT with the `tenant_id` claim out. A wrong user and a wrong password return the same 401 |
-| `GET /models` | The endpoint's live chat-capable models plus the configured default. The SPA never learns `OLLAMA_BASE_URL` |
+| `GET /models` | The endpoint's live chat-capable models plus the default a turn resolves from that same list. The SPA never learns `OLLAMA_BASE_URL` |
 | `POST /chat` | One turn as an SSE stream of typed trace events |
 | `GET /conversations` | The caller's own threads, newest first |
 | `POST /conversations` | Register a thread for the caller |

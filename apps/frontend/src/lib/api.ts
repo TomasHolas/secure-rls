@@ -291,7 +291,7 @@ export async function getHealth(): Promise<Health> {
   };
 }
 
-/** GET /models: the endpoint's live model ids plus the configured default (ADR 0005). */
+/** GET /models: the endpoint's live model ids plus the default it resolves for a turn (ADR 0005). */
 export async function listModels(): Promise<ModelList> {
   const response = await apiFetch("/models");
   if (!response.ok) throw new ApiError(response.status, "The model list is unavailable.");

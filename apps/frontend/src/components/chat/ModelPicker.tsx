@@ -4,9 +4,10 @@
  * `default` the same response carried; switching mid-conversation is allowed.
  *
  * KB has no select anywhere, so the control is a native `<select>` on the metrics of KB's
- * `.cfg-input` (border-only focus, no stacked focus ring). An empty list means the
- * endpoint could not be reached: the picker says so instead of offering nothing, and the
- * turn falls back to the server-side default.
+ * `.cfg-input` (border-only focus, no stacked focus ring). An empty list means `GET /models`
+ * did not answer - an unreachable endpoint, or one serving no chat-capable model at all: the
+ * picker says so instead of offering nothing, and a turn sent without a model gets whichever
+ * of those two the server reports.
  */
 
 export function ModelPicker({
