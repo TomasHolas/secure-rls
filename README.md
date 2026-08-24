@@ -25,8 +25,11 @@ LLM-fillable tool argument and never read from a request body — the model cann
 choose a tenant, because the tenant is not an input anywhere the model or the
 client can reach.
 
-Five enforcement points, each independently sufficient to stop a cross-tenant
-read ([ADR 0002](docs/decisions/0002-defense-in-depth-rls.md)):
+Five enforcement points, no single point of trust
+([ADR 0002](docs/decisions/0002-defense-in-depth-rls.md)). Layer 3 is what scopes
+a query and layer 4 independently proves it did; layers 2 and 2.5 filter no rows
+themselves — `SELECT * FROM employees` is accepted by both — and exist to remove
+the query shapes that could sidestep layer 3 entirely:
 
 | # | Layer | Where | Mechanism | Survives |
 |---|---|---|---|---|

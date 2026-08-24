@@ -50,7 +50,7 @@ no wall-clock deadline, no cap on how many tool rounds a turn may take.
 
 This is **OWASP LLM10, unbounded consumption**, reached through **LLM01, prompt
 injection**. Worth saying plainly, including in the demo: nothing leaked. The
-four RLS layers held throughout the incident, zero foreign rows were returned,
+RLS layers held throughout the incident, zero foreign rows were returned,
 and no refusal was bypassed. It was a resource bound we had not set, never a
 failure of isolation — which is also why it belongs in this ADR as an
 availability decision rather than in ADR 0002 as a layer.
@@ -95,7 +95,7 @@ turn than "it ran out of room" does.
 
 **This section is answer-quality machinery, not enforcement.** Nothing in it is
 a security boundary and none of it protects a tenant: whatever the model recalls
-was already this tenant's own scoped data, and the four RLS layers of ADR 0002
+was already this tenant's own scoped data, and the RLS layers of ADR 0002
 are what keep tenants apart, exactly as before. What it protects is the one
 claim a data analyst lives on — that a number it states was read from the
 database. It is filed here, beside the retry policy and the bounds, because like
@@ -212,7 +212,7 @@ not a security layer (ADR 0002).
 
 Three further rules, each one line, all of them UX and answer-quality guidance
 rather than enforcement — nothing in the prompt is a boundary (ADR 0002), and
-none of these three restates what the four RLS layers already stop. The
+none of these three restates what the RLS layers already stop. The
 data-borne-instruction rule generalizes the existing note rule to every channel
 that carries untrusted text (the user's turn, note text, tool output) and asks
 for a plain refusal rather than a negotiation, so an "ignore your instructions"

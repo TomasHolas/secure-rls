@@ -20,7 +20,7 @@ FastAPI (:8002)      auth.py ── issues JWT       app.py (thin handler)
                                                   │  tools bound with tenant_id
                                                   │  from the JWT, by closure
                                                   v
-                                    query_db / get_stats / plot / detect_anomalies
+                         query_db / get_stats / plot / detect_anomalies / search_notes
                                                   │
                                           security.py — SQL validator (sqlglot)
                                                   │
@@ -36,14 +36,22 @@ FastAPI (:8002)      auth.py ── issues JWT       app.py (thin handler)
 agent LLM calls ──> Ollama endpoint (OLLAMA_BASE_URL — Tailscale machine or localhost)
 ```
 
+`search_notes` is the one tool that does not pass the SQL validator: it takes the
+retrieval path instead — `rag.py`'s tenant-partitioned KNN, whose storage and
+queries still go through `db.py` (ADR 0010).
+
 The eval harness (`evals/`) imports the same `agent.py` / `db.py` / `security.py`
 modules — there is no second code path to the data (lego-brick rule).
 
 ## The five RLS defense layers (ADR 0002)
 
-Each layer is independently sufficient; a breach requires all five to fail.
-ADR 0002's title counts four because the engine authorizer (layer 2.5) was
-added there as an amendment.
+No single point of trust — and the layers are not interchangeable. Layer 1
+establishes the tenant, layer 3 enforces it, and layer 4 independently catches a
+layer-3 failure, so a cross-tenant leak requires 3 to fail and 4 to miss it.
+Layers 2 and 2.5 filter no rows at all (`SELECT * FROM employees` is accepted by
+both); they eliminate the query shapes that could sidestep layer 3 entirely, and
+layer 2 additionally holds the preconditions the layer-3 rewrite depends on — no
+CTE shadowing `employees`, no bound parameter in generated SQL.
 
 | # | Layer | Module | Mechanism | Survives |
 |---|---|---|---|---|

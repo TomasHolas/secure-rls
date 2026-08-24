@@ -40,7 +40,9 @@ generated SQL, not via tool arguments, not via prompt injection.
   goes through one tenant-scoped executor.
 - **Frontend**: React SPA on the knowledgebase design system (third sibling
   product after knowledgebase and modelbench — same tokens, fonts, logo, bricks).
-- **Security model**: five independent RLS layers, each sufficient alone
+- **Security model**: five RLS layers with no single point of trust — layer 3
+  scopes every query, layer 4 independently proves it applied, and layers 2 and
+  2.5 remove the shapes that could sidestep layer 3
   (ADR 0002). `tenant_id` comes only from the verified JWT — never from the
   LLM, never from the request body.
 

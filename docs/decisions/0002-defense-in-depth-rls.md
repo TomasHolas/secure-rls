@@ -1,6 +1,6 @@
-# ADR 0002 — Defense-in-depth RLS: four independent layers
+# ADR 0002 — Defense-in-depth RLS: layered enforcement, no single point of trust
 
-Status: accepted (amended 2026-08-21: engine authorizer, DoS controls, audit log — sourced hardening)
+Status: accepted (amended 2026-08-21: engine authorizer, DoS controls, audit log — sourced hardening; amended 2026-08-24: retitled, and the "each sufficient alone" characterization corrected)
 
 ## Context
 
@@ -12,8 +12,13 @@ is not a security boundary; neither is any mechanism the LLM can influence.
 
 ## Decision
 
-Four independent layers, each sufficient alone. A cross-tenant leak requires
-all four to fail simultaneously.
+Five layers, no single point of trust. They are not interchangeable, and the
+claim is not that any one of them suffices: layers 2 and 2.5 filter no rows at
+all — `SELECT * FROM employees` is accepted by both — so a cross-tenant leak
+requires layer 3 to fail *and* layer 4 to miss it, with layers 2 and 2.5 closing
+the routes by which a query could sidestep layer 3 entirely. Earlier revisions of
+this ADR called the layers "each sufficient alone"; that was wrong for 2 and 2.5
+and is corrected here.
 
 1. **Identity** — `tenant_id` is read from the verified JWT server-side and
    bound into the tools by closure. It is never an LLM-fillable tool argument
@@ -22,7 +27,9 @@ all four to fail simultaneously.
 2. **Validation** — `security.py` parses generated SQL with sqlglot and applies
    an allowlist: exactly one SELECT statement over the `employees` table.
    ATTACH/PRAGMA/mutations/multi-statement/table functions are rejected.
-   Allowlist, not blocklist: anything not explicitly permitted fails.
+   Allowlist, not blocklist: anything not explicitly permitted fails. This layer
+   also holds the preconditions layer 3's rewrite depends on: no CTE may shadow
+   `employees`, and generated SQL may carry no bound parameter of its own.
 3. **Scoped execution** — `db.py` rewrites every `employees` reference in the
    validated AST to `(SELECT * FROM employees WHERE tenant_id = ?)` with the
    tenant bound as a parameter, and executes on a read-only connection. Even a
