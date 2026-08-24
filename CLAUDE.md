@@ -203,7 +203,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | CI / CD | `.github/workflows/ci.yml` |
 | Images / the deployment unit / the state volume | `apps/backend/Dockerfile`, `apps/frontend/Dockerfile` + `nginx.conf`, `docker-compose.yml` (the `backend-state` volume; `down -v` is the destructive reset) |
 | A design decision | `docs/decisions/` — new ADR, linked from `docs/INDEX.md` |
-| Assignment-facing docs | `README.md` — security model, quickstart, creds, evaluation, deliverables map, challenges, time spent |
+| Assignment-facing docs | `README.md` is the short form only — one-line security-layer summary, quickstart, creds, the eval headline table, the deliverables map, one paragraph per challenge wave, one-line limitations, time spent; it links every claim to its owner and stays around 250-350 lines (issue #133). The depth has exactly one home each: `docs/architecture.md` (layers, tools, components, the browse control group, the compliance map), `docs/api.md` (routes, the SSE frames and their invariants, sessions), `docs/development-process.md` (agentic method, tests, the eval harness and gate, CI/CD), `docs/challenges.md` (per-wave challenges, known limitations). A fact belongs in one of those and is summarized, never duplicated, in the README |
 
 ## Layering
 

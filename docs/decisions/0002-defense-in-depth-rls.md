@@ -108,9 +108,10 @@ classes reach out of the allowlist and are refused by layer 2 or 2.5, with the
 event naming the layer. The third does not: it is a valid query for someone
 else's rows, so layer 3 scopes it and layer 4 checks the result, and it succeeds
 returning nothing foreign. A prediction of "the layers refuse it" would be wrong
-for that third class, which is why this ADR states the two outcomes separately
-and why `evals/report-no-guardrails.md` predicts neither — until that run exists,
-that file says only that it has not happened.
+for that third class, which is why this ADR states the two outcomes separately.
+That run has since happened: `evals/report-no-guardrails.md` records it live on
+2026-08-24 — zero leaks over 171 turns, with the eight non-held attacks all one
+context-bound failure that returned nothing foreign (issue #131).
 
 One more surface has to be watched for this to mean anything, and it was missed
 on the first attempt (issue #102 review). The system prompt is not the only text

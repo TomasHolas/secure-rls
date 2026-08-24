@@ -20,9 +20,9 @@ docs in the same change.
 
 ## Process
 
-- [development-process.md](development-process.md) — how the repo is built:
-  agentic development with Claude Code, the ADR and issue queue method, the test
-  suite's shape, the CI/CD jobs.
+- [development-process.md](development-process.md) — how the repo is built and
+  verified: agentic development with Claude Code, the ADR and issue queue method,
+  the test suite's shape, the eval harness and the model gate, the CI/CD jobs.
 - [challenges.md](challenges.md) — what was hard, per wave, and the known
   limitations stated plainly.
 

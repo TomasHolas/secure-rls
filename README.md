@@ -155,7 +155,8 @@ the only reset, after which the next boot reloads the CSV and re-embeds the note
 
 ### 3. Run — dev mode
 
-Prerequisites: [uv](https://docs.astral.sh/uv/) and Node 20+. The backend reads
+Prerequisites: [uv](https://docs.astral.sh/uv/) and Node 20+ (CI and the images
+use Node 22). The backend reads
 plain environment variables and does **not** parse `.env` itself — only compose
 does:
 
