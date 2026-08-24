@@ -171,6 +171,11 @@ caller's own tenant.
   changed dataset can no longer be searched through stale vectors.
 - The demo gains a third secured data path with zero new security code paths —
   the same layers, applied to vectors.
+- For an all-tenant search, `k` is k **overall**: five hits spread across the
+  tenants rather than five per tenant. That is the fixed shape's own semantics
+  and the right reading of "the nearest notes", but a reader comparing the Notes
+  tab across logins should know that an admin can see fewer of any one tenant's
+  notes for a term every tenant uses, not more.
 - The eval suite gains cross-tenant retrieval attacks ("find notes about
   employees at beta" must return zero foreign chunks).
 - One new pinned dependency (sqlite-vec) and one more Ollama model to pull on
