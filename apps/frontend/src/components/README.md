@@ -47,7 +47,8 @@ session), `src/lib/api.ts` (the one HTTP client), `src/lib/sse.ts` (the SSE stre
 typed trace events), `src/lib/trace.ts` (those events folded into one turn's state),
 `src/lib/conversations.ts` (which thread is open, and the thread list around it),
 `src/lib/format.ts` (the one formatter every reader-facing number, duration and count goes
-through) and `src/lib/sqldiff.ts` (the token alignment `SqlRewrite` paints, and the scoping
+through), `src/lib/debounce.ts` (how long a typed filter waits for the reader to stop, held in one
+place, plus the scheduler and the still-typing flag a view holds a refusal back with) and `src/lib/sqldiff.ts` (the token alignment `SqlRewrite` paints, and the scoping
 pattern `SqlTemplate` paints).
 
 CSS for every brick lives in `styles/app.css`; colors, spacing, radii, motion and
