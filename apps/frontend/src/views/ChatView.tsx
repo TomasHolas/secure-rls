@@ -25,6 +25,12 @@
  * they produced, then what the turn cost beside the model that answered it. The reasoning inside
  * a step is the model's own, streamed live and collapsed until the reader asks for it.
  *
+ * The prompt-guardrail position is stated twice on purpose (ADR 0011 as amended): once in the
+ * header from `/health`, so the mode is visible before a question is asked, and once per finished
+ * turn from its own `done` frame, which is the authoritative record. Off is loud, because a
+ * refusal in that mode is a server-side layer holding rather than the model declining to try,
+ * and a viewer must never have to take a demo's word for which prompt produced a trace.
+ *
  * A turn that never reaches an answer is shown as failed, never dressed up as one. The reason
  * is the backend's whenever the backend has one: a `done` frame with status `failed` carries the
  * server's own diagnosis, which is what the reader sees. The strings below cover only what the
@@ -42,7 +48,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMessage, Composer, ModelPicker, TracePanel } from "../components/chat";
 import { EmptyState, Page, PageHeader } from "../components/layout";
 import { Pill } from "../components/Pill";
-import { ApiError, listModels, openChatStream } from "../lib/api";
+import { ApiError, getHealth, listModels, openChatStream } from "../lib/api";
 import { readTraceEvents } from "../lib/sse";
 import { applyEvent, failTurn, startTurn, tokensPerSecond } from "../lib/trace";
 import type { Turn, TurnUsage } from "../lib/trace";
@@ -62,6 +68,26 @@ const PHASE_PILL = {
 const UNGROUNDED_LABEL = "answered without querying the data";
 const UNGROUNDED_TITLE =
   "No tool of this turn returned a result the answer could rest on, so any figure in it was not read from the database.";
+/**
+ * The prompt-guardrail switch as a reader sees it (ADR 0011 as amended). Off is the demo mode, so
+ * it is loud: the model was not asked to refuse instructions that arrive as data, which means a
+ * refusal in the trace below is a server-side layer rather than the model declining to try.
+ * Row-level security is identical either way - the switch changes prompt text and reaches no layer.
+ */
+const GUARDRAIL_PILL = {
+  on: {
+    tone: "neutral",
+    label: "prompt guardrails on",
+    title:
+      "The system prompt asks the model to refuse instructions that arrive as data and states its tenant scope. Answer-quality guidance, never a security boundary.",
+  },
+  off: {
+    tone: "danger",
+    label: "prompt guardrails off",
+    title:
+      "Those prompt rules are omitted, so the model attempts attacks it would otherwise decline. Row-level security is unchanged: the server-side layers are what refuses them.",
+  },
+} as const;
 
 /** The phases that earn a pill of their own; the rest are carried by the answer alone. */
 type PilledPhase = keyof typeof PHASE_PILL;
@@ -81,6 +107,7 @@ export function ChatView({
 }) {
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState("");
+  const [guardrails, setGuardrails] = useState<boolean | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const log = useRef<HTMLDivElement>(null);
@@ -111,6 +138,21 @@ export function ChatView({
       .catch(() => {
         // The endpoint is unreachable: the picker says so and the turn takes the server default.
         if (live) setModels([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    getHealth()
+      .then((health) => {
+        if (live) setGuardrails(health.prompt_guardrails);
+      })
+      .catch(() => {
+        // The server did not answer, so no position is known and none is claimed.
+        if (live) setGuardrails(null);
       });
     return () => {
       live = false;
@@ -172,6 +214,7 @@ export function ChatView({
         subtitle="Ask about your tenant's HR data. Row-level security is enforced server-side in five layers, and every step the agent takes is in the trace above its answer."
         actions={
           <div className="chat-toolbar">
+            <GuardrailPill state={guardrails} />
             <ModelPicker
               models={models}
               value={model}
@@ -216,6 +259,17 @@ export function ChatView({
   );
 }
 
+/** One prompt-guardrail position as a pill; an unknown position draws nothing rather than guessing. */
+function GuardrailPill({ state }: { state: boolean | null }) {
+  if (state === null) return null;
+  const pill = state ? GUARDRAIL_PILL.on : GUARDRAIL_PILL.off;
+  return (
+    <Pill tone={pill.tone} title={pill.title}>
+      {pill.label}
+    </Pill>
+  );
+}
+
 /** One turn, whether it streamed here or was read back: the same bricks either way. */
 function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
   const phase = turn.phase in PHASE_PILL ? PHASE_PILL[turn.phase as PilledPhase] : null;
@@ -235,7 +289,7 @@ function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
           />
         }
         footer={
-          phase || ungrounded || turn.model ? (
+          phase || ungrounded || turn.model || turn.guardrails !== null ? (
             <>
               {phase ? <Pill tone={phase.tone}>{phase.label}</Pill> : null}
               {ungrounded ? (
@@ -248,6 +302,7 @@ function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
                   {turn.model}
                 </Pill>
               ) : null}
+              <GuardrailPill state={turn.guardrails} />
               <TurnCost usage={turn.usage} />
             </>
           ) : null

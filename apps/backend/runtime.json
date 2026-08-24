@@ -28,7 +28,8 @@
     "context_window": 16384,
     "turn_deadline_s": 120.0,
     "thinking": true,
-    "duration_decimals": 2
+    "duration_decimals": 2,
+    "prompt_guardrails": true
   },
   "browse": {
     "page_size": 25,

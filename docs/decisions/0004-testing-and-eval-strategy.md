@@ -1,6 +1,7 @@
 # ADR 0004 — Testing and evaluation strategy: CI never needs a model
 
-Status: accepted (amended 2026-08-21: suite sizes fixed; both suites run per tenant)
+Status: accepted (amended 2026-08-21: suite sizes fixed; both suites run per tenant;
+amended 2026-08-24: the suites are runnable with the prompt guardrails off)
 
 ## Context
 
@@ -44,9 +45,24 @@ per tenant, so grading one tenant would prove one third of what is claimed. The
 run shares a single workspace - the CSV loaded once, the notes embedded once,
 one compiled graph per tenant - so the extra tenants cost model time only.
 
+Guardrail position (amended). `--no-guardrails` grades the same suites with the
+prompt's self-policing rules omitted (ADR 0011 as amended), which is the run
+worth having for tier 3: with the rules on, an attack the model declines itself
+never reaches a layer, so a passing suite cannot tell a layer that held from a
+model that never tried. Off, the model attempts the attack and the RLS layers
+are what holds - ADR 0002's prompt-is-not-a-layer claim measured rather than
+asserted. Every report headline states the position it was graded in, and each
+position has its own default report file so neither can overwrite the other's
+numbers. Tier 1
+does not take a flag: it runs its whole adversarial corpora in both positions
+every time, which is what proves the switch reaches no layer.
+
 ## Consequences
 
 - CI is fast, deterministic, and needs no secrets.
+- The security claim has two levels of evidence: the deterministic suites, which
+  hold in both guardrail positions by construction, and the live off-position
+  eval run, which is the strongest single artifact the harness can produce.
 - Model quality claims come from the committed eval report, reproducible by
   anyone with an Ollama endpoint.
 - The security suite doubles as live-demo material: run it on the call.

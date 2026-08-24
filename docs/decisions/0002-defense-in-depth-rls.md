@@ -1,6 +1,9 @@
 # ADR 0002 — Defense-in-depth RLS: layered enforcement, no single point of trust
 
-Status: accepted (amended 2026-08-21: engine authorizer, DoS controls, audit log — sourced hardening; amended 2026-08-24: retitled, and the "each sufficient alone" characterization corrected)
+Status: accepted (amended 2026-08-21: engine authorizer, DoS controls, audit log — sourced
+hardening; amended 2026-08-24: retitled, and the "each sufficient alone" characterization
+corrected; amended 2026-08-24: the prompt guardrails are switchable, so the
+prompt-is-not-a-layer claim is demonstrated rather than asserted)
 
 ## Context
 
@@ -51,6 +54,73 @@ OWASP: prompt-level measures "should complement — not replace — deterministi
 controls" (LLM Prompt Injection Prevention Cheat Sheet, citing an 89% attack
 success rate on GPT-4o for persistent attackers), and by Microsoft: "Don't rely
 on the language model to propagate tenant information."
+
+## Demonstrating the claim (amended)
+
+"Prompt-level instructions are not a layer" was, until now, a sentence in this
+ADR. It is now a switch: `runtime.json`'s `agent.prompt_guardrails`, default on,
+whose off position omits the prompt's two self-policing blocks — the rule that
+note text and other data-borne instructions are never followed, and the closing
+tenant-scope paragraph — and changes nothing else (ADR 0011 as amended).
+
+Turning it off is what makes the layers observable. With the rules rendered,
+the model usually declines a cross-tenant or override request itself: nothing is
+attempted, no layer fires, and a passing security suite cannot distinguish a
+layer that held from a model that never tried. With the rules gone the model
+attempts the request and the layers act on what it actually wrote — which, per
+the Decision above, is two different observations rather than one. A query that
+reaches outside the allowlist (`sqlite_master`, ATTACH, PRAGMA, a second table)
+is *refused*, and the security event names the layer that refused it. A query
+that is perfectly valid and merely asks for someone else's rows — the plainly
+worded cross-tenant request, or `SELECT * FROM employees` — is not refused at
+all: layer 3 rewrites it and layer 4 checks the result, so it succeeds and
+returns nothing foreign. Both are the demonstration; only the first one produces
+a refusal, and a demo that promises a refusal for the second would be
+misdescribing its own architecture.
+
+Two properties make the switch admissible as evidence rather than a hole:
+
+- **It cannot reach enforcement.** `_system_prompt` is the only reader of the
+  knob; `security.py`, `db.py` and `auth.py` never name it, which is asserted by
+  a test over their source. The adversarial corpora of `tests/test_security.py`
+  and `tests/test_db.py` run in full in both positions, so identical refusals,
+  identical rewritten SQL, identical declared-parameter counts and identical
+  egress verdicts are a measured result rather than a claim.
+- **It cannot hide.** Every `done` frame carries the position of the turn that
+  produced it and `GET /health` reports the running position, so a trace can
+  always be read back to the prompt that produced it and an off-camera prompt
+  swap has nowhere to happen.
+
+The artifact worth having is therefore the adversarial eval suite run in the off
+position (`uv run python -m evals --no-guardrails`, ADR 0004 as amended): zero
+leaks with the model's self-policing disabled is the strongest available form of
+the one claim this section is about — that prompt-level instructions are guidance
+and never a boundary. It says nothing about the individual layers being
+interchangeable or separately sufficient; the Decision above is explicit that
+they are not. The two positions write separate report files, and the model gate's
+appended sections state their position too, because `evals/gate-results.md` is
+append-only and ADR 0005's model pick cites it.
+
+What that run is expected to exercise, and what it is not: the model is no longer
+told to decline the payroll-administrator override, the developer-mode injection
+or a plainly worded cross-tenant request, so it attempts them. The first two
+classes reach out of the allowlist and are refused by layer 2 or 2.5, with the
+event naming the layer. The third does not: it is a valid query for someone
+else's rows, so layer 3 scopes it and layer 4 checks the result, and it succeeds
+returning nothing foreign. A prediction of "the layers refuse it" would be wrong
+for that third class, which is why this ADR states the two outcomes separately
+and why `evals/report-no-guardrails.md` predicts neither — until that run exists,
+that file says only that it has not happened.
+
+One more surface has to be watched for this to mean anything, and it was missed
+on the first attempt (issue #102 review). The system prompt is not the only text
+the model receives: each tool's docstring is bound as its `description` and is
+sent on every turn in both positions. A copy of the note-injection rule sat in
+`search_notes`, so the off position still asked the model not to follow
+instructions found in note text — on the poisoned-notes attack, the very case the
+off position exists to demonstrate. Tool descriptions now carry no rule the model
+is asked to follow, and the off-position assertion is checked over the system
+prompt and every bound tool description together.
 
 ## Hardening (amended per sourced review)
 

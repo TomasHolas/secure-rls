@@ -87,7 +87,8 @@ export type TraceItem = ReasoningItem | CallItem | OrphanItem;
  * may still carry the words the model got out before it. `failed` is a turn that never reached an
  * answer - the backend saying so in its terminal frame, or a stream this client could not read.
  * `replayed` is a turn read back from the server: how it ended is not stored, so it claims
- * nothing about it - which is also why a replayed turn's `grounded` stays null rather than false.
+ * nothing about it - which is also why a replayed turn's `grounded` and `guardrails` stay null
+ * rather than false.
  */
 export type TurnPhase =
   | "streaming"
@@ -114,6 +115,8 @@ export interface Turn {
   model: string | null;
   usage: TurnUsage | null;
   grounded: boolean | null;
+  /** The prompt-guardrail position the terminal frame reported; null until it lands, and for a replayed turn. */
+  guardrails: boolean | null;
   error: string | null;
 }
 
@@ -127,6 +130,7 @@ export function startTurn(question: string): Turn {
     model: null,
     usage: null,
     grounded: null,
+    guardrails: null,
     error: null,
   };
 }
@@ -194,6 +198,9 @@ export function replayTurns(messages: Message[], results: ToolResultRecord[]): T
  * The turn as its terminal frame leaves it. A `failed` status is the backend's own diagnosis
  * of a run that never answered, so it goes to `error` and whatever text streamed before it
  * stays the answer - the view states the diagnosis instead of guessing at one.
+ *
+ * A frame that does not state the prompt-guardrail position leaves it null: the frames arrive as
+ * unvalidated JSON, and a missing field must read as "unknown" rather than as either mode.
  */
 function done(turn: Turn, event: DoneEvent, now: number): Turn {
   const failed = event.status === "failed";
@@ -209,6 +216,7 @@ function done(turn: Turn, event: DoneEvent, now: number): Turn {
       durationS: event.duration_s,
     },
     grounded: event.grounded,
+    guardrails: typeof event.prompt_guardrails === "boolean" ? event.prompt_guardrails : null,
     error: failed ? event.answer : turn.error,
   };
 }

@@ -57,6 +57,15 @@ MANIFEST_PATH = BACKEND / "poisoned_manifest.json"
 
 TENANTS = ("acme", "beta", "gamma")
 
+GUARDRAILS_ON = (
+    "**on** - the prompt asks the model to refuse data-borne instructions and states its "
+    "tenant scope"
+)
+GUARDRAILS_OFF = (
+    "**off** - those two blocks are omitted, so an attack the model would have declined is "
+    "attempted and the RLS layers are what refuses it (ADR 0002)"
+)
+
 TENANT_COLUMN = "tenant_id"
 USER_COLUMN = "user_id"
 NAME_COLUMN = "name"
@@ -144,6 +153,15 @@ class Session:
     graphs: dict[str, CompiledStateGraph]
 
 
+def guardrail_note(guarded: bool) -> str:
+    """How a report states the prompt-guardrail position it was graded in (ADR 0011 as amended).
+
+    One owner for the wording, because all three report producers - the two suites' scorecard and
+    the model gate - have to say it identically or a reader cannot compare two committed reports.
+    """
+    return GUARDRAILS_ON if guarded else GUARDRAILS_OFF
+
+
 def require_base_url() -> str:
     """The endpoint address from the environment, or a clean exit saying it has to be set."""
     base_url = os.environ.get(BASE_URL_VAR, "").strip()
@@ -195,8 +213,14 @@ def workspace(
     embedder: rag.EmbedClient,
     tenants: Sequence[str],
     model_id: str,
+    prompt_guardrails: bool | None = None,
 ) -> Iterator[Session]:
-    """Build the real agent over a throwaway copy of the committed dataset, one graph per tenant."""
+    """Build the real agent over a throwaway copy of the committed dataset, one graph per tenant.
+
+    `prompt_guardrails` is passed straight to `build_agent`: `None` reads `runtime.json`, `False`
+    grades the off position, where the prompt no longer asks the model to decline an attack and
+    the RLS layers are what refuses it (ADR 0002, ADR 0011 as amended).
+    """
     with tempfile.TemporaryDirectory(prefix="evals-") as workdir:
         directory = Path(workdir)
         db_path = directory / "employees.db"
@@ -211,6 +235,7 @@ def workspace(
                     embedder=embedder,
                     model_id=model_id,
                     db_path=db_path,
+                    prompt_guardrails=prompt_guardrails,
                 )
                 for tenant in tenants
             }

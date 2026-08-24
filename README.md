@@ -46,10 +46,18 @@ result-row cap with an explicit truncation signal
 log of every generated SQL, validation verdict, rewritten SQL and tenant context
 — which also feeds the UI trace.
 
-**Prompt instructions are not a layer.** The system prompt does tell the model to
-stay in its tenant, to refuse instructions embedded in data, and to aggregate in
-SQL. All of that is UX and answer-quality guidance; none of it is relied on, and
-every RLS claim above holds for arbitrary model output. Every tunable lives in
+**Prompt instructions are not a layer — and you can switch them off to check.**
+The system prompt does tell the model to stay in its tenant, to refuse
+instructions embedded in data, and to aggregate in SQL. All of that is UX and
+answer-quality guidance; none of it is relied on, and every RLS claim above holds
+for arbitrary model output. `agent.prompt_guardrails` (default **on**) removes
+the two self-policing blocks from the rendered prompt and nothing else, so the
+model attempts the attack it would otherwise decline and you watch a layer refuse
+it by name ([ADR 0002](docs/decisions/0002-defense-in-depth-rls.md) as amended).
+The position is on every `done` frame and on `GET /health`, and the chat header
+shows it, so no trace can be read as the other mode's. The deterministic
+adversarial suites run in both positions on every `pytest` invocation, which is
+what proves the switch reaches no layer. Every tunable lives in
 [`apps/backend/runtime.json`](apps/backend/runtime.json).
 
 The retrieval path uses the same five points: notes are embedded once at startup
@@ -284,7 +292,7 @@ Everything but `/health` and `/login` requires `Authorization: Bearer <jwt>`.
 
 | Route | Purpose |
 |---|---|
-| `GET /health` | Liveness. Open by design; also the container health check |
+| `GET /health` | Liveness, the API version and the prompt-guardrail position. Open by design; also the container health check |
 | `POST /login` | Demo credentials in, JWT with the `tenant_id` claim out. A wrong user and a wrong password return the same 401 |
 | `GET /models` | The endpoint's live chat-capable models plus the configured default. The SPA never learns `OLLAMA_BASE_URL` |
 | `POST /chat` | One turn as an SSE stream of typed trace events |
@@ -370,6 +378,7 @@ thread, and three adversarial asks.
 cd apps/backend
 uv run python -m evals.model_gate --dry-run          # list the suite, no endpoint needed
 uv run python -m evals.model_gate --model <id>       # score a model, append to the report
+uv run python -m evals.model_gate --model <id> --no-guardrails   # the same, guardrails off
 ```
 
 | Model | Passed | Valid tool call | Expected tool | **Foreign rows** | Median wall/ask |
@@ -397,10 +406,19 @@ ground truth differs per tenant — over 171 live turns.
 
 ```bash
 cd apps/backend
-uv run python -m evals --dry-run     # list every graded ask, no endpoint needed
-uv run python -m evals --mocked      # network-free: scripted model, hashed embedder
-uv run python -m evals               # the live run that produced report.md
+uv run python -m evals --dry-run        # list every graded ask, no endpoint needed
+uv run python -m evals --mocked         # network-free: scripted model, hashed embedder
+uv run python -m evals                  # the live run that produced report.md
+uv run python -m evals --no-guardrails  # the same, with the prompt's self-policing off
 ```
+
+The last one is the run worth having: with the guardrails on, an attack the model
+declines itself never reaches a layer, so a passing suite cannot distinguish a
+layer that held from a model that never tried. Each position writes its own report
+file. [`report-no-guardrails.md`](apps/backend/evals/report-no-guardrails.md) is
+the place the off-position scorecard lands and is **still owed** — the endpoint
+was unreachable when the switch landed, and inventing numbers for a security claim
+would be worse than having none.
 
 | | Result |
 |---|---|

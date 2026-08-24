@@ -10,6 +10,12 @@ The plumbing is `evals/harness.py`, shared with the M5 suites: the workspace, tr
 the mechanical leak check against CSV ground truth, and the markdown tables. What lives here is
 this gate's own suite and its own verdict.
 
+`--no-guardrails` grades the off position of `agent.prompt_guardrails` (ADR 0011 as amended), and
+every rendered section states the position it graded whether the flag was passed or not. That
+matters more here than in the suites: this report is appended to rather than overwritten, and
+ADR 0005's model pick cites it, so a section that did not name its position would leave two
+positions mixed in a committed file with no way to attribute a row afterwards.
+
 The suite is 24 asks over one tenant, covering what the agent has to get right on demo day:
 `query_db` reliability including a self-join and an aggregate, `get_stats` argument correctness,
 `plot`, `detect_anomalies`, `search_notes` triggering, a three-ask multi-turn thread, and three
@@ -67,6 +73,7 @@ from evals.harness import (
     Turn,
     collect,
     flag,
+    guardrail_note,
     require_base_url,
     table,
     truth_for,
@@ -314,12 +321,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Parse the arguments, run the gate, print the report and append it to the report file."""
     arguments = _parse_args(argv)
     probes = _select(arguments.probe)
+    guarded = not arguments.no_guardrails and runtime().agent.prompt_guardrails
     if arguments.dry_run:
-        print(_listing(probes))
+        print(_listing(probes, guarded))
         return 0
     base_url = require_base_url()
     stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    report = _gate(base_url, arguments.model, arguments.tenant, arguments.num_ctx, probes, stamp)
+    report = _gate(
+        base_url,
+        arguments.model,
+        arguments.tenant,
+        arguments.num_ctx,
+        probes,
+        stamp,
+        guarded=guarded,
+        override=False if arguments.no_guardrails else None,
+    )
     print(report)
     _append(arguments.out, report)
     print(f"\nappended to {arguments.out}", file=sys.stderr)
@@ -334,6 +351,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--out", type=Path, default=DEFAULT_REPORT, help="report file to append to")
     parser.add_argument("--num-ctx", type=int, default=None, help="override the context window")
     parser.add_argument("--probe", action="append", default=[], help="run only this probe")
+    parser.add_argument(
+        "--no-guardrails",
+        action="store_true",
+        help="render the prompt without its self-policing rules, so the RLS layers are what holds",
+    )
     parser.add_argument("--dry-run", action="store_true", help="list the suite and exit")
     return parser.parse_args(argv)
 
@@ -356,12 +378,21 @@ def _gate(
     num_ctx: int | None,
     probes: Sequence[Probe],
     stamp: str,
+    *,
+    guarded: bool,
+    override: bool | None,
 ) -> str:
-    """Score every probe against one model over a throwaway database, and render the report."""
+    """Score every probe against one model over a throwaway database, and render the report.
+
+    `guarded` is the position this run graded and is recorded in the rendered section; `override`
+    is what reaches `build_agent` (`None` reads `runtime.json`). The report file is append-only
+    and ADR 0005's model pick cites it, so a section that did not state its position would leave
+    two positions permanently mixed in a committed file with no way to attribute a row afterwards.
+    """
     truth = truth_for(tenant_id)
     embedder = rag.OllamaEmbed(base_url)
     llm = ChatOllama(base_url=base_url, model=model, num_ctx=num_ctx)
-    with workspace(llm, embedder, (tenant_id,), model) as session:
+    with workspace(llm, embedder, (tenant_id,), model, override) as session:
         graph = session.graphs[tenant_id]
         scores = [
             Score(
@@ -371,7 +402,7 @@ def _gate(
             for probe in probes
         ]
         indexed = session.indexed
-    return _render(model, tenant_id, num_ctx, indexed, scores, stamp)
+    return _render(model, tenant_id, num_ctx, indexed, scores, stamp, guarded)
 
 
 def _render(
@@ -381,6 +412,7 @@ def _render(
     indexed: int,
     scores: Sequence[Score],
     stamp: str,
+    guarded: bool,
 ) -> str:
     """The markdown section for one run: the asks, the scored table, the totals, the findings."""
     context = str(num_ctx) if num_ctx else "endpoint default"
@@ -390,6 +422,8 @@ def _render(
         f"Run {stamp} against the tailnet endpoint, tenant `{tenant_id}`, context window "
         f"{context}, {indexed} notes indexed with "
         f"`{runtime().agent.embed_model}`, {len(scores)} asks.",
+        "",
+        f"Prompt guardrails: {guardrail_note(guarded)}.",
         "",
         table(
             (
@@ -459,9 +493,9 @@ def _findings(scores: Sequence[Score]) -> tuple[str, ...]:
     return tuple(found) if found else ("- No retries, refusals or stream failures recorded.",)
 
 
-def _listing(probes: Sequence[Probe]) -> str:
+def _listing(probes: Sequence[Probe], guarded: bool) -> str:
     """The suite as markdown, so `--dry-run` documents the gate without touching the endpoint."""
-    return table(
+    return f"Prompt guardrails: {'on' if guarded else 'off'}.\n\n" + table(
         ("#", "probe", "coverage", "expected tool", "ask"),
         (
             (

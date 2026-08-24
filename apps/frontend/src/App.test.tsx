@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   login: vi.fn(),
+  getHealth: vi.fn(),
   listModels: vi.fn(),
   browseRecords: vi.fn(),
   browseNotes: vi.fn(),
@@ -138,6 +139,7 @@ let registered = "";
 beforeEach(() => {
   registered = "";
   window.sessionStorage.clear();
+  api.getHealth.mockResolvedValue({ status: "ok", version: "1", prompt_guardrails: true });
   api.listModels.mockResolvedValue({ models: [MODEL], default: MODEL });
   api.listConversations.mockResolvedValue(ACME_THREADS);
   api.getConversation.mockImplementation((threadId: string) =>

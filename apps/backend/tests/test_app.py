@@ -489,6 +489,14 @@ def test_health_is_open_and_reports_version(wiring):
     assert response.json()["version"]
 
 
+def test_health_reports_the_prompt_guardrail_position_as_a_boolean(wiring):
+    """The SPA states the mode before the first turn, so no demo can hide a prompt swap (#102)."""
+    body = wiring.client.get("/health").json()
+
+    assert body["prompt_guardrails"] is runtime().agent.prompt_guardrails
+    assert isinstance(body["prompt_guardrails"], bool)
+
+
 def test_login_issues_a_token(wiring):
     assert _token(wiring.client, ALICE)
 
@@ -907,6 +915,7 @@ def test_a_terminal_failed_frame_reports_the_seconds_it_ran_and_no_tokens(tmp_pa
     done = _sse_events(response.text)[-1]
     assert (done["input_tokens"], done["output_tokens"]) == (0, 0)
     assert done["duration_s"] >= 0
+    assert done["prompt_guardrails"] is runtime().agent.prompt_guardrails
 
 
 def test_chat_streams_the_reasoning_and_the_turn_cost_verbatim(wiring):

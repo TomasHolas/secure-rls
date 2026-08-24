@@ -22,11 +22,17 @@ import csv
 import pytest
 
 from agent import STATUS_CUT_SHORT, STATUS_FAILED
-from evals import adversarial, correctness, harness, mocked
-from evals.__main__ import main
+from evals import adversarial, correctness, harness, mocked, model_gate
+from evals.__main__ import (
+    DEFAULT_REPORT,
+    UNGUARDED_REPORT,
+    _report_path,
+    main,
+)
 
 ACME = "acme"
 BETA = "beta"
+STAMP = "2026-01-01 00:00 UTC"
 
 _HEADER = (
     "user_id",
@@ -437,6 +443,58 @@ def test_the_mocked_run_scores_both_suites_and_renders_the_report(tmp_path):
         assert f"`{attack.name}`" in written
 
 
+def test_the_mocked_run_holds_with_the_prompt_guardrails_off(tmp_path):
+    """`--no-guardrails` threads main -> workspace -> build_agent and reaches the headline.
+
+    That is all a mocked run can prove about the off position: `ScriptedModel` keys off the
+    question and never reads the system prompt, so its `Leaks: 0` is identical to the on position
+    by construction. The claim that the layers hold with the prompt's self-policing disabled needs
+    a live run, and `evals/report-no-guardrails.md` is where it lands.
+    """
+    report = tmp_path / "report.md"
+    code = main(["--mocked", "--no-guardrails", "--tenant", ACME, "--out", str(report)])
+    written = report.read_text()
+    assert code == 0
+    assert "**Leaks: 0**" in written
+    assert "Prompt guardrails: **off**" in written
+    assert "## Security suite" in written
+
+
+def test_a_report_states_the_guardrail_position_that_produced_it(tmp_path, guardrails):
+    """A scorecard is unreadable without the position, so the headline carries whichever it was.
+
+    Run in both positions rather than against the shipped default: flipping `runtime.json` is the
+    documented way into demo mode, and a test that asserted the ambient value turned the suite red
+    for a reason with nothing to do with security (issue #102 review).
+    """
+    report = tmp_path / "report.md"
+    main(["--mocked", "--tenant", ACME, "--suite", "security", "--out", str(report)])
+
+    marker = "**on**" if guardrails else "**off**"
+    assert f"Prompt guardrails: {marker}" in report.read_text()
+
+
+def test_the_two_guardrail_positions_default_to_separate_report_files():
+    """Neither position may overwrite the other's numbers (issue #102)."""
+    names = {
+        _report_path(mocked_run, guarded).name
+        for mocked_run in (True, False)
+        for guarded in (True, False)
+    }
+
+    assert len(names) == 4
+    assert _report_path(False, True) == DEFAULT_REPORT
+    assert _report_path(False, False) == UNGUARDED_REPORT
+
+
+def test_the_dry_run_reports_the_guardrail_position_it_would_grade(capsys, guardrails):
+    """No flag follows the knob, whichever way it is set; the flag forces off either way."""
+    assert main(["--dry-run"]) == 0
+    assert f"Prompt guardrails: {'on' if guardrails else 'off'}." in capsys.readouterr().out
+    assert main(["--dry-run", "--no-guardrails"]) == 0
+    assert "Prompt guardrails: off." in capsys.readouterr().out
+
+
 def test_the_dry_run_lists_every_ask_without_touching_an_endpoint(capsys):
     """`--dry-run` is the harness documenting itself: no model, no database, no report."""
     assert main(["--dry-run"]) == 0
@@ -445,3 +503,47 @@ def test_the_dry_run_lists_every_ask_without_touching_an_endpoint(capsys):
         assert f"`{ask.name}`" in listed
     for attack in adversarial.ATTACKS:
         assert f"`{attack.name}`" in listed
+
+
+def test_the_model_gate_records_the_guardrail_position_in_its_appended_section():
+    """`gate-results.md` is append-only and ADR 0005 cites it: a section must own its position."""
+    probe = model_gate.PROBES[0]
+    scored = [model_gate.Score(probe=probe, turn=harness.Turn(question=probe.question))]
+
+    guarded = model_gate._render("m", ACME, 16384, 10, scored, STAMP, True)
+    unguarded = model_gate._render("m", ACME, 16384, 10, scored, STAMP, False)
+
+    assert f"Prompt guardrails: {harness.GUARDRAILS_ON}." in guarded
+    assert f"Prompt guardrails: {harness.GUARDRAILS_OFF}." in unguarded
+
+
+def test_every_report_producer_words_the_position_the_same_way(tmp_path):
+    """One owner for the wording, or two committed reports cannot be compared (CLAUDE.md bricks)."""
+    report = tmp_path / "report.md"
+    main(
+        [
+            "--mocked",
+            "--no-guardrails",
+            "--tenant",
+            ACME,
+            "--suite",
+            "security",
+            "--out",
+            str(report),
+        ]
+    )
+    probe = model_gate.PROBES[0]
+    scored = [model_gate.Score(probe=probe, turn=harness.Turn(question=probe.question))]
+
+    gate = model_gate._render("m", ACME, 16384, 10, scored, STAMP, False)
+
+    assert harness.GUARDRAILS_OFF in report.read_text()
+    assert harness.GUARDRAILS_OFF in gate
+
+
+def test_the_model_gate_dry_run_reports_the_position_it_would_grade(capsys, guardrails):
+    """The gate's flag is proved without an endpoint, the same way the suites' flag is."""
+    assert model_gate.main(["--dry-run"]) == 0
+    assert f"Prompt guardrails: {'on' if guardrails else 'off'}." in capsys.readouterr().out
+    assert model_gate.main(["--dry-run", "--no-guardrails"]) == 0
+    assert "Prompt guardrails: off." in capsys.readouterr().out

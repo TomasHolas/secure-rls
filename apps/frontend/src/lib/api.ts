@@ -28,6 +28,23 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The `GET /health` body: liveness, the API version, and the prompt-guardrail position.
+ *
+ * The position is what lets the shell state the mode before the first turn of a session; every
+ * turn then carries its own on the `done` frame, which is the authoritative record of the two.
+ *
+ * `prompt_guardrails` has three states, not two: on, off, and `null` for a server that did not
+ * say. Unknown is not off - collapsing it into off would make the UI announce the demo mode to
+ * anyone behind an older backend or a body-rewriting proxy, which is the opposite of the honest
+ * provenance the field exists for. Nothing is drawn for `null`.
+ */
+export interface Health {
+  status: string;
+  version: string;
+  prompt_guardrails: boolean | null;
+}
+
 /** The `GET /models` body: the endpoint's live ids plus the id the server defaults to. */
 export interface ModelList {
   models: string[];
@@ -248,6 +265,30 @@ export async function login(username: string, password: string): Promise<string>
   const body = (await response.json()) as { token?: unknown };
   if (typeof body.token !== "string") throw new ApiError(response.status, "Login failed. Try again.");
   return body.token;
+}
+
+/**
+ * GET /health: liveness plus the prompt-guardrail position the server is running in.
+ *
+ * The position is reported only when the body carries an actual boolean. A missing field, a
+ * string `"false"`, a `0` - anything that is not a boolean - is `null`, unknown, and draws no
+ * pill: the two things this must never do on a guess are claim the model was asked to police
+ * itself, and claim it was not.
+ */
+export async function getHealth(): Promise<Health> {
+  const response = await apiFetch("/health");
+  if (!response.ok) throw new ApiError(response.status, "The server status is unavailable.");
+  const body = (await response.json()) as {
+    status?: unknown;
+    version?: unknown;
+    prompt_guardrails?: unknown;
+  };
+  return {
+    status: isString(body.status) ? body.status : "",
+    version: isString(body.version) ? body.version : "",
+    prompt_guardrails:
+      typeof body.prompt_guardrails === "boolean" ? body.prompt_guardrails : null,
+  };
 }
 
 /** GET /models: the endpoint's live model ids plus the configured default (ADR 0005). */

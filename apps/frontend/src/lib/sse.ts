@@ -110,6 +110,12 @@ export type TurnStatus = "ok" | "blocked" | "gave_up" | "cut_short" | "failed";
  * `grounded` says whether a tool result of that same turn is what the answer rests on (ADR 0011
  * as amended): false is an answer composed from the conversation or from nothing, which for a
  * data analyst is worth showing even when the figure happens to be right.
+ *
+ * `prompt_guardrails` is which position the prompt switch was in for this turn (ADR 0011 as
+ * amended): off, the prompt no longer asked the model to refuse instructions that arrive as data,
+ * so a refusal in the trace is a server-side layer and not the model being polite. It is the
+ * authoritative per-turn record of the mode, which is why it rides the terminal frame rather than
+ * being read once from `/health`.
  */
 export interface DoneEvent {
   type: "done";
@@ -117,6 +123,7 @@ export interface DoneEvent {
   answer: string;
   grounded: boolean;
   model: string;
+  prompt_guardrails: boolean;
   input_tokens: number;
   output_tokens: number;
   duration_s: number;

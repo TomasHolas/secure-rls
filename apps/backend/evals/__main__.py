@@ -3,6 +3,7 @@
     uv run python -m evals --dry-run          # list every graded ask, no endpoint needed
     uv run python -m evals --mocked           # network-free: scripted model, hashed embedder
     uv run python -m evals                    # live: OLLAMA_BASE_URL plus runtime.json's model
+    uv run python -m evals --no-guardrails    # the same, with the prompt's self-policing off
 
 The two suites live next door - `correctness` grades answers against pandas ground truth,
 `adversarial` grades attacks against the mechanical leak check - and both are run here for every
@@ -10,9 +11,17 @@ tenant in turn, because an isolation claim is per tenant. They share one workspa
 CSV is loaded once, the notes are embedded once, and each tenant gets its own compiled graph over
 that single database.
 
+`--no-guardrails` runs the same suites with `agent.prompt_guardrails` forced off for the graded
+graphs (ADR 0011 as amended). It is the stronger security artifact: with the prompt no longer
+asking the model to decline an attack, a suite that still holds is the RLS layers holding on
+their own, which is ADR 0002's central claim measured rather than asserted. Without the flag the
+position is `runtime.json`'s, which stays the single owner of the default.
+
 The report is written whole, not appended, because it is the current model's scorecard rather
 than a log; the timestamp and model id are passed into the renderer by this module, so nothing
-deep in the report generator reaches for an ambient clock.
+deep in the report generator reaches for an ambient clock. The guardrail position is part of a
+run's identity, so it picks the default file name as well as appearing in the headline: an
+off-position run can never overwrite the on-position scorecard.
 
 The exit code carries the verdict a pipeline should act on. A leak anywhere, or a turn whose
 stream never reached `done`, exits 1. In mocked mode every failed ask exits 1 as well: the
@@ -35,8 +44,11 @@ from evals import adversarial, correctness, harness, mocked
 from evals.harness import Session, Turn
 from runtime import runtime
 
-DEFAULT_REPORT = Path(__file__).resolve().parent / "report.md"
-MOCKED_REPORT = Path(__file__).resolve().parent / "report-mocked.md"
+REPORTS = Path(__file__).resolve().parent
+DEFAULT_REPORT = REPORTS / "report.md"
+MOCKED_REPORT = REPORTS / "report-mocked.md"
+UNGUARDED_REPORT = REPORTS / "report-no-guardrails.md"
+MOCKED_UNGUARDED_REPORT = REPORTS / "report-mocked-no-guardrails.md"
 
 CORRECTNESS = "correctness"
 SECURITY = "security"
@@ -53,16 +65,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parse_args(argv)
     tenants = tuple(arguments.tenant) or harness.TENANTS
     suites = tuple(arguments.suite) or SUITES
+    guarded = not arguments.no_guardrails and runtime().agent.prompt_guardrails
     if arguments.dry_run:
-        print(_listing(tenants, suites))
+        print(_listing(tenants, suites, guarded))
         return 0
     stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     llm, embedder, model = _model(arguments, tenants)
-    with harness.workspace(llm, embedder, tenants, model) as session:
+    override = False if arguments.no_guardrails else None
+    with harness.workspace(llm, embedder, tenants, model, override) as session:
         graded = _grade(session, tenants, suites)
         indexed = session.indexed
-    report = _render(model, stamp, arguments.mocked, indexed, tenants, suites, *graded)
-    out = arguments.out or (MOCKED_REPORT if arguments.mocked else DEFAULT_REPORT)
+    report = _render(
+        model, stamp, arguments.mocked, guarded, indexed, tenants, suites, *graded
+    )
+    out = arguments.out or _report_path(arguments.mocked, guarded)
     out.write_text(f"{report}\n")
     print(f"wrote {out}", file=sys.stderr)
     return _verdict(arguments.mocked, *graded)
@@ -87,8 +103,20 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--mocked", action="store_true", help="scripted model and hashed embedder, no network"
     )
+    parser.add_argument(
+        "--no-guardrails",
+        action="store_true",
+        help="render the prompt without its self-policing rules, so the RLS layers are what holds",
+    )
     parser.add_argument("--dry-run", action="store_true", help="list every graded ask and exit")
     return parser.parse_args(argv)
+
+
+def _report_path(is_mocked: bool, guarded: bool) -> Path:
+    """The default report file for this run: one name per model source and guardrail position."""
+    if is_mocked:
+        return MOCKED_REPORT if guarded else MOCKED_UNGUARDED_REPORT
+    return DEFAULT_REPORT if guarded else UNGUARDED_REPORT
 
 
 def _model(
@@ -193,6 +221,7 @@ def _render(
     model: str,
     stamp: str,
     is_mocked: bool,
+    guarded: bool,
     indexed: int,
     tenants: Sequence[str],
     suites: Sequence[str],
@@ -200,13 +229,15 @@ def _render(
     attacked: Sequence[adversarial.Score],
 ) -> str:
     """The whole report: the headline, both suite sections, the findings, how to reproduce."""
-    blocks = [_headline(model, stamp, is_mocked, indexed, tenants, suites, scored, attacked)]
+    blocks = [
+        _headline(model, stamp, is_mocked, guarded, indexed, tenants, suites, scored, attacked)
+    ]
     if CORRECTNESS in suites:
         blocks.append(correctness.render(scored, tenants))
     if SECURITY in suites:
         blocks.append(adversarial.render(attacked, tenants))
     blocks.append(_findings(scored, attacked))
-    blocks.append(_reproduce(is_mocked))
+    blocks.append(_reproduce(is_mocked, guarded))
     return "\n\n".join(blocks)
 
 
@@ -214,6 +245,7 @@ def _headline(
     model: str,
     stamp: str,
     is_mocked: bool,
+    guarded: bool,
     indexed: int,
     tenants: Sequence[str],
     suites: Sequence[str],
@@ -231,6 +263,8 @@ def _headline(
         f"Suites: {', '.join(suites)}. Tenants: {', '.join(f'`{name}`' for name in tenants)}. "
         f"Dataset: the committed `employees.csv`, {indexed} notes indexed with "
         f"{_MOCKED_EMBEDDER if is_mocked else f'`{runtime().agent.embed_model}`'}.",
+        "",
+        f"Prompt guardrails: {harness.guardrail_note(guarded)}.",
         "",
         f"- Correctness: **{harness.rate([item.passed for item in scored])}** asks passed",
         f"- Grounded in a tool call of the same turn: "
@@ -290,20 +324,26 @@ def _findings(
     )
 
 
-def _reproduce(is_mocked: bool) -> str:
-    """The exact command that produced this report."""
-    command = "uv run python -m evals --mocked" if is_mocked else "uv run python -m evals"
+def _reproduce(is_mocked: bool, guarded: bool) -> str:
+    """The exact command that produced this report, and the one that produces its companion."""
+    flags = " --mocked" if is_mocked else ""
+    command = f"uv run python -m evals{flags}{'' if guarded else ' --no-guardrails'}"
+    companion = f"uv run python -m evals{flags}{' --no-guardrails' if guarded else ''}"
     return (
         "## Reproducing this\n\n```bash\ncd apps/backend\n"
         f"{command}\n```\n\nThe live mode needs `OLLAMA_BASE_URL` pointing at an Ollama endpoint "
-        "that serves the model above; the mocked mode needs nothing."
+        "that serves the model above; the mocked mode needs nothing.\n\nThe companion run in the "
+        f"other guardrail position is `{companion}`, and it writes "
+        f"`{_report_path(is_mocked, not guarded).name}` - the two positions never overwrite each "
+        "other's scorecard."
     )
 
 
-def _listing(tenants: Sequence[str], suites: Sequence[str]) -> str:
+def _listing(tenants: Sequence[str], suites: Sequence[str], guarded: bool) -> str:
     """Every graded ask, so `--dry-run` documents the suites without touching an endpoint."""
     blocks = [
-        f"Tenants: {', '.join(tenants)}. Suites: {', '.join(suites)}.",
+        f"Tenants: {', '.join(tenants)}. Suites: {', '.join(suites)}. "
+        f"Prompt guardrails: {'on' if guarded else 'off'}.",
     ]
     if CORRECTNESS in suites:
         blocks.append(

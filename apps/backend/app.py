@@ -9,7 +9,7 @@ drops any the client invents, so a body claiming another tenant is silently inef
 
 Endpoints:
 
-- `GET  /health`            open; liveness plus the API version.
+- `GET  /health`            open; liveness, the API version, the prompt-guardrail position.
 - `POST /login`             credentials for a token, or 401.
 - `GET  /models`            the endpoint's live chat-capable models plus the configured default.
 - `POST /chat`              one turn as an SSE stream of ADR 0012 trace events.
@@ -575,9 +575,13 @@ def create_app(
     app.add_exception_handler(SecurityViolation, _forbidden)
 
     @app.get("/health")
-    def health() -> dict[str, str]:
-        """Liveness for the pre-call check and compose health checks; open by design."""
-        return {"status": "ok", "version": API_VERSION}
+    def health() -> dict[str, str | bool]:
+        """Liveness plus the prompt-guardrail position, so the SPA can state it before a turn."""
+        return {
+            "status": "ok",
+            "version": API_VERSION,
+            "prompt_guardrails": runtime().agent.prompt_guardrails,
+        }
 
     @app.post("/login")
     def login(body: LoginRequest) -> dict[str, str]:
@@ -886,7 +890,9 @@ def _sse(events: Iterator[TraceEvent], model: str) -> Iterator[str]:
     The terminal frame carries the telemetry the turn managed to produce: the seconds it ran
     before it broke, and no token counts, because a run that never reached `respond` never got
     a usage report to pass on. It reports the turn as ungrounded for the same reason: a run that
-    never answered has no answer a tool result could stand behind.
+    never answered has no answer a tool result could stand behind. The prompt-guardrail position
+    is read off the knob rather than off the broken run, since a run that never built a prompt
+    never chose a position of its own (ADR 0011 as amended).
     """
     closed = False
     started = perf_counter()
@@ -904,6 +910,7 @@ def _sse(events: Iterator[TraceEvent], model: str) -> Iterator[str]:
                     answer=_TURN_FAILED,
                     grounded=False,
                     model=model,
+                    prompt_guardrails=runtime().agent.prompt_guardrails,
                     input_tokens=0,
                     output_tokens=0,
                     duration_s=round(
