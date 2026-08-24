@@ -149,9 +149,14 @@ empirically, not from memory.
   learn, plus a merge and a re-truncation to k in Python - a second ranking
   path to defend in the call, for an identical result.
 
+The Notes tab's search runs the same function for the same identity: `GET
+/notes/search` is defined as "the agent's own retrieval path for whoever is
+asking" (ADR 0014 section 6), so an all-tenant token gets this search and a
+tenant token gets the partition-filtered one, unchanged.
+
 The layer mapping for that path: L1 unchanged (the scope is the token's, and the
-tool is bound to this function at build time by `agent._build_tools`, never by
-an argument); L2 unchanged (still a fixed shape, no generated SQL); L3's
+tool is bound to this function at build time by `agent._build_tools` — the tab's
+seam makes the same choice per call, from `Identity` and never from the URL); L2 unchanged (still a fixed shape, no generated SQL); L3's
 partition pre-filter is absent because every partition is what was asked for;
 L4's tenant comparison is **inapplicable rather than weakened**, in ADR 0014's
 sense - the hits are supposed to carry other tenants, so a check against one

@@ -10,10 +10,11 @@ the endpoints do is untouched by that amendment — including the ignored-parame
 still in every listing response. Amended the same day once more, on the owner's question "do we
 have a logs tab? we were saving the logs right?": the audit log of ADR 0002 was persisted from the
 first RLS commit and nothing served it, so it gains a fourth tab and a listing of its own — see
-section 12. Nothing above changes. Amended 2026-08-25 for the all-tenant identity of ADR 0009: the
-unscoped read gains a second caller and loses the `_browse` in its name, and the fence of section 3
-is restated - a tool reaches it only under a verified all-tenant scope. The listings themselves are
-untouched.)
+section 12. Nothing above changes. Amended 2026-08-25 twice for the all-tenant identity of ADR 0009:
+the unscoped read gains a second caller and loses the `_browse` in its name, and the fence of section 3
+is restated - a tool reaches it only under a verified all-tenant scope; and section 6's search rule
+is corrected from "scoped to the token's tenant" to "the agent's own path for the identity asking",
+which is what it always meant. The listings themselves are untouched.)
 
 ## Context
 
@@ -180,17 +181,35 @@ and column names, `ORDER BY` — validate against an allow-list of known-safe st
    has to say which tenant each row belongs to, and that column is the login-switch comparison
    made visible in the data rather than only in the header badge.
 
-### 6. The Notes search stays scoped — the asymmetry is the demonstration
+### 6. The Notes search runs in the token's scope — the asymmetry is the demonstration
 
-The corpus **list** is the dataset's. The search **is not**: `GET /notes/search` delegates to
-`rag.search_notes_scoped` (ADR 0010), the partition-key pre-filtered KNN the `search_notes` tool
-calls, for the token's tenant alone, and surfaces the distance. `browse.annotate_note_hits` reads
-each hit's row through `db.execute_scoped` — the scoped executor, with its egress check — so a hit
-naming a foreign row is annotated with nothing.
+The corpus **list** is the dataset's. The search **is not**: `GET /notes/search` delegates to the
+retrieval the `search_notes` tool would run *for that same identity* (ADR 0010) and surfaces the
+distance. For a tenant token that is `rag.search_notes_scoped`, the partition-key pre-filtered KNN,
+for its tenant alone; `browse.annotate_note_hits` then reads each hit's row through
+`db.execute_scoped` — the scoped executor, with its egress check — so a hit naming a foreign row is
+annotated with nothing.
 
 So a reader can read beta's planted injection payload in the list, search for its exact text as
 acme, and get nothing back. Neither half proves much alone. Together they are the point of the
-tab, and they are the reason the list must not be scoped and the search must not be unscoped.
+tab, and they are the reason the list must not be scoped and a tenant's search must not be
+unscoped.
+
+**Amended 2026-08-25.** "The search is scoped to the token's tenant" was written when every token
+named one tenant. With the all-tenant identity of ADR 0009 it became false in the way that matters:
+the tab searched a partition named `all-tenants`, which no note carries, and answered `{"hits":[]}`
+— telling an admin the corpus holds nothing rather than showing what that session reaches. The rule
+was never "the search is narrow"; it is **"the search is the agent's own path for the identity
+asking"**. So both halves now follow the verified scope: an all-tenant token gets the
+partition-less retrieval its own tools are bound to, and its annotation reads through
+`db.execute_unscoped` — the same read the listings take — because a lookup bound to one tenant
+would describe none of the foreign hits and the card would come back blank.
+
+Nothing about a tenant identity moves, and that is asserted rather than asserted-in-prose: the
+retrieval stays scoped, the annotation stays scoped, and no query parameter (`all_tenants`,
+`scope`, `tenant_id`) can widen either — the handler reads the scope off `Identity` and the URL is
+not consulted. The demonstration above is therefore unchanged for the three tenant users, which is
+what it was ever about.
 
 For the same reason the **poison manifest is surfaced for every tenant**. It is generated with the
 dataset, committed, and pointed at by the README, so marking the planted rows tells a reader
@@ -431,7 +450,9 @@ and Notes: **the tabs are the auditor surface**, and a trail is what an auditor 
   generated-SQL machinery on a path that has no model in it, for no gain over a fixed template.
 - **Unscoping the Notes search too, for symmetry** — it would delete the demonstration. The search
   is the agent's own retrieval path; changing it would change what the agent can reach, which is
-  the one thing this ADR does not touch.
+  the one thing this ADR does not touch. Still true as written: what section 6's amendment does is
+  the opposite of unscoping the search — it keeps the search *equal to the agent's own path*, which
+  for a tenant identity is exactly as narrow as it always was.
 - **Unmounting a tab on switch** — simplest React, but a reader who checks a row count mid-
   conversation would come back to an empty chat.
 
