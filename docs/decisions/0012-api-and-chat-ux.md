@@ -254,8 +254,12 @@ title a thread settles on is a few-word label the model writes for it.
   same list the picker was offered.
 - `POST /chat` accepts an optional `model` field, honored only if the id is in
   the live list at request time (allowlist over untrusted client input);
-  otherwise the request is rejected. Absent, `runtime.json` `agent.model`
-  applies.
+  otherwise the request is rejected. Absent, the default is resolved from that
+  same live list — `runtime.json` `agent.model` when the endpoint serves it, and
+  otherwise the served chat id that sorts first (ADR 0005 as amended, issue
+  #111). `GET /models`'s `default` is that resolved id, so the field the picker
+  preselects is the field the turn's `done.model` reports back; an endpoint
+  serving no chat-capable model is a 502 on both routes.
 - The chat UI renders the picker (a brick) with the default preselected;
   switching models mid-conversation is allowed and visible in the trace.
 - Logout invalidates nothing server-side (JWT is stateless) but the UI drops

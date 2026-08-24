@@ -44,6 +44,11 @@ class AnalyticsConfig:
 class AgentConfig:
     """Agent and model knobs (ADRs 0005, 0011, 0012).
 
+    `model` is the preferred chat model, not a guarantee: the endpoint decides what it serves, so
+    the API honors this id when the live chat-capable list carries it and falls back to a served
+    one when it does not (ADR 0005 as amended). `embed_model` has no fallback - the retrieval
+    path needs that exact model.
+
     Four of them bound one turn (ADR 0011 as amended, OWASP LLM10). `max_tool_retries` bounds
     the retries of a single call and `max_tool_iterations` the number of tool rounds the turn may
     take at all; `turn_deadline_s` is its wall-clock budget; `max_output_tokens` and

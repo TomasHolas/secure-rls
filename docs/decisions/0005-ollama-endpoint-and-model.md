@@ -2,7 +2,9 @@
 
 Status: accepted (amended 2026-08-21: live model picker; demo model locked to
 huihui_ai/qwen3-abliterated:30b-a3b after a measured shootout; gate validates
-rather than picks — and has now run, validating the pick with zero leaks)
+rather than picks — and has now run, validating the pick with zero leaks;
+amended 2026-08-24: the configured model is a preference validated against the
+live list, with a deterministic served fallback)
 
 ## Context
 
@@ -98,6 +100,38 @@ unreachable. LangGraph tool calling requires a model with reliable tool support.
   `runtime.json` `agent.model` is the default when the client sends none.
   Model choice has zero effect on RLS — every layer is model-agnostic
   (ADR 0002), which the demo states explicitly.
+- **The configured model is a preference, validated against what is served**
+  (amended 2026-08-24, issue #111). `runtime.json` `agent.model` remains the
+  only place the preference is expressed, but it is no longer asserted: the same
+  live chat-capable list that gates a client-chosen id now also decides the
+  default. The configured id is used whenever the endpoint serves it; when it
+  does not, the default is the served chat id that sorts first in string order.
+  Before this amendment, an `agent.model` the endpoint had stopped serving made
+  every default turn fail with "the selected model is not available" while
+  `GET /models` listed several usable models — observed live, and
+  indistinguishable to a viewer from the endpoint being down.
+  - The fallback is **visible, not silent**: one resolver
+    (`app._effective_default_model`) answers both readers, so `GET /models`'s
+    `default` and the turn's `done.model` always name the same id, and the model
+    pill cannot disagree with the picker's preselection.
+  - The fallback is **deterministic over the set, not over the endpoint's
+    ordering**. Ollama's List Local Models endpoint documents no ordering for
+    the list it returns
+    (https://github.com/ollama/ollama/blob/main/docs/api.md#list-local-models),
+    and in practice it moves with model modification time, so "the
+    first one listed" would make the default depend on which model was last
+    pulled or run and could change between two turns. Sorting the ids and taking
+    the first makes the same live set always resolve the same default. The
+    tie-break itself is an engineering judgment, not a sourced practice: no
+    authoritative source ranks arbitrary Ollama models, and this ADR's own
+    shootout is what ranks the ones this demo cares about.
+  - **No chat-capable model at all stays an error**: `/models` and `/chat` both
+    answer 502 saying the endpoint serves no chat-capable model. No placeholder
+    id is invented and no turn is answered on nothing.
+  - Cost: a default turn now reads the live list (one `/api/tags` GET on the
+    5 s `api.models_timeout_s`) exactly as a turn naming a model already did.
+    The per-id `/api/show` capability lookups stay cached per process, so the
+    filter costs nothing after the first list.
 
 ## Consequences
 
@@ -111,6 +145,15 @@ unreachable. LangGraph tool calling requires a model with reliable tool support.
   eval report carry the security story without a live model.
 - Security does not depend on the model at all (ADR 0002); the model choice
   affects only answer quality and tool-call reliability.
+- **A served fallback answers on a model nobody picked.** That is the point —
+  an answer on a working model beats a refusal — but the id is always on screen:
+  the picker preselects it and the turn's pill names it, so a demo never claims
+  the configured model ran when it did not.
+- **Thread titling still asks for `agent.model` by name** (`app.ollama_titler`,
+  ADR 0012). It is not a turn: no picker, no trace, no model reported to the
+  reader, and a titling call the endpoint refuses already falls back to the
+  thread's first message. So a configured id the endpoint dropped costs a
+  generated label, never an answer.
 - **The endpoint has to serve an embedding model as well as a chat model.** The
   M2 gate found the host serving all four shootout candidates but no
   `nomic-embed-text` — `runtime.json` `agent.embed_model`, which `rag.OllamaEmbed`
