@@ -66,6 +66,33 @@ describe("LoginView", () => {
     expect(container.querySelector("button.btn.btn-primary.btn-block")).not.toBeNull();
   });
 
+  it("carries no glyph on the submit button at rest, and the spinner only while pending", async () => {
+    const { LoginView } = await load();
+    let settle: ((response: Response) => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockReturnValue(
+        new Promise<Response>((resolve) => {
+          settle = resolve;
+        }),
+      ),
+    );
+    const { container } = render(<LoginView />);
+
+    const glyphs = () => container.querySelectorAll("button.btn-block .material-symbols-outlined");
+    expect(glyphs()).toHaveLength(0);
+
+    fillCredentials();
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    expect(glyphs()).toHaveLength(1);
+    expect(glyphs()[0].textContent).toBe("progress_activity");
+
+    settle?.(jsonResponse({ detail: "nope" }, 401));
+    await screen.findByRole("alert");
+    expect(glyphs()).toHaveLength(0);
+  });
+
   it("names no credentials anywhere in the UI", async () => {
     const { LoginView } = await load();
     const { container } = render(<LoginView />);
