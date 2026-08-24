@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from sqlglot import exp
 
+from runtime import runtime
 from security import QueryRejected, validate_sql
 
 _SECURITY_SOURCE = Path(__file__).resolve().parents[1] / "security.py"
@@ -25,6 +26,11 @@ _SECURITY_SOURCE = Path(__file__).resolve().parents[1] / "security.py"
 @pytest.fixture(autouse=True)
 def _both_prompt_positions(guardrails):
     """Run this whole suite in both prompt-guardrail positions (`conftest.guardrails`)."""
+
+
+def test_the_parametrization_really_moves_the_knob(guardrails):
+    """The canary: a flip that stopped taking effect would pass this whole suite in silence."""
+    assert runtime().agent.prompt_guardrails is guardrails
 
 VALID = [
     "SELECT * FROM employees",

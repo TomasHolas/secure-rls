@@ -35,6 +35,11 @@ GAMMA = "gamma"
 def _both_prompt_positions(guardrails):
     """Run this whole suite in both prompt-guardrail positions (`conftest.guardrails`)."""
 
+
+def test_the_parametrization_really_moves_the_knob_db_reads(guardrails):
+    """The canary, read through `db`'s own imported loader: a dead flip would pass in silence."""
+    assert db.runtime().agent.prompt_guardrails is guardrails
+
 _HEADER = (
     "user_id",
     "tenant_id",
