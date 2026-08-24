@@ -496,6 +496,8 @@
 .msg-text.markdown-body { white-space: normal; }
 /* The answer card with no token in it yet: the `Loader` sits in this paragraph and takes its
    colour, so the grid is as quiet as the word beside it. */
+.msg-unkept { color: var(--fg-4); font-size: var(--text-sm); margin: 0; }
+
 .msg-pending { margin: 0; color: var(--fg-4); font-size: var(--text-sm); }
 .msg-footer { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-4); }
 .msg .form-error { margin-top: 0; }
