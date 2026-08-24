@@ -213,9 +213,10 @@ audit row — it drops only the tenant scoping, its structural proof and the ten
 egress check, because returning every tenant is the point. Tests assert that no
 agent tool is closed over it and that no other module can reach it, so the claim
 being defended — the *agent* cannot leave its tenant — is untouched (ADR 0014).
-Both tabs also carry a **"Probe the request"** box that appends a query parameter
-of the reader's choosing and shows every parameter the server reports it did not
-read.
+Every listing response also names the query parameters it did **not** read, with
+the server's own reason, so a stray parameter is reported rather than silently
+discarded — visible in `curl` or a network tab (`browse.ignored_params`, ADR 0014
+as amended; the box that used to type one on screen was removed on review).
 
 ## Assignment compliance map
 

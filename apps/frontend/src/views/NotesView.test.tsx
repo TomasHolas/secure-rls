@@ -14,15 +14,20 @@
  * The fourth is pinned on the rendered card rather than on the mapper: every column the
  * corpus payload carries reaches the reader. `department` was once fetched and dropped before
  * render, which left the tab unable to verify the one thing it exists to verify (issue #103), so
- * the fixture's row is asserted cell by cell - a column added to the payload without being mapped
- * fails here.
+ * the fixture's row is asserted field by field - a column added to the payload without being
+ * mapped fails here.
+ *
+ * The fifth is the card's own rule (issue #139): a rank is a fact about a ranking, so it is on a
+ * search hit with its distance and off a corpus row, where it would only restate row position; the
+ * tenant is a pill beside the name rather than corner microtext; and the prose is capped at a
+ * measure rather than at the width of the card.
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NotesView } from "./NotesView";
-import { expectOneControlHeight } from "../test/styles";
+import { expectChipStripHeight, expectOneControlHeight } from "../test/styles";
 
 const api = vi.hoisted(() => ({
   browseNotes: vi.fn(),
@@ -117,19 +122,39 @@ describe("the notes tab", () => {
     await show();
 
     api.browseNotes.mockResolvedValue({ ...CORPUS, total: 350 });
-    fireEvent.change(screen.getByLabelText("Tenant"), { target: { value: "beta" } });
+    fireEvent.click(screen.getByRole("button", { name: "beta" }));
 
     await waitFor(() => {
       const calls = api.browseNotes.mock.calls;
       expect(calls[calls.length - 1][0]).toMatchObject({ tenant_id: "beta", page: 1 });
     });
     expect((await screen.findAllByText(/350 notes · tenant beta/)).length).toBe(2);
+    expect(screen.getByRole("button", { name: "beta" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("offers the tenants as chips without counts, and clears the filter through All", async () => {
+    const view = await show();
+
+    expect(
+      Array.from(view.container.querySelectorAll(".chip"), (chip) => chip.textContent),
+    ).toEqual(["All", "acme", "beta", "gamma"]);
+    expect(screen.getByRole("group", { name: "Tenant" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "gamma" }));
+    await waitFor(() => expect(api.browseNotes).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+
+    await waitFor(() => {
+      const calls = api.browseNotes.mock.calls;
+      expect(calls[calls.length - 1][0]).toMatchObject({ tenant_id: "", page: 1 });
+    });
+    expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("searches for the token's tenant only, sending nothing but the query", async () => {
     await show();
 
-    fireEvent.change(screen.getByLabelText("Tenant"), { target: { value: "beta" } });
+    fireEvent.click(screen.getByRole("button", { name: "beta" }));
     await waitFor(() => expect(api.browseNotes).toHaveBeenCalledTimes(2));
     searchFor("compiler");
 
@@ -140,10 +165,13 @@ describe("the notes tab", () => {
   it("carries every column the server serves onto the card", async () => {
     const view = await show();
 
-    const card = view.container.querySelectorAll(".note-card")[0].textContent ?? "";
-    for (const cell of CORPUS.rows[0]) expect(card).toContain(String(cell));
+    const first = view.container.querySelectorAll(".note-card")[0];
+    const card = first.textContent ?? "";
+    expect(card).toContain("Ada Lovelace");
     expect(card).toContain("Engineering");
     expect(card).toContain("score 4.6");
+    expect(card).toContain("shipped the compiler");
+    expect(first.querySelector(".pill-neutral")?.textContent).toContain("acme");
   });
 
   it("shows a search hit the same fields as a corpus card, plus its distance", async () => {
@@ -158,13 +186,46 @@ describe("the notes tab", () => {
     expect(hit?.textContent).toContain("acme");
   });
 
+  it("ranks a search hit and leaves the rank off a corpus card, where it is only row position", async () => {
+    const view = await show();
+
+    const corpus = view.container.querySelectorAll(".note-card")[0];
+    expect(corpus.querySelector(".note-meta")).toBeNull();
+    expect(corpus.textContent).not.toContain("#1");
+
+    searchFor("compiler");
+    const hit = (await screen.findByText(/distance 0.213/)).closest(".note-card");
+
+    expect(hit?.querySelector(".note-meta")?.textContent).toBe("#1 · distance 0.213");
+  });
+
+  it("puts the tenant beside the name as a pill, not in the corner as microtext", async () => {
+    const view = await show();
+
+    const head = view.container.querySelector(".note-card .note-head")!;
+    const parts = Array.from(head.children, (part) => part.className);
+    expect(parts).toEqual(["note-name", "note-facts", "pill pill-neutral"]);
+  });
+
+  it("caps the note prose at a measure rather than the width of the card", async () => {
+    const view = await show();
+
+    const prose = view.container.querySelector(".note-text")!;
+    expect(getComputedStyle(prose).maxWidth).toBe("var(--note-measure)");
+    expect(
+      getComputedStyle(document.documentElement).getPropertyValue("--note-measure").trim(),
+    ).toMatch(/^\d+ch$/);
+  });
+
   it("marks a planted payload even when it sits in another tenant's note", async () => {
     const view = await show();
 
     const flagged = view.container.querySelectorAll(".note-card")[1];
     expect(flagged.textContent).toContain("beta");
     expect(flagged.textContent).toContain("planted payload");
-    expect(flagged.querySelector(".pill")?.getAttribute("title")).toContain("ignore_instructions");
+    expect(flagged.querySelector(".pill-warn")?.getAttribute("title")).toContain(
+      "ignore_instructions",
+    );
     expect(view.container.querySelectorAll(".pill-warn")).toHaveLength(1);
   });
 
@@ -273,36 +334,15 @@ describe("the notes tab", () => {
     });
   });
 
-  it("sends a parameter the reader appended to the corpus request and reports it back", async () => {
-    await show();
-
-    fireEvent.change(screen.getByLabelText("Extra query parameter"), {
-      target: { value: "tenant=beta" },
-    });
-    api.browseNotes.mockResolvedValue({
-      ...CORPUS,
-      ignored: [{ name: "tenant", reason: "read from your verified token (ADR 0002, layer 1)" }],
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      const calls = api.browseNotes.mock.calls;
-      expect(calls[calls.length - 1][1]).toBe("tenant=beta");
-    });
-    expect(await screen.findByText(/read from your verified token/)).toBeTruthy();
-    expect(screen.getAllByText(/1,000 notes/).length).toBeGreaterThan(0);
-  });
-
   it("keeps every control row on one height and one baseline", async () => {
     const view = await show();
 
     const rows = Array.from(view.container.querySelectorAll(".search-row"));
 
-    // The search box with its button, the probe box with its button, and the tenant select alone.
-    expect(rows).toHaveLength(3);
+    // The search box with its button, and the tenant chip strip on its own.
+    expect(rows).toHaveLength(2);
     expectOneControlHeight(rows[0], 2);
-    expectOneControlHeight(rows[1], 2);
-    expectOneControlHeight(rows[2], 1);
+    expectChipStripHeight(rows[1].querySelector(".chip-row"));
   });
 
   it("still lists the corpus when the manifest is unavailable", async () => {

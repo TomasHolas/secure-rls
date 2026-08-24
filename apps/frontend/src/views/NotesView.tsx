@@ -17,9 +17,11 @@
  * A missing note index is an operator condition, not a failure of the tab: the server answers
  * 503 with its own sentence and that sentence is what the reader is shown (ADR 0010 as amended).
  *
- * The corpus listing takes the same filters `/records` does, so it owes a reader the same
- * honesty about a parameter it does not read: the `ParamProbe` here appends one of the reader's
- * own to the corpus request and shows what the server reports it ignored (#107).
+ * The corpus listing takes the same filters `/records` does, and the server still reports every
+ * parameter it did not read (`browse.ignored_params`, ADR 0014). What is gone is the box that let
+ * a reader type one: it was a control explaining an HTTP property rather than showing the data,
+ * and the owner removed it on review (issue #139). The report is still in the response, for a
+ * curl or a network tab.
  *
  * Every request here is guarded against its own staleness the same way - the corpus and the
  * manifest by the effect's `live` flag, the search by a ticket - so a slower earlier answer can
@@ -31,9 +33,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../components/Button";
 import { Loader } from "../components/Loader";
 import { NoteList } from "../components/NoteList";
-import { ParamProbe } from "../components/ParamProbe";
 import { Pill } from "../components/Pill";
-import { SelectField, TextField } from "../components/forms";
+import { ChipRow, TextField } from "../components/forms";
 import { EmptyState, Page, PageHeader, Section } from "../components/layout";
 import type { NoteEntry } from "../components/NoteList";
 import { ApiError, browseNotes, listFlaggedNotes, listTenants, searchNotes } from "../lib/api";
@@ -47,7 +48,6 @@ const RETRIEVAL_NOTE =
   "search_notes tool calls, with the distance it scored each note by. It answers for your " +
   "tenant only, while the corpus below is the whole dataset: a note you can read there and not " +
   "retrieve here is the isolation, shown twice on one screen.";
-const PROBE_TITLE = "Probe the request";
 const ALL_TENANTS = "all tenants";
 const FIRST_PAGE = 1;
 const USER_ID = "user_id";
@@ -59,7 +59,6 @@ const NOTES = "notes";
 
 export function NotesView({ tenant }: { tenant: string }) {
   const [page, setPage] = useState(FIRST_PAGE);
-  const [probe, setProbe] = useState("");
   const [filtered, setFiltered] = useState("");
   const [corpus, setCorpus] = useState<BrowsePage | null>(null);
   const [tenants, setTenants] = useState<FilterOption[]>([]);
@@ -96,7 +95,7 @@ export function NotesView({ tenant }: { tenant: string }) {
   useEffect(() => {
     let live = true;
     setLoading(true);
-    browseNotes({ page, tenant_id: filtered }, probe)
+    browseNotes({ page, tenant_id: filtered })
       .then((serverPage) => {
         if (live) {
           setCorpus(serverPage);
@@ -112,7 +111,7 @@ export function NotesView({ tenant }: { tenant: string }) {
     return () => {
       live = false;
     };
-  }, [page, filtered, probe]);
+  }, [page, filtered]);
 
   // Only the newest search may write: a slower earlier one must not overwrite it on arrival.
   const latest = useRef(0);
@@ -137,7 +136,7 @@ export function NotesView({ tenant }: { tenant: string }) {
       });
   }, [query]);
 
-  // A select is one deliberate action, so it applies on change; a page of typing would not.
+  // Picking a chip is one deliberate action, so it applies at once; a page of typing would not.
   const filterBy = useCallback((value: string) => {
     setPage(FIRST_PAGE);
     setFiltered(value);
@@ -189,15 +188,6 @@ export function NotesView({ tenant }: { tenant: string }) {
         ) : null}
       </Section>
 
-      <Section title={PROBE_TITLE}>
-        <ParamProbe
-          id="notes-probe"
-          ignored={corpus?.ignored ?? []}
-          onSend={setProbe}
-          disabled={loading}
-        />
-      </Section>
-
       <Section
         title="Corpus"
         aside={
@@ -210,16 +200,12 @@ export function NotesView({ tenant }: { tenant: string }) {
         }
       >
         <div className="search-row control-row">
-          <SelectField
+          <ChipRow
             id="notes-tenant"
             label="Tenant"
             value={filtered}
-            options={tenants.map((entry) => ({
-              value: entry.value,
-              label: `${entry.value} (${formatNumber(entry.employees)})`,
-            }))}
+            options={tenants.map((entry) => entry.value)}
             onChange={filterBy}
-            placeholder="any tenant"
             disabled={loading}
           />
         </div>
