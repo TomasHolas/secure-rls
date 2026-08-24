@@ -8,6 +8,7 @@ services:
   backend:
     build: ./apps/backend
     image: ghcr.io/tomasholas/secure-rls-backend:latest
+    container_name: rls-backend
     environment:
       # The model endpoint is config, never containerized here (ADR 0005): point this at whatever
       # host serves Ollama - http://host.docker.internal:11434 for one on the Docker host, or a
@@ -25,6 +26,7 @@ services:
         # Baked into the bundle at build time; the browser, not the container, resolves it.
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8002}
     image: ghcr.io/tomasholas/secure-rls-frontend:latest
+    container_name: rls-frontend
     ports:
       - "3002:3002"
     depends_on:
