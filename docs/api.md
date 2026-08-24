@@ -42,6 +42,12 @@ Two invariants keep the stream honest:
 - every stream ends in exactly one `done` frame with status
   `ok | blocked | gave_up | failed`.
 
+A `tool_result` carries two views of one result and says where they differ: `data`
+is every row the server's cap allowed and is what the UI renders, `content` is
+what the model was handed, and `withheld` is how many lines the model's copy lost
+to the per-reply character cap ([ADR 0007](decisions/0007-result-size-handling.md)
+as amended) — 0 when it lost none.
+
 The `done` frame also carries the turn's cost, whether the answer was grounded in
 a tool call of its own turn, and the prompt-guardrail position that produced it,
 so no trace can be read as the other mode's.

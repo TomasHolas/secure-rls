@@ -114,11 +114,14 @@ knobs below.
 **This section bounds the second one.** Before every model call the assembled prompt is
 estimated, and while the estimate exceeds what one call may send, the oldest whole turn is dropped
 from what is sent. It does not bound the first: a turn whose own tool result does not fit is sent
-as it is and meets the endpoint's refusal exactly as before, because the floor below is there to
-keep the current question and this turn's evidence, and trimming that away to satisfy an
-arithmetic check would answer from a table the model can no longer see. Bounding what a single
-tool result may contribute to a prompt is a different bound with a different knob — ADR 0007's row
-cap is where it belongs — and is filed as issue #142 rather than smuggled in here.
+as it is, because the floor below is there to keep the current question and this turn's evidence,
+and trimming that away to satisfy an arithmetic check would answer from a table the model can no
+longer see. Bounding what a single tool result may contribute to a prompt is a different bound with
+a different knob, and it now exists next door: `agent.max_tool_reply_chars` caps the model's copy
+of one result at a line boundary and tells it how much it is looking at (ADR 0007 as amended, issue
+#142). `_fit_reply` is the sibling of `_fit_history` — one bounds what a result contributes, the
+other what the thread does — and the cap is derived from this section's own send budget so the two
+compose rather than competing for the same window.
 
 Three knobs, all under `agent`:
 
@@ -157,8 +160,10 @@ Six properties make this defensible rather than a heuristic bolted on:
   the same turn re-measured at 6678 estimated against the same 4805 reported: over rather than
   under, which is the direction a bound has to be wrong in.
 - **A thread that still does not fit at the floor is sent as it is.** One enormous turn — a
-  pasted document, a question longer than the window, or the 200-row tool result the eval run
-  actually died on — meets the endpoint's own refusal exactly as it does today. That is
+  pasted document, or a question longer than the window — meets the endpoint's own refusal exactly
+  as it does today. The 200-row tool result the eval run actually died on no longer belongs on that
+  list: ADR 0007 as amended caps what one result contributes, so that shape is bounded rather than
+  confined. What remains here is a turn oversized for some other reason. That is
   deliberate: the alternative is trimming away the question the turn exists to answer or the
   result it must answer from, or looping to satisfy an arithmetic check that no shorter history
   can satisfy. The failure is not removed, it is confined to a single turn that is oversized on
