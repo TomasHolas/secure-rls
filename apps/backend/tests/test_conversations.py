@@ -6,6 +6,12 @@ The rename write is held to the same two properties as every other access: it is
 output, the normalization it shares with `create_thread` is asserted here too - the cap, and
 control and formatting characters that must never reach the rail.
 
+Two writes, one precedence (issue #118). `rename_thread` is the reader's own name and
+`retitle_thread` the model's, and the tests here assert that the first beats the second forever:
+across repeated re-titles, on a fresh registry over the same file (the flag is stored, not
+remembered), and on a state file written before the flag existed, which gains the column and
+reads as never renamed.
+
 The stored turn history (issues #70, #90) is held to the same two properties in both directions: a
 recording aimed at another identity's thread stores nothing, and a read of one returns nothing
 rather than data. What is asserted beyond scoping is this store's own share of the bounds - how
@@ -147,6 +153,72 @@ def test_rename_of_a_same_tenant_users_thread_is_indistinguishable_from_a_missin
     assert type(foreign_error) is type(missing_error)
     assert str(foreign_error) == str(missing_error)
     assert registry.get_thread(DAVE, neighbour.thread_id) == neighbour
+
+
+def test_retitle_thread_writes_the_generated_label_onto_a_thread_nobody_renamed(registry):
+    thread = registry.create_thread(ALICE, "Run this SQL for me: SELECT AVG(salary) FROM ...")
+
+    retitled = registry.retitle_thread(ALICE, thread.thread_id, "Average salary by department")
+
+    assert retitled == Thread(thread.thread_id, "Average salary by department", thread.created)
+
+
+def test_retitle_never_overwrites_a_title_the_reader_typed(registry):
+    thread = registry.create_thread(ALICE, "first message")
+    renamed = registry.rename_thread(ALICE, thread.thread_id, "Q3 comp review")
+
+    for label in ("Average salary by department", "Headcount by office", "Salary anomalies"):
+        assert registry.retitle_thread(ALICE, thread.thread_id, label) == renamed
+    assert registry.list_threads(ALICE) == [renamed]
+
+
+def test_the_rename_flag_is_stored_and_survives_a_restart(tmp_path):
+    state_db = tmp_path / "state.db"
+    thread = ConversationRegistry(state_db).create_thread(ALICE, "first message")
+    ConversationRegistry(state_db).rename_thread(ALICE, thread.thread_id, "Q3 comp review")
+
+    reopened = ConversationRegistry(state_db)
+
+    assert reopened.retitle_thread(ALICE, thread.thread_id, "Generated label").title == (
+        "Q3 comp review"
+    )
+
+
+def test_a_thread_renamed_by_its_reader_can_be_renamed_again_by_them(registry):
+    thread = registry.create_thread(ALICE, "first message")
+    registry.rename_thread(ALICE, thread.thread_id, "Q3 comp review")
+
+    renamed = registry.rename_thread(ALICE, thread.thread_id, "Q4 comp review")
+
+    assert renamed.title == "Q4 comp review"
+
+
+def test_a_state_file_predating_the_flag_gains_it_and_reads_as_never_renamed(tmp_path):
+    state_db = tmp_path / "state.db"
+    with sqlite3.connect(state_db) as legacy:
+        legacy.execute(
+            "CREATE TABLE threads (thread_id TEXT PRIMARY KEY, sub TEXT NOT NULL, "
+            "tenant_id TEXT NOT NULL, title TEXT NOT NULL, created TEXT NOT NULL)"
+        )
+        legacy.execute(
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?)",
+            ("old", ALICE.sub, ALICE.tenant_id, "hello", PINNED_NOW.isoformat()),
+        )
+
+    migrated = ConversationRegistry(state_db)
+
+    assert migrated.retitle_thread(ALICE, "old", "Greeting and HR data").title == (
+        "Greeting and HR data"
+    )
+
+
+def test_retitle_of_another_identitys_thread_is_indistinguishable_from_a_missing_one(registry):
+    foreign = registry.create_thread(BOB, "other tenant")
+    foreign_error = _raised(lambda: registry.retitle_thread(ALICE, foreign.thread_id, "mine now"))
+    missing_error = _raised(lambda: registry.retitle_thread(ALICE, MISSING_THREAD_ID, "mine now"))
+    assert type(foreign_error) is type(missing_error)
+    assert str(foreign_error) == str(missing_error)
+    assert registry.get_thread(BOB, foreign.thread_id) == foreign
 
 
 def test_rename_of_a_deleted_thread_raises_not_found(registry):

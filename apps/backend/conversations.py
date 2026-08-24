@@ -13,6 +13,15 @@ configured cap. A generated title is model output, so the store is the last plac
 guarantee what the sidebar renders is one line of displayable text - no NUL, no escape
 sequence, no bidi override reordering the rail.
 
+Two writes, and only one of them can lose (ADR 0012 as amended, issue #118). `rename_thread` is
+the reader naming their own thread and stamps the row's `renamed` flag; `retitle_thread` is the
+model's label and carries `renamed = 0` in its WHERE clause, so a thread the reader has named
+keeps their words however many times the titler runs afterwards. The flag is a stored column,
+not a guess about the title's text: a rename is a decision, and the only place a decision can
+survive a restart is on disk. A state file written before the flag existed gains the column with
+a default of 0 - nothing on disk tells a reader's name from a generated one, so the migration
+picks the default whose worst case is one re-title rather than freezing every old thread's name.
+
 Turn history (ADR 0012 as amended, issue #90). Beside the thread rows this module keeps the whole
 turn: the trace events it produced, in order - the model's reasoning per round, every tool call
 with the arguments the model wrote, each call's one outcome (its result payload, the retry that
@@ -61,9 +70,15 @@ CREATE TABLE IF NOT EXISTS threads (
     sub       TEXT NOT NULL,
     tenant_id TEXT NOT NULL,
     title     TEXT NOT NULL,
-    created   TEXT NOT NULL
+    created   TEXT NOT NULL,
+    renamed   INTEGER NOT NULL DEFAULT 0
 )
 """
+_RENAMED_COLUMN = "renamed"
+# Threads registered before issue #118 read as never renamed: nothing on disk distinguishes a
+# reader's own name from a generated one, and the default that can only cost a re-title is safer
+# than the one that would freeze every old thread's name for good (owner-approved, issue #118).
+_RENAMED_MIGRATION = f"ALTER TABLE threads ADD COLUMN {_RENAMED_COLUMN} INTEGER NOT NULL DEFAULT 0"
 
 _TURN_HISTORY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS turn_history (
@@ -131,6 +146,8 @@ class ConversationRegistry:
             conn.execute(_THREADS_SCHEMA)
             conn.execute(_TURN_HISTORY_SCHEMA)
             conn.execute(_SUPERSEDED_SCHEMA)
+            if not _has_renamed_column(conn):
+                conn.execute(_RENAMED_MIGRATION)
             conn.commit()
 
     def create_thread(self, identity: Identity, title: str) -> Thread:
@@ -172,15 +189,39 @@ class ConversationRegistry:
         return Thread(*row)
 
     def rename_thread(self, identity: Identity, thread_id: str, title: str) -> Thread:
-        """Retitle the identity's own thread; a foreign or missing id raises the same NotFound."""
+        """Name the identity's own thread as the reader typed it, and mark it theirs for good.
+
+        The `renamed` flag this sets is what makes a reader's own words final: no automatic
+        re-titling writes over a row carrying it (issue #118). A foreign or missing id raises
+        the same NotFound as everywhere else.
+        """
         with closing(sqlite3.connect(self._state_db)) as conn:
             renamed = conn.execute(
-                "UPDATE threads SET title = ? WHERE thread_id = ? AND sub = ? AND tenant_id = ?",
+                f"UPDATE threads SET title = ?, {_RENAMED_COLUMN} = 1 "
+                "WHERE thread_id = ? AND sub = ? AND tenant_id = ?",
                 (_normalize_title(title), thread_id, identity.sub, identity.tenant_id),
             ).rowcount
             conn.commit()
         if not renamed:
             raise NotFound(_NOT_FOUND_MESSAGE)
+        return self.get_thread(identity, thread_id)
+
+    def retitle_thread(self, identity: Identity, thread_id: str, title: str) -> Thread:
+        """Write the model's label onto the identity's own thread, unless the reader named it.
+
+        The same scoped write as a rename with one clause more: a thread the reader has renamed
+        is left exactly as they named it, and the row that comes back is theirs rather than the
+        model's (issue #118). Nothing distinguishes "the reader renamed it" from "the label did
+        not change" in the answer, because the caller's contract is the same either way - the
+        stored row, whatever it now says. A foreign or missing id raises the same NotFound.
+        """
+        with closing(sqlite3.connect(self._state_db)) as conn:
+            conn.execute(
+                f"UPDATE threads SET title = ? WHERE thread_id = ? AND sub = ? AND tenant_id = ? "
+                f"AND {_RENAMED_COLUMN} = 0",
+                (_normalize_title(title), thread_id, identity.sub, identity.tenant_id),
+            )
+            conn.commit()
         return self.get_thread(identity, thread_id)
 
     def record_turn(self, identity: Identity, thread_id: str, history: TurnHistory) -> None:
@@ -270,6 +311,12 @@ class ConversationRegistry:
             (thread_id, identity.sub, identity.tenant_id),
         ).fetchone()
         return row is not None
+
+
+def _has_renamed_column(conn: sqlite3.Connection) -> bool:
+    """Whether this state file already carries the rename flag, so an old one is migrated once."""
+    columns = conn.execute("PRAGMA table_info(threads)").fetchall()
+    return any(column[1] == _RENAMED_COLUMN for column in columns)
 
 
 def plain_one_line(text: str) -> str:
