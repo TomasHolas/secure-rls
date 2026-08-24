@@ -103,8 +103,9 @@ FastAPI (:8002)     auth.py                            app.py  (thin handler)
 ```
 
 The whole turn is streamed as Server-Sent Events, so the trace the UI renders
-**is** the transport, not a replay
-([ADR 0012](docs/decisions/0012-api-and-chat-ux.md)). Two invariants keep it
+**is** the transport ([ADR 0012](docs/decisions/0012-api-and-chat-ux.md)) — and
+those same events are what the server keeps, so reopening the thread replays that
+turn through the same code rather than a summary of it. Two invariants keep it
 honest: every announced `tool_call` is closed by exactly one `tool_result`,
 `retry` or `security_event`, and every stream ends in exactly one `done` frame
 with status `ok | blocked | gave_up | failed`.
@@ -621,12 +622,16 @@ trustworthy.
   another tenant's data. Recorded as a product judgment in
   [ADR 0012](docs/decisions/0012-api-and-chat-ux.md), against OWASP's
   generic-error default.
-- **Replay restores the evidence, not the thinking.** Reopening a thread brings
-  back the questions, the answers and each turn's server-produced tool evidence
-  (executed SQL, the result window, charts), but not the model's reasoning,
-  retries or refusals: those are the transport of the turn that produced them.
-  Persisting the full turn is tracked as
-  [issue #90](https://github.com/TomasHolas/secure-rls/issues/90).
+- **Replay restores the whole turn.** Reopening a thread brings back the
+  questions, the answers, the model's reasoning per round, every tool call with
+  the arguments it wrote, the executed SQL and result window, the retries with
+  their reasons, the refusals with the layer that fired, and the terminal frame
+  with the turn's cost and prompt-guardrail position — folded through the same
+  code the live stream goes through, so a past turn renders in the same bricks.
+  What a replayed turn cannot show is how long a thought took: that span is
+  measured in the browser, not sent. History is capped per turn and per thread,
+  and a turn the caps trimmed says so on a pill
+  ([ADR 0012](docs/decisions/0012-api-and-chat-ux.md), issue #90).
 - **Groundedness is enforced by a nudge, not a proof.** The evaluation run
   caught a turn answering from conversation context without querying anything —
   nothing can leak that way, since whatever is in context is already the

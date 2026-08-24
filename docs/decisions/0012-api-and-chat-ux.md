@@ -31,8 +31,10 @@ undifferentiated block and the label above it was a frontend invention.
 - **`reasoning` with `{text}` is a binding event.** It carries the model's own
   thinking as it arrives, appended to the current trace step, streamed live,
   and never part of the answer body. It is trace content in the same sense a
-  tool call is: shown once, never written to the graph's history and never
-  replayed (a reopened thread shows what was said, not what was thought).
+  tool call is: never written to the graph's message history — and, since issue
+  #90, kept per model round in the turn history a reopened thread replays (see
+  **Full-fidelity turn history** below, which replaces the session-only rule
+  this bullet originally carried).
 - **One splitter, two channels.** The endpoint's thinking output is enabled per
   model (`langchain_ollama`'s `reasoning=True`, which sets Ollama's `think` and
   streams the text under `reasoning_content` beside the answer), and a smaller
@@ -63,11 +65,11 @@ a result the answer could rest on. It is a field of the terminal frame rather
 than an event of its own because it is a property of the finished turn, and the
 turn already has one frame for those. The SPA renders `ok` plus not-grounded as
 a warn pill, "answered without querying the data", beside the answer; a turn
-that ended some other way already carries a pill saying so, and a replayed turn
-claims nothing about it, because the server does not store it (the evidence it
-does store is what a reader judges a past turn on). The mechanism behind the
-flag - one grounding nudge per turn - is ADR 0011's, and it is answer quality,
-never a security layer.
+that ended some other way already carries a pill saying so. Since issue #90 the
+terminal frame is stored with the turn, so a replayed turn reports its
+groundedness too; a turn whose frame was not kept still claims nothing about it.
+The mechanism behind the flag - one grounding nudge per turn - is ADR 0011's,
+and it is answer quality, never a security layer.
 
 **Two termination invariants (amended after issue #66).** The live pass showed
 what their absence costs: one tool raising an unexpected exception killed the
@@ -117,9 +119,8 @@ limit", beside the answer it did get.
   read back from the checkpointer in order. Reopening a thread restores the
   conversation the server still remembers, never a re-run of the reasoning
   behind it. (This bullet originally put every tool-call internal out of
-  replay; issue #70 split that — see **Replayed tool evidence, session-only
-  thinking** below, which is binding: the evidence replays, the thinking does
-  not.)
+  replay; issue #70 let the tool evidence back in, and issue #90 the rest of the
+  turn — see **Full-fidelity turn history** below, which is binding.)
 - **Amended after issue #66**: the text of an assistant turn that also asked
   for tools is part of what was said and is replayed. Dropping the whole
   message hid every partial and failed turn from the transcript while it stayed
@@ -127,74 +128,107 @@ limit", beside the answer it did get.
   not see, which is exactly the information gap the model then filled with a
   confident, false explanation. The calls themselves stay out; only the words do.
 
-### Replayed tool evidence, session-only thinking (amended after issue #70)
+### Full-fidelity turn history (amended after issue #90, replacing the session-only rule)
 
-The line above — "the tool-call internals are not replayable" — was too broad,
-and the live pass showed the cost: a turn that drew a chart replayed as prose
-referring to a chart that was no longer on screen ("as the chart shows,
-Engineering leads"), with the SQL pair and the result table gone the same way.
-The answer text was persisted; the evidence for it was not. The amendment
-splits what one sentence used to cover:
+Issue #70 stored the tool evidence and left the thinking session-only, on the
+argument that model output is worth watching once and not worth re-serving as
+record. The owner's correction: for **this** product that was the wrong call.
+The claim this demo makes is auditability of a row-level-security boundary, and
+the interesting part of a past conversation is exactly what the agent tried,
+what got rewritten, what got retried and what got refused — not the tidy answer
+at the end. A reviewer who reopens a thread and sees only questions, answers and
+tables is being shown the part that needs the least trust. So the split of the
+previous amendment is replaced: **the whole turn is persisted and replayed.**
 
-- **The evidence replays.** For every `tool_result` a turn produced, the
-  server-produced payload is stored and served back: the executed statement,
-  the row window that came back, the `chart_spec`, the anomalies, the retrieved
-  notes — plus the `generated_sql` the model wrote, which lives inside that
-  payload because the generated-versus-executed pair is the point of showing it.
-  `GET /conversations/{id}` returns them as `tool_results`, each keyed by the
-  turn its question opened, beside the `messages` it already returned.
-- **The thinking does not.** The model's `reasoning`, the `retry` events, the
-  `security_event`s and the `node_start` steps stay exactly as this ADR had
-  them: the live trace IS the transport of the turn that produced it. They are
-  never written to any store, so a reopened thread shows what was *done*, not
-  what was thought, and the UI says so above the replayed turns rather than
-  letting a reader assume a missing reasoning step means there was none.
-- **Why that split and not "store everything".** The evidence is database
-  ground truth the server computed; the thinking is model output whose value is
-  in watching it happen, whose volume is unbounded per turn, and which the
-  history deliberately does not keep (a replayed `<think>` block would be
-  reasoning presented as record). Keeping the split also keeps one property
-  worth defending in the demo: nothing the model *said about itself* is ever
-  re-served as fact.
-- **Where it lives, and scoped like everything else.** In `conversations.py`'s
-  `state.db`, beside the thread rows — application state, not tenant data, so
-  the same documented exception to "only `db.py` opens a connection" covers it.
-  Every payload row carries the `sub` and `tenant_id` that produced it, and both
-  the read and the write are filtered by both (ADR 0002 layer 1): a write aimed
-  at another identity's thread stores nothing and raises nothing, a read of one
-  returns nothing, and the endpoint still asks the registry for the thread
-  first, so a foreign id is the same 404 that reads no transcript and no
-  payload.
-- **Bounded three ways**, because "persist the trace" is otherwise unbounded
-  growth in a store that is served in one response: the row-shaped lists inside
-  a payload are cut to the executor's result cap (ADR 0007, `db.max_result_rows`
-  — the same cap that bounded the query, restated so the store's bound is its
-  own), at most `conversations.max_stored_results_per_turn` payloads of one turn
-  are kept (set to the tool-round cap `agent.max_tool_iterations` of issue #83,
-  so a turn that spent its whole round budget still replays every round), and
-  only the newest `conversations.max_stored_result_turns` turns of a thread keep
-  theirs. An older turn replays as text, exactly as it did before
-  this amendment. The model-facing rendering of a payload (the pipe-separated
-  table the tool returned to the model) is not stored at all: it is a second
-  copy of the same rows, for a reader who is not there any more.
-- **When it is written.** Off the `/chat` stream, as the events pass, and
-  flushed once the turn is over — so it costs the stream nothing while tokens
-  flow, a turn that broke mid-flight still stores what it did produce, and a
-  storage failure is logged and swallowed rather than turning a finished answer
-  into a failed turn. The turn number is the count of questions the thread then
-  holds: one `/chat` call appends exactly one question, so counting them is what
-  aligns a payload with the answer above it, and a turn that produced a
-  `tool_result` has necessarily checkpointed its question already.
-- **One renderer, not two.** The SPA folds the replay payload into the same
-  `Turn` objects the SSE stream folds into (`lib/trace.ts`), so a replayed SQL
-  pair, table or chart is the same brick a live one is. A second read-only
-  renderer would be the thing that drifts.
+- **What is kept, per turn, keyed by thread and turn ordinal.** The ADR 0012
+  trace events the turn produced, in the order they happened: the model's
+  reasoning **concatenated per model round** (one live turn produced 1175
+  `reasoning` frames — the round's text is the unit a reader reads, and the
+  frame is not), every `tool_call` with the arguments the model wrote, the one
+  outcome that settled each of them (`tool_result` with its server-produced
+  payload, `retry` with its reason and attempt number, or `security_event` with
+  the layer and kind that fired), and the terminal `done` frame with the turn's
+  status, its token and duration telemetry, its groundedness and the
+  prompt-guardrail position that produced it (ADR 0011 as amended). The
+  `reason`-node `node_start` events are kept because they are what groups the
+  reasoning into rounds; the other nodes render nothing, so they are transport
+  only, as the amendment after issue #87 already said.
+- **What is not kept.** `token` frames: the answer is already in the
+  checkpointer's transcript and whole in the terminal frame, so a third copy
+  would be the largest thing stored and would replay nothing new. The
+  model-facing rendering of a tool result (the pipe-separated table the tool
+  returned to the model) for the same reason — it is a second copy of the rows,
+  for a reader who is no longer there.
+- **Where it lives, and why not the audit log.** In `conversations.py`'s
+  `state.db`, one row per turn beside the thread rows — the same documented
+  exception to "only `db.py` opens a connection" that the registry already is.
+  Not in `audit.db`: that store is `db.py`'s record of tenant-**data** queries,
+  written by the executor for every query approved or refused, and a turn record
+  is mostly not data queries at all (reasoning, retries, a refusal that never
+  reached the database, a terminal frame). Making the data-access auditor the
+  owner of application history would put two unrelated retention rules, two
+  scoping stories and two schemas in one file. A third database was rejected for
+  the opposite reason: this is conversation state, and the conversation store
+  already exists.
+- **Scoped and non-disclosing, unchanged.** Every history row carries the `sub`
+  and `tenant_id` that produced it, and both the read and the write are filtered
+  by both (ADR 0002 layer 1): a write aimed at another identity's thread stores
+  nothing and raises nothing, a read of one returns nothing, and the endpoint
+  asks the registry for the thread first, so a foreign id is the same 404 that
+  reads neither transcript nor history.
+- **Model output is data on the way in and text on the way out.** Stored tool
+  arguments are what the model wrote; nothing re-executes them on replay, and the
+  SPA renders them as text nodes exactly as it renders a note or a generated
+  title (OWASP LLM05). A replayed turn is a rendering of a record, never a
+  re-run.
+- **Bounded, and the bound is stated rather than hidden.** Per turn: at most
+  `conversations.max_turn_events` events are kept, at most
+  `conversations.max_turn_payloads` tool results keep their `data` (set to the
+  tool-round cap `agent.max_tool_iterations`), the row-shaped lists inside a
+  payload are cut to the executor's own `db.max_result_rows` (ADR 0007), and one
+  round's thinking is cut to `conversations.max_reasoning_chars`. Per thread:
+  only the newest `conversations.max_history_turns` turns keep their history, and
+  an older turn replays as text, exactly as it did before any of this was stored.
+  The terminal frame is kept whatever else a cap refused, because a turn that
+  cannot say how it ended is the one thing a history must not be. Every piece a
+  cap refuses is **counted** and served with the turn, and the SPA states it on a
+  pill; a truncated round says so on its own step. A capped history that read as
+  a whole one would be worse than no history.
+- **Written from the framing, so the record is what the reader was sent.** The
+  turn log is offered every frame `_sse` puts on the wire — the API's own
+  `failed` terminal frame included — and is flushed once the stream is over, so
+  it costs the stream one append per frame and touches the store after the last
+  one. A turn that broke mid-flight stores what it did produce. The turn ordinal
+  is the count of questions the thread then holds: one `/chat` call appends
+  exactly one question.
+- **One lenient path, and it is the write.** A storage failure is logged, saying
+  how much was lost, and swallowed: by then the answer has streamed, and losing
+  a replayable trace is not worth turning a finished turn into a failed one. The
+  read is strict, deliberately: a history row that cannot be reconstructed
+  raises rather than rendering a partial turn as a complete one.
+- **One renderer, one fold.** The SPA replays a turn by running its stored events
+  through `applyEvent`, the same fold the SSE stream goes through, producing the
+  same `Turn` object and therefore the same bricks (`lib/trace.ts`). Not "a
+  second read-only renderer would drift" as a hope — there is no second
+  implementation to drift. Two things a replayed turn genuinely cannot have: the
+  token-by-token arrival of the answer, and the span a thinking step reports,
+  which is this client's own measurement of thinking arriving (see the issue #91
+  amendment below) and is therefore rendered as "Thought" with no duration
+  rather than as an invented one.
 
-This split is a modeling judgment, not a published pattern: no authoritative
-source prescribes which parts of an agent trace to persist. It is grounded in
-the two rules this ADR already applies — model output is untrusted and is
-sanitized or dropped rather than re-served as record (OWASP LLM05), and stored
-results are capped rather than unbounded (ADR 0007).
+What this replaces from the issue #70 amendment: "the thinking does not replay",
+and its argument that nothing the model said about itself should be re-served as
+fact. The property kept from it is the one that mattered — model output is never
+re-served as *the server's* claim: it is rendered as the model's own words, in a
+trace, as text, beside the server-computed evidence that either supports it or
+does not. Which is the argument for storing it rather than against.
+
+This remains a modeling judgment, not a published pattern: no authoritative
+source prescribes which parts of an agent trace to persist. It is grounded in the
+two rules this ADR already applies — model output is untrusted and is sanitized
+or rendered as text rather than trusted as record (OWASP LLM05), and stored
+results are capped rather than unbounded (ADR 0007) — plus the product's own
+stated purpose, which is to be checkable after the fact.
 
 ### Generated titles (amended after issue #72)
 
@@ -402,8 +436,9 @@ changed decisions taken above; everything else was rejected there with a reason.
   and whatever the turn did next — the stream carries no timestamps, and the
   measurement is honest about being the client's own. The reader's click still
   wins from then on, so `TraceStep`'s `open` became the state a step is in rather
-  than the one it mounted in. A replayed turn stores no reasoning and is
-  unaffected.
+  than the one it mounted in. A replayed round does carry its thinking (issue
+  #90) but no span: it never arrived here, so the step reads "Thought" and states
+  no duration rather than reporting a measurement nobody took.
 
 ### Both SQL cards always, no toggle (amended after issue #121)
 
