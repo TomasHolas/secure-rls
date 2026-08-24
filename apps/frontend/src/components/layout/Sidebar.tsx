@@ -9,9 +9,9 @@
  * up clipped reads that and takes them out of the Tab order and the accessibility tree, which is
  * what keeps a collapsed rail from hiding focusable controls behind its own edge.
  *
- * Slots, top to bottom: `identity` (the signed-in identity and its menu), the head row carrying
- * the collapse toggle, the caps `title` and the `search` control, `actions`, then the list.
- * Copy that should fade out rather than be cut off mid-word by the clip carries `rail-copy`.
+ * Slots, top to bottom: the head row carrying the collapse toggle, the caps `title` and the
+ * `search` control, `actions`, then the list. Copy that should fade out rather than be cut off
+ * mid-word by the clip carries `rail-copy`.
  */
 
 import { createContext, useContext, useState } from "react";
@@ -28,13 +28,11 @@ export function useSidebarCollapsed(): boolean {
 
 export function Sidebar({
   title,
-  identity,
   search,
   actions,
   children,
 }: {
   title: string;
-  identity?: ReactNode;
   search?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
@@ -46,7 +44,6 @@ export function Sidebar({
     <CollapsedContext.Provider value={collapsed}>
       <aside className={collapsed ? "sidebar sidebar-collapsed" : "sidebar"}>
         <div className="sidebar-inner">
-          {identity ? <div className="sidebar-identity">{identity}</div> : null}
           <div className="sidebar-head">
             <button
               type="button"

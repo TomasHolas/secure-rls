@@ -37,7 +37,6 @@ layout.
 |---|---|---|
 | **Collapse to an icon rail, icons staying put** | The aside animates its own width and clips (`overflow: clip`); `.sidebar-inner` stays laid out at the expanded width in both states, so nothing is re-laid out. Two widths, the icon inset, the durations and the easing are custom properties in `app.css` | Copy at the *labels'* position leaving is the effect; an icon *moving* is a different, worse effect. Re-laying out each row to an icon-only variant is what makes icons jump, and it is two layouts to keep honest instead of one |
 | **The clipped column is not a scroll container** | `overflow: clip` rather than `hidden` | Found the hard way: with `hidden` the aside is still scrollable, so focusing a control the collapse had clipped made the browser scroll the whole column sideways to reveal it — icons included — and the rail rendered as an empty strip. Pinned by a test |
-| **Identity menu at the top** | New `IdentityMenu` brick: the `TenantPill` we already had plus a chevron, opening a `role="menu"` panel carrying Sign out; closes on outside pointerdown and on Escape, which returns focus to the trigger. The panel is `position: fixed` off the trigger's box, so it escapes the rail's clip | The rail is where a reader's attention already is, and the tenant chip is the honest thing to hang a session action off. Fixed rather than absolute because an absolutely positioned panel is cut off at the collapsed rail's edge |
 | **Inline search growing right-to-left** | New `InlineSearch` brick, filtering the titles already loaded, client-side, with a "No chats found." state; Escape closes, clears and returns focus to the icon | A rail search that hit the server would be a second, weaker retrieval path beside the agent's own; filtering titles on screen is what a reader actually wants from a long rail, and it cannot lie about the data |
 | **One gliding hover highlight** | New `GlideList` brick: a single highlight element positioned from the hovered row's offsets, with the per-row `:hover` background kept underneath as the floor and switched off only while the glide is running | One moving highlight says "these rows are one group"; a background per row says "this one". The floor is what makes the JS optional rather than load-bearing |
 | **Truncation with `title`** | Every thread row carries its full title as `title` | Generated thread labels are the one string in the rail that reliably outgrows 272px, and the truncation was silent |
@@ -52,11 +51,9 @@ package** — non-OSS licence, and our `Icon` brick is a self-hosted Material Sy
 the rail ships without one new glyph. Its **Tailwind classes** — the whole point of the ruling:
 the tokens are the source of colour and type, and a utility framework would fork that.
 
-**Sign-out is in both places, deliberately.** The rail's identity menu is the new home for it, but
-the header keeps its button, because the rail is mounted on the **Chat** tab only
-(`App.tsx` passes it as the shell's `sidebar` when that tab is open): making the menu the single
-home would strand a reader on Records or Notes with no way out. Two doors to one action is the
-smaller wrong.
+**Identity and sign-out stay in the persistent header.** The rail is mounted on the **Chat** tab
+only (`App.tsx` passes it as the shell's `sidebar` when that tab is open), so duplicating session
+status there added furniture without adding access to the action on Records or Notes.
 
 ## Rejected
 

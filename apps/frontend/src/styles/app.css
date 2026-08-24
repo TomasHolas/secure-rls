@@ -92,7 +92,6 @@
   --rail-icon-inset: 9px;
   --rail-row-height: 36px;
   --rail-search-width: 176px;
-  --rail-menu-width: 180px;
   --rail-dur: var(--dur-base);
   --rail-glide-dur: var(--dur-fast);
   --rail-ease: var(--ease-out);
@@ -116,7 +115,7 @@
   display: flex; flex-direction: column; gap: var(--space-2);
   padding: var(--space-5) var(--space-3);
 }
-.sidebar-identity, .sidebar-head, .sidebar-actions { flex: 0 0 auto; }
+.sidebar-head, .sidebar-actions { flex: 0 0 auto; }
 .sidebar-head { display: flex; align-items: center; gap: var(--space-2); min-height: var(--rail-row-height); }
 /* The caps label yields its width to the search box growing over it, cut rather than ellipsised
    so the collapse and the growth both end on nothing instead of a stranded dot. */
@@ -132,46 +131,20 @@
 .sidebar-note { margin: var(--space-2) 0 0; color: var(--fg-4); font-size: var(--text-xs); line-height: var(--leading-normal); }
 .sidebar-list { position: relative; list-style: none; display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; }
 /* KB's rail "Add record" button, in the actions slot; its icon takes the shared inset so it
-   lines up with the identity chip above it and the collapse control beside it (.btn owns the
-   centring this overrides, so the selector has to outweigh it rather than follow it). */
+   lines up with the collapse control above it (.btn owns the centring this overrides, so the
+   selector has to outweigh it rather than follow it). */
 .btn.side-add { width: 100%; justify-content: flex-start; gap: var(--space-3); min-height: var(--rail-row-height); padding-left: calc(var(--rail-icon-inset) - 1px); }
 .side-add:hover { color: var(--fg-brand); background: color-mix(in srgb, var(--accent-500) 12%, transparent); border-color: color-mix(in srgb, var(--accent-500) 35%, var(--border-default)); }
 
 /* Collapsed, the copy beside the icons leaves instead of being cut off mid-word, and the chrome
    that framed it goes with it: what is left is the icon column, at the x the clip found it. */
-.rail-copy, .sidebar-inner .rail-search,
-.sidebar-inner .tenant-pill-tenant, .sidebar-inner .tenant-pill-user {
+.rail-copy, .sidebar-inner .rail-search {
   transition: opacity var(--rail-dur) var(--rail-ease);
 }
-.sidebar-collapsed .rail-copy, .sidebar-collapsed .rail-search,
-.sidebar-collapsed .tenant-pill-tenant, .sidebar-collapsed .tenant-pill-user { opacity: 0; }
+.sidebar-collapsed .rail-copy, .sidebar-collapsed .rail-search { opacity: 0; }
 /* Faded is not gone: without this a click could still land on a row behind the rail's edge. */
 .sidebar-collapsed .sidebar-body, .sidebar-collapsed .rail-search { pointer-events: none; }
-.sidebar-collapsed .tenant-pill, .sidebar-collapsed .btn.side-add { background: none; border-color: transparent; }
-
-/* ---- The identity chip as a control, and the menu it opens (IdentityMenu) ---- */
-.rail-identity-wrap { position: relative; }
-.rail-identity {
-  display: flex; align-items: center; gap: var(--space-2); width: 100%;
-  min-height: var(--rail-row-height); padding: 0;
-  background: none; border: none; border-radius: var(--radius-md); cursor: pointer;
-}
-.rail-identity-chevron { color: var(--fg-4); margin-left: auto; margin-right: var(--space-2); }
-.rail-identity:hover .rail-identity-chevron { color: var(--fg-2); }
-/* Fixed, so the panel escapes the clip the collapsed rail is drawn with; the gap under the
-   trigger is this margin rather than a number the component would have to carry. */
-.rail-menu {
-  position: fixed; z-index: 40; margin-top: var(--space-1); min-width: var(--rail-menu-width); padding: var(--space-1);
-  background: var(--bg-surface); border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg); box-shadow: var(--shadow-md);
-}
-.rail-menu-item {
-  display: flex; align-items: center; gap: var(--space-2); width: 100%;
-  padding: var(--space-2) var(--space-3); background: none; border: none;
-  border-radius: var(--radius-md); color: var(--fg-2); cursor: pointer;
-  font-family: var(--font-body); font-size: var(--text-sm); font-weight: 500; text-align: left;
-}
-.rail-menu-item:hover { background: var(--bg-hover); color: var(--fg-1); }
+.sidebar-collapsed .btn.side-add { background: none; border-color: transparent; }
 
 /* ---- The search that grows out of its icon (InlineSearch) ---- */
 /* The wrapper is the last thing in the head row, so the box growing inside it pushes its own

@@ -27,7 +27,6 @@ components/
   NoteList.tsx     employee-written notes as quoted note cards
   ParamProbe.tsx   the reader's own query parameter, and what the server ignored of it
   TenantPill.tsx   the identity chip (tenant + user) in the header slot
-  IdentityMenu.tsx the identity chip as a control: the pill, and the menu carrying sign-out
   InlineSearch.tsx a search box that grows right-to-left out of its own icon
   GlideList.tsx    a row group with one highlight that glides to the row under the pointer
   Modal.tsx        the one dialog brick — portal, backdrop, Escape/backdrop/× dismissal
@@ -291,23 +290,6 @@ The identity chip in the header slot: tenant id (mono) plus the signed-in user. 
 values come from `auth.ts`, which reads them out of the JWT payload **for display
 only** — the server derives the real tenant from the verified token.
 
-### IdentityMenu
-
-```tsx
-<IdentityMenu tenant={session.tenantId} username={session.username} onSignOut={clearSession} />
-```
-
-The identity chip **as a control**: the `TenantPill` brick plus a chevron, opening a small menu
-that carries sign-out (issue #114). It closes on an outside pointerdown and on Escape, which
-hands focus back to the trigger. The panel is `position: fixed`, placed off the trigger's own box,
-because the conversation rail is drawn with a clip and an absolutely positioned panel would be cut
-off at the rail's edge in the collapsed state; the gap under the trigger is the panel's margin, so
-the component carries no number of its own. Display only, like the pill it wraps.
-
-Pattern from [beautifului.dev](https://www.beautifului.dev) (MIT): its rail leads with the account
-and keeps the session actions behind it. Its workspace switcher is **not** ported - there is one
-tenant per session and it is not a choice a client makes (ADR 0002 layer 1).
-
 ### InlineSearch
 
 ```tsx
@@ -459,17 +441,17 @@ switching never costs a reader the state of the one they left.
 ### layout/Sidebar
 
 ```tsx
-<Sidebar title="Conversations" identity={<IdentityMenu … />} search={<InlineSearch … />}
+<Sidebar title="Conversations" search={<InlineSearch … />}
   actions={<Button className="side-add">New chat</Button>}>
   <GlideList>{rows}</GlideList>
 </Sidebar>
 ```
 
-The shell's left rail: the `identity` slot, then a head row carrying the collapse control, the
-caps `title` and the `search` slot, then `actions`, then the list — a full-height column whose
-body has its own scroll so a long list never scrolls the page beside it, and so its right border
-reads as the page's divider rather than stopping under the last row. The rows are `.rail-item`
-(+ `.active`): a `.rail-item-open` label over its meta line, with an optional trailing control.
+The shell's left rail: a head row carrying the collapse control, the caps `title` and the `search`
+slot, then `actions`, then the list — a full-height column whose body has its own scroll so a long
+list never scrolls the page beside it, and so its right border reads as the page's divider rather
+than stopping under the last row. The rows are `.rail-item` (+ `.active`): a `.rail-item-open`
+label over its meta line, with an optional trailing control.
 
 **The collapse is the brick's mechanism** (issue #114, from
 [beautifului.dev](https://www.beautifului.dev)): the aside animates its own width and clips, while
@@ -718,14 +700,11 @@ every stored payload has structured keys, so the fallback is a live-turn path on
   (`.wiki-sec-item` renamed `.rail-item`, since nothing here is a wiki, and its trailing
   count chip replaced by the row's delete control); lifting it into `AppLayout` is what keeps
   the thread list alive across the chat instead of belonging to one page.
-- `IdentityMenu`, `InlineSearch` and `GlideList` are new, and so is the rail's collapse
-  mechanism (issue #114): **KB has no menu, popover, disclosure-search or hover-tracking
-  anywhere**, so their control registers (`.rail-menu`, `.rail-search`, `.rail-glide`) are ours
-  on KB's tokens. `.rail-menu-item` is a raw `role="menuitem"` button rather than the `Button`
-  brick, which carries neither a role nor the flat full-width metrics a menu row needs — the same
-  reason `.rail-item-open` and `.trace-step-toggle` are raw. The rail's own empty and loading
-  states stay `.sidebar-note` paragraphs rather than the `EmptyState` brick, which is a centred
-  card sized for a page region, not a 272px column.
+- `InlineSearch` and `GlideList` are new, and so is the rail's collapse mechanism (issue #114):
+  **KB has no disclosure-search or hover-tracking anywhere**, so their control registers
+  (`.rail-search`, `.rail-glide`) are ours on KB's tokens. The rail's own empty and loading states
+  stay `.sidebar-note` paragraphs rather than the `EmptyState` brick, which is a centred card
+  sized for a page region, not a 272px column.
 - **KB has no chat UI at all** (no bubbles, no streaming text, no composer beyond its
   one-shot Ask box), so the `chat/` bricks are new. Their visuals still come from KB:
   the bubble is its `.ask-answer` card plus the icon + caps role header it puts above an
