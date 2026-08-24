@@ -139,6 +139,8 @@ describe("the notes tab", () => {
       Array.from(view.container.querySelectorAll(".chip"), (chip) => chip.textContent),
     ).toEqual(["All", "acme", "beta", "gamma"]);
     expect(screen.getByRole("group", { name: "Tenant" })).toBeTruthy();
+    // The chip is the whole action on this tab, as it now is on the other one (issue #152).
+    expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "gamma" }));
     await waitFor(() => expect(api.browseNotes).toHaveBeenCalledTimes(2));

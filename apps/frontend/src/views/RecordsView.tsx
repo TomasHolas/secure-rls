@@ -12,9 +12,13 @@
  *
  * The view owns no query logic: the filter controls and the sort headers turn into query
  * parameters, and `GET /records` answers with the page plus the true total and the statement it
- * ran. Filters are applied on submit rather than on every keystroke — a filter row of nine boxes
- * would otherwise fire a request per character, and the reader is composing a question, not
- * narrowing live. The executed SQL is still under the table, for the same reason the chat trace
+ * ran. Every filter applies itself (issue #152): a chip or a select is one deliberate act and
+ * applies on the change, a typed box applies once the reader stops typing for
+ * `FILTER_DEBOUNCE_MS`, and the Apply button is gone - it made a pressed chip a promise the table
+ * had not kept yet. Reset stays, because clearing nine boxes at once is still one action. A
+ * refusal the server earned on a half-typed value is held while the interval is still open, so
+ * the banner appears when the value has settled and is genuinely refused, never between two
+ * keystrokes. The executed SQL is still under the table, for the same reason the chat trace
  * shows it, and here it is evidence of the opposite thing: this listing is the one read in the app
  * that carries no tenant scoping. That fact is a caption a reader passes over and the statement
  * itself is one click behind a `Disclosure` (issue #139) — an always-open block of monospace led
@@ -33,7 +37,7 @@
  * server's own refusal all speak ISO, so what a reader types now matches what they read.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "../components/Button";
 import { CodeBlock } from "../components/CodeBlock";
@@ -45,6 +49,7 @@ import { ChipRow, FieldPair, SelectField, TextField } from "../components/forms"
 import { EmptyState, Page, PageHeader, Section } from "../components/layout";
 import { ApiError, browseRecords, listDepartments, listTenants } from "../lib/api";
 import type { BrowsePage, FilterOption } from "../lib/api";
+import { useDebounced } from "../lib/debounce";
 import { formatCount, formatNumber } from "../lib/format";
 
 const LOAD_FAILURE = "The rows could not be loaded.";
@@ -94,6 +99,7 @@ const EMPTY: Draft = {
 export function RecordsView({ tenant }: { tenant: string }) {
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [applied, setApplied] = useState<Draft>(EMPTY);
+  const boxes = useRef<Draft>(EMPTY);
   const [sort, setSort] = useState(SORTABLE[0]);
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(FIRST_PAGE);
@@ -163,21 +169,38 @@ export function RecordsView({ tenant }: { tenant: string }) {
     [sort, direction],
   );
 
-  const apply = useCallback(() => {
+  const apply = useCallback((next: Draft) => {
     setPage(FIRST_PAGE);
-    setApplied(draft);
-  }, [draft]);
-
-  const reset = useCallback(() => {
-    setPage(FIRST_PAGE);
-    setDraft(EMPTY);
-    setApplied(EMPTY);
+    setApplied(next);
   }, []);
 
-  const field = useCallback(
-    (key: keyof Draft) => (value: string) => setDraft((previous) => ({ ...previous, [key]: value })),
-    [],
+  const { schedule, cancel, pending } = useDebounced(apply);
+
+  const edit = useCallback(
+    (key: keyof Draft, immediate: boolean) => (value: string) => {
+      // The whole draft is what gets applied, so the snapshot must carry the box edited last too.
+      const next = { ...boxes.current, [key]: value };
+      boxes.current = next;
+      setDraft(next);
+      if (immediate) {
+        cancel();
+        apply(next);
+      } else {
+        schedule(next);
+      }
+    },
+    [apply, cancel, schedule],
   );
+
+  const picked = useCallback((key: keyof Draft) => edit(key, true), [edit]);
+  const typed = useCallback((key: keyof Draft) => edit(key, false), [edit]);
+
+  const reset = useCallback(() => {
+    cancel();
+    boxes.current = EMPTY;
+    setDraft(EMPTY);
+    apply(EMPTY);
+  }, [apply, cancel]);
 
   const pages = rows ? Math.max(1, Math.ceil(rows.total / rows.page_size)) : 1;
   const scope = applied.tenant_id ? `tenant ${applied.tenant_id}` : ALL_TENANTS;
@@ -200,25 +223,20 @@ export function RecordsView({ tenant }: { tenant: string }) {
           ) : null
         }
       >
-        <form
-          className="filter-grid control-row"
-          onSubmit={(event) => {
-            event.preventDefault();
-            apply();
-          }}
-        >
+        {/* Nothing submits this form any more; the handler is only here so nothing can reload it. */}
+        <form className="filter-grid control-row" onSubmit={(event) => event.preventDefault()}>
           <ChipRow
             id="records-tenant"
             label="Tenant"
             value={draft.tenant_id}
             options={tenants.map((entry) => entry.value)}
-            onChange={field("tenant_id")}
+            onChange={picked("tenant_id")}
           />
           <TextField
             id="records-name"
             label="Name contains"
             value={draft.name}
-            onChange={field("name")}
+            onChange={typed("name")}
             placeholder="substring"
           />
           <SelectField
@@ -229,7 +247,7 @@ export function RecordsView({ tenant }: { tenant: string }) {
               value: entry.value,
               label: `${entry.value} (${formatNumber(entry.employees)})`,
             }))}
-            onChange={field("department")}
+            onChange={picked("department")}
             placeholder="any department"
           />
           <FieldPair>
@@ -238,14 +256,14 @@ export function RecordsView({ tenant }: { tenant: string }) {
               label="Salary from"
               type="number"
               value={draft.salary_min}
-              onChange={field("salary_min")}
+              onChange={typed("salary_min")}
             />
             <TextField
               id="records-salary-max"
               label="Salary to"
               type="number"
               value={draft.salary_max}
-              onChange={field("salary_max")}
+              onChange={typed("salary_max")}
             />
           </FieldPair>
           <FieldPair>
@@ -254,14 +272,14 @@ export function RecordsView({ tenant }: { tenant: string }) {
               label="Score from"
               type="number"
               value={draft.score_min}
-              onChange={field("score_min")}
+              onChange={typed("score_min")}
             />
             <TextField
               id="records-score-max"
               label="Score to"
               type="number"
               value={draft.score_max}
-              onChange={field("score_max")}
+              onChange={typed("score_max")}
             />
           </FieldPair>
           <FieldPair>
@@ -269,24 +287,19 @@ export function RecordsView({ tenant }: { tenant: string }) {
               id="records-hired-from"
               label="Hired from"
               value={draft.hired_from}
-              onChange={field("hired_from")}
+              onChange={typed("hired_from")}
               placeholder={ISO_DATE_HINT}
             />
             <TextField
               id="records-hired-to"
               label="Hired to"
               value={draft.hired_to}
-              onChange={field("hired_to")}
+              onChange={typed("hired_to")}
               placeholder={ISO_DATE_HINT}
             />
           </FieldPair>
           <div className="filter-actions">
-            <Button onClick={reset} disabled={loading}>
-              Reset
-            </Button>
-            <Button variant="primary" type="submit" disabled={loading}>
-              Apply
-            </Button>
+            <Button onClick={reset}>Reset</Button>
           </div>
         </form>
       </Section>
@@ -301,7 +314,7 @@ export function RecordsView({ tenant }: { tenant: string }) {
           ) : null
         }
       >
-        {error ? <p className="form-error">{error}</p> : null}
+        {error && !pending ? <p className="form-error">{error}</p> : null}
         {rows === null ? (
           error ? (
             <EmptyState>Nothing to show.</EmptyState>
