@@ -19,8 +19,18 @@ SQLite connection (enforced by convention and by a test that greps for
 2. rewrites every `employees` reference in the AST to
    `(SELECT * FROM employees WHERE tenant_id = ?)` using sqlglot, binding the
    tenant as a parameter — never string interpolation,
-3. executes on a read-only connection (`PRAGMA query_only`),
-4. applies the egress row check (layer 4).
+3. executes on a connection opened read-only — `mode=ro` on the file URI, which
+   is the load-bearing control, plus `PRAGMA query_only` as a second belt,
+4. verifies structurally that the scoping applied (layer 4a) and checks the rows
+   that come back against the session tenant (layer 4b).
+
+The two read-only controls are deliberately asymmetric, and this ADR originally
+claimed the wrong one carried the property. `PRAGMA query_only` is reversible by
+SQL ([sqlite.org/pragma.html](https://www.sqlite.org/pragma.html)), so it is only
+meaningful as a second belt because layer 2 rejects PRAGMA statements outright;
+`mode=ro` at file open is what actually makes the connection read-only. ADR 0002's
+[Hardening](0002-defense-in-depth-rls.md#hardening-amended-per-sourced-review)
+section is authoritative on this and supersedes the earlier wording here.
 
 AST rewrite was chosen over per-tenant SQL views (`employees_acme`, ...) because
 the rewrite keeps one schema the LLM prompts against, adds no per-tenant DDL,

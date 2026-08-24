@@ -39,9 +39,11 @@ agent LLM calls ──> Ollama endpoint (OLLAMA_BASE_URL — Tailscale machine o
 The eval harness (`evals/`) imports the same `agent.py` / `db.py` / `security.py`
 modules — there is no second code path to the data (lego-brick rule).
 
-## The four RLS defense layers (ADR 0002)
+## The five RLS defense layers (ADR 0002)
 
-Each layer is independently sufficient; a breach requires all four to fail.
+Each layer is independently sufficient; a breach requires all five to fail.
+ADR 0002's title counts four because the engine authorizer (layer 2.5) was
+added there as an amendment.
 
 | # | Layer | Module | Mechanism | Survives |
 |---|---|---|---|---|
@@ -49,7 +51,19 @@ Each layer is independently sufficient; a breach requires all four to fail.
 | 2 | Validation | `security.py` | sqlglot parse; allowlist: single SELECT statement, `employees` table only; rejects ATTACH, PRAGMA, mutation, multi-statement, table functions. CTEs and JOINs are allowed — every table reference is scoped by layer 3 regardless of query shape. | Malicious or malformed generated SQL |
 | 2.5 | Engine authorizer | `db.py` | SQLite `set_authorizer` enforces the table/operation allowlist inside the engine itself. | A parser differential — sqlglot reading a statement differently than SQLite executes it |
 | 3 | Scoped execution | `db.py` | Every `employees` reference in the validated AST is rewritten to `(SELECT * FROM employees WHERE tenant_id = ?)` with the tenant bound as a parameter; runs on a read-only connection (`mode=ro` at open — the load-bearing control — plus `PRAGMA query_only`). | A validator bypass — the query still only sees the caller's rows |
-| 4 | Egress check | `db.py` | Result rows carry `tenant_id`; any row not matching the session tenant raises and the response is refused. Fail closed. | A rewrite bug — wrong data is caught before it reaches the LLM or the user |
+| 4 | Egress check | `db.py` | Two halves. 4a `_verify_scope_applied`, before execution: the tree about to run must carry the scoping subquery for every `employees` reference, one placeholder per subquery, and nothing bound but the session tenant followed by whatever filter values a trusted template declared. 4b `_verify_rows`, after execution: any `tenant_id` in the result must equal the session tenant, else the executor raises and the response is refused. Fail closed. | A rewrite bug — wrong data is caught before it reaches the LLM or the user |
+
+Layer 4a is what makes 4b sound. An aggregate-only result (`SELECT AVG(salary)
+FROM employees`) has no `tenant_id` column, so the row check has nothing to
+compare and degrades to a no-op — silently absent on exactly the queries the
+agent asks most. Because 4a runs on every call, that no-op is safe: the scoping
+is proven structurally, from the AST that is about to execute, rather than
+assumed from the fact that the rewrite was called. The placeholder count is part
+of the proof (ADR 0002, "Declared filter parameters"): a `?` the model smuggled
+past layer 2 would shift which value the engine binds where, so an undeclared
+placeholder fails the count and the query never runs. A template that binds its
+own filter values must additionally keep them in the root WHERE clause, which
+SQL renders after the FROM that carries the tenant.
 
 Prompt-level instructions ("only discuss your tenant's data") exist for answer
 quality, and are explicitly NOT counted as a security layer.
@@ -64,7 +78,7 @@ and tenant context — which also feeds the UI trace and the eval leakage checks
 
 | Component | Responsibility |
 |---|---|
-| `apps/backend/app.py` | FastAPI edge: `/login`, `/chat` (SSE stream of typed trace events, ADR 0012), `/conversations` (JWT-scoped list/create/replay/delete), `/records` and `/notes` (the browse tabs, ADR 0014), `/health`. Thin handlers, no logic. |
+| `apps/backend/app.py` | FastAPI edge: `/login`, `/chat` (SSE stream of typed trace events, ADR 0012), `/conversations` (JWT-scoped list/create/replay/rename/delete), `/records` and `/notes` (the browse tabs, ADR 0014), `/models` (the endpoint's chat-capable models, ADR 0012), `/health`. Thin handlers, no logic. |
 | `apps/backend/auth.py` | Hardcoded demo users (one+ per tenant), password check, JWT issue/verify with `tenant_id` claim. |
 | `apps/backend/agent.py` | Explicit LangGraph graph: system prompt with schema card + per-tenant sample rows, tool definitions, retry policy, multi-turn checkpointer, trace collection, transcript replay from the checkpointer. |
 | `apps/backend/rag.py` | Note embedding (Ollama `/api/embed`) and tenant-partitioned vector search (ADR 0010); storage and queries go through `db.py`. |
@@ -95,11 +109,11 @@ prompt-injection payloads in `notes`, openly listed in `poisoned_manifest.json`
 
 | Tool | Description | RLS enforcement |
 |---|---|---|
-| `query_db` | LLM-generated SQL, validated then executed. Results hard-capped with an explicit truncation signal (ADR 0007). | Layers 2+2.5+3+4; SQL shown in the UI trace |
-| `get_stats` | Typed args (metric/column/group_by from allowlists); fixed parameterized query — zero generated SQL. | Built on the scoped executor |
-| `plot` | Fetches its own data via the scoped executor; returns one `chart_spec` (bar, line, grouped bar, histogram, scatter or box) to the SPA — charted values never pass through the model. | Built on the scoped executor |
-| `detect_anomalies` | Tukey IQR fences per group (default: department); robust to the lognormal salary shape (bonus). | Built on the scoped executor |
-| `search_notes` | Semantic search over embedded `notes` (ADR 0010): sqlite-vec `vec0` table with `tenant_id` as partition key — the KNN pre-filter runs before any vector comparison; neutral "no matching notes found" on empty results. | L1 closure + partition-key pre-filter + egress check |
+| `query_db(sql)` | LLM-generated SQL, validated then executed. Results hard-capped with an explicit truncation signal (ADR 0007). | Layers 2+2.5+3+4; SQL shown in the UI trace |
+| `get_stats(metric, column, group_by?)` | Typed args (metric/column/group_by from allowlists); fixed parameterized query — zero generated SQL. | Built on the scoped executor |
+| `plot(kind, column, metric?, group_by?, series_by?, bins?)` | Fetches its own data via the scoped executor; returns one `chart_spec` (bar, line, grouped bar, histogram, scatter or box; `bins` is the histogram's bin count, `series_by` the grouped bar's second dimension) to the SPA — charted values never pass through the model. | Built on the scoped executor |
+| `detect_anomalies(column, group_by?)` | Tukey IQR fences per group (default: department); robust to the lognormal salary shape (bonus). | Built on the scoped executor |
+| `search_notes(query)` | Semantic search over embedded `notes` (ADR 0010): sqlite-vec `vec0` table with `tenant_id` as partition key — the KNN pre-filter runs before any vector comparison; neutral "no matching notes found" on empty results. | L1 closure + partition-key pre-filter + egress check |
 
 Every tool receives `tenant_id` by closure at bind time. The agent is an
 explicit LangGraph graph with multi-turn memory (checkpointer keyed by an
@@ -116,7 +130,7 @@ own-tenant sample rows; retrieval over `notes` is the RAG component
 | Public GitHub repo, README | repo root; [README.md](../README.md) |
 | Python 3.10+, open-source libs, Ollama local LLM | backend is Python 3.12; Ollama endpoint via `OLLAMA_BASE_URL` |
 | Commit history showing iteration | branch → PR → merge per milestone, small commits, issue-linked |
-| RLS: LLM never accesses unauthorized rows | the four layers above + adversarial tests + eval suite |
+| RLS: LLM never accesses unauthorized rows | the five layers above + adversarial tests + eval suite |
 | Agentic development tools used | this repo is built with Claude Code; `CLAUDE.md`, ADR-driven waves, issue queue — demoed live |
 | GitHub CI/CD pipeline | `.github/workflows/ci.yml` (M6) |
 | React/Dash/Streamlit app | React SPA (ADR 0001) |

@@ -12,7 +12,7 @@ docs in the same change.
 
 ## Architecture
 
-- [architecture.md](architecture.md) — system overview, the four RLS defense
+- [architecture.md](architecture.md) — system overview, the five RLS defense
   layers, request flow, data model, agent tool set, assignment compliance map.
 
 ## Reviews

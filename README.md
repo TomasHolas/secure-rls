@@ -119,7 +119,7 @@ argument, so there is nothing for the model to fill in.
 |---|---|---|
 | `query_db` | `(sql)` | Model-generated SQL through layers 2, 2.5, 3 and 4; capped with an explicit truncation signal. Generated and executed SQL are shown side by side in the trace |
 | `get_stats` | `(metric, column, group_by?)` | Args checked against fixed allowlists; the tool builds a parameterized query — **zero generated SQL** |
-| `plot` | `(kind, column, metric?, group_by?, bins?)` | Fetches its own values through the scoped executor and returns `{chart_spec, data}` to the SPA — charted numbers never pass through the model |
+| `plot` | `(kind, column, metric?, group_by?, series_by?, bins?)` | Fetches its own values through the scoped executor and returns one `chart_spec` to the SPA — charted numbers never pass through the model |
 | `detect_anomalies` | `(column, group_by?)` | Tukey IQR fences (1.5 x IQR) within each group; chosen over z-scores because the salary distribution is lognormal by design |
 | `search_notes` | `(query)` | Tenant-partitioned KNN over embedded notes; partition-key pre-filter plus egress check. Neutral "no matching notes found" on empty results, identical whether nothing matched or the match belongs to another tenant |
 
