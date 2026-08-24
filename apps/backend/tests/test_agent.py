@@ -100,6 +100,8 @@ _DIM = 32
 _RAMBLE = "and on and on "
 # A stand-in system prompt of a known size, for the history-fitting boundaries.
 _SYSTEM = SystemMessage(content="s" * 10)
+# What the bound tool definitions cost, when a boundary test is about the messages alone.
+_NO_TOOLS = 0
 _CALL_ID = "call-1"
 _THREAD = "thread-1"
 _OUTCOMES = ("tool_result", "retry", "security_event")
@@ -1220,7 +1222,7 @@ def test_a_history_that_fits_what_one_call_may_send_goes_whole(budget):
     budget(context_window=30)
     history = [*_costing("a", 10), *_costing("b", 10)]
 
-    fitted = agent._fit_history(_SYSTEM, history)
+    fitted = agent._fit_history(_SYSTEM, history, _NO_TOOLS)
 
     assert fitted.dropped == 0
     assert fitted.messages == history
@@ -1232,7 +1234,7 @@ def test_one_estimated_token_past_the_budget_drops_the_oldest_turn(budget):
     oldest = _costing("a", 10)
     newest = _costing("b", 11)
 
-    fitted = agent._fit_history(_SYSTEM, [*oldest, *newest])
+    fitted = agent._fit_history(_SYSTEM, [*oldest, *newest], _NO_TOOLS)
 
     assert fitted.dropped == 1
     assert fitted.messages == newest
@@ -1248,8 +1250,10 @@ def test_the_send_budget_leaves_room_for_the_answer_and_for_the_estimate_being_w
     budget(context_window=100, max_output_tokens=40, history_headroom_tokens=10)
     fits = [*_costing("a", 20), *_costing("b", 20)]
 
-    assert agent._fit_history(_SYSTEM, fits).dropped == 0
-    assert agent._fit_history(_SYSTEM, [*_costing("a", 21), *_costing("b", 20)]).dropped == 1
+    over = [*_costing("a", 21), *_costing("b", 20)]
+
+    assert agent._fit_history(_SYSTEM, fits, _NO_TOOLS).dropped == 0
+    assert agent._fit_history(_SYSTEM, over, _NO_TOOLS).dropped == 1
 
 
 def test_the_floor_keeps_the_newest_turns_even_when_they_still_do_not_fit(budget):
@@ -1261,10 +1265,26 @@ def test_the_floor_keeps_the_newest_turns_even_when_they_still_do_not_fit(budget
     budget(context_window=10, min_history_turns=2)
     history = [*_costing("a", 100), *_costing("b", 100), *_costing("c", 100)]
 
-    fitted = agent._fit_history(_SYSTEM, history)
+    fitted = agent._fit_history(_SYSTEM, history, _NO_TOOLS)
 
     assert fitted.dropped == 1
     assert fitted.messages == history[2:]
+
+
+def test_the_bound_tool_definitions_are_counted_against_the_send_budget(budget, db_path):
+    """The tool schemas go out on every call, so a budget that ignored them would send too much.
+
+    Measured against the endpoint's own reported prompt tokens they are the largest fixed part of
+    a request after the system card - the gap that made the first estimate of this bound optimistic.
+    """
+    budget(context_window=30)
+    tools = agent._build_tools(ACME, FakeEmbed(), db_path)
+    fixed = agent._tool_tokens(tools.values())
+    history = [*_costing("a", 10), *_costing("b", 10)]
+
+    assert fixed > 0
+    assert agent._fit_history(_SYSTEM, history, _NO_TOOLS).dropped == 0
+    assert agent._fit_history(_SYSTEM, history, fixed).dropped == 1
 
 
 def test_the_estimate_divisor_is_a_runtime_knob(budget):
@@ -1272,9 +1292,9 @@ def test_the_estimate_divisor_is_a_runtime_knob(budget):
     history = [*_costing("a", 20), *_costing("b", 20)]
 
     budget(context_window=30, history_chars_per_token=1.0)
-    assert agent._fit_history(_SYSTEM, history).dropped == 1
+    assert agent._fit_history(_SYSTEM, history, _NO_TOOLS).dropped == 1
     budget(context_window=30, history_chars_per_token=4.0)
-    assert agent._fit_history(_SYSTEM, history).dropped == 0
+    assert agent._fit_history(_SYSTEM, history, _NO_TOOLS).dropped == 0
 
 
 def test_a_thread_too_long_to_send_drops_whole_turns_and_orphans_no_tool_result(

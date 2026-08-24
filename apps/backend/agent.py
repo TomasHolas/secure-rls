@@ -95,12 +95,14 @@ a shorter memory. So before every model call `_fit_history` estimates the assemb
 drops whole oldest turns until it fits `context_window - max_output_tokens -
 history_headroom_tokens`, never below the newest `min_history_turns`. The estimate is characters
 over `history_chars_per_token` - deterministic, no tokenizer, no model call - so it is an estimate
-with a margin rather than a count. What it drops is a whole turn, a question and everything that
-question produced, because dropping messages one at a time would leave a tool result without the
-assistant message that asked for it. The system prompt is never a candidate: it is not part of the
-history this trims. Neither is the current question, which lives in the newest turn the floor
-keeps. Trimming changes only what one call is sent - the checkpointer keeps every message, so
-replay is unaffected - and a turn that trimmed says so on `done` as `history_trimmed`.
+with a margin rather than a count, and it counts everything the request carries: the messages, the
+system prompt, and the bound tool definitions, which are the largest fixed part of a prompt after
+the system card. What it drops is a whole turn, a question and everything that question produced,
+because dropping messages one at a time would leave a tool result without the assistant message
+that asked for it. The system prompt is never a candidate: it is not part of the history this
+trims. Neither is the current question, which lives in the newest turn the floor keeps. Trimming
+changes only what one call is sent - the checkpointer keeps every message, so replay is
+unaffected - and a turn that trimmed says so on `done` as `history_trimmed`.
 
 A missing note index is neither a model error nor a security refusal: `search_notes` states that
 retrieval is unavailable as its own tool result (ADR 0010 as amended), so the model can report it
@@ -182,7 +184,7 @@ import json
 import logging
 import math
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
@@ -651,6 +653,7 @@ def build_agent(
         system=SystemMessage(content=_system_prompt(tenant_id, db_path, guardrails)),
         model=model_id or runtime().agent.model,
         guardrails=guardrails,
+        tool_tokens=_tool_tokens(tools.values()),
     )
     graph = StateGraph(AgentState)
     graph.add_node(REASON, nodes.reason)
@@ -767,13 +770,18 @@ def _replay_role(message: AnyMessage) -> str:
 
 @dataclass(frozen=True)
 class _Nodes:
-    """The graph's nodes, sharing the bound model, the tool registry and the system prompt."""
+    """The graph's nodes, sharing the bound model, the tool registry and the system prompt.
+
+    `tool_tokens` is what the bound tool definitions add to every request, estimated once at build
+    time because they never change, and counted against the send budget of ADR 0011 as amended.
+    """
 
     llm: Runnable
     tools: dict[str, StructuredTool]
     system: SystemMessage
     model: str
     guardrails: bool
+    tool_tokens: int
 
     def reason(self, state: AgentState) -> dict[str, object]:
         """Ask the model what to do next, streaming its reasoning and its text as they arrive.
@@ -798,7 +806,7 @@ class _Nodes:
         writer(NodeStartEvent(type="node_start", node=REASON))
         bounds = runtime().agent
         unspent = state["iterations"] == 0
-        fitted = _fit_history(self.system, _history(state))
+        fitted = _fit_history(self.system, _history(state), self.tool_tokens)
         turn = self._call_model(
             fitted.messages, writer, state["started"] + bounds.turn_deadline_s, hold=unspent
         )
@@ -1026,15 +1034,18 @@ def _history(state: AgentState) -> list[AnyMessage]:
     return [*state["messages"], SystemMessage(content=_GROUNDING_NUDGE)]
 
 
-def _fit_history(system: SystemMessage, history: Sequence[AnyMessage]) -> _Fitted:
+def _fit_history(system: SystemMessage, history: Sequence[AnyMessage], fixed: int) -> _Fitted:
     """Drop whole oldest turns until the estimated prompt fits what one call may send (ADR 0011).
 
     The budget is the context window less what the answer may take (`max_output_tokens`) and less
     a headroom the estimate's own error is paid out of, because the window has to hold the prompt
-    and the generation together - the overflow of issue #131 was the prompt alone. The unit dropped
-    is a whole turn, so the transcript the model reads never loses the assistant message a tool
-    result answers, and the floor of `min_history_turns` is never crossed: the newest turns carry
-    the question being asked and the exchange it follows on from.
+    and the generation together - the overflow of issue #131 was the prompt alone. `fixed` is what
+    the request carries whatever the history holds - the bound tool definitions - counted against
+    the budget beside the system prompt and, like it, never a candidate for trimming.
+
+    The unit dropped is a whole turn, so the transcript the model reads never loses the assistant
+    message a tool result answers, and the floor of `min_history_turns` is never crossed: the
+    newest turns carry the question being asked and the exchange it follows on from.
 
     A thread that still does not fit at the floor - one enormous turn - is sent as it is. The
     endpoint refuses it exactly as it does today, which is a bounded and stated edge rather than a
@@ -1045,7 +1056,7 @@ def _fit_history(system: SystemMessage, history: Sequence[AnyMessage]) -> _Fitte
     floor = max(bounds.min_history_turns, 1)
     blocks = _turn_blocks(history)
     sizes = [sum(_estimate(message) for message in block) for block in blocks]
-    total = _estimate(system) + sum(sizes)
+    total = fixed + _estimate(system) + sum(sizes)
     dropped = 0
     while len(blocks) - dropped > floor and total > budget:
         total -= sizes[dropped]
@@ -1073,17 +1084,41 @@ def _turn_blocks(history: Sequence[AnyMessage]) -> list[list[AnyMessage]]:
 
 
 def _estimate(message: BaseMessage) -> int:
-    """How many tokens one message is worth, estimated from its characters (ADR 0011 as amended).
+    """How many tokens one message is worth, estimated from its characters.
 
-    An estimate and never a count: no tokenizer is imported and no model is asked. The divisor is
-    a `runtime.json` knob set below what prose averages, because a history is mostly the things
-    that tokenize denser than prose - tables of digits, SQL, note text - and the send budget keeps
-    a headroom for the times the estimate is still wrong. The tool calls are measured too: the
-    arguments the model wrote are part of what goes back to it.
+    The tool calls are measured too: the arguments the model wrote are part of what goes back to it.
     """
     calls = getattr(message, "tool_calls", None) or []
-    written = message.text + "".join(json.dumps(call) for call in calls)
-    return math.ceil(len(written) / runtime().agent.history_chars_per_token)
+    return _estimate_text(message.text + "".join(json.dumps(call) for call in calls))
+
+
+def _estimate_text(text: str) -> int:
+    """The token estimate of a piece of prompt text (ADR 0011 as amended).
+
+    An estimate and never a count: no tokenizer is imported and no model is asked. The divisor is
+    a `runtime.json` knob set below the densest rate measured against the endpoint's own reported
+    prompt tokens, so the estimate errs high rather than low - a history is mostly the things that
+    tokenize denser than prose, tables of figures and SQL and JSON schemas - and the send budget
+    keeps a headroom on top for the times it is still wrong.
+    """
+    return math.ceil(len(text) / runtime().agent.history_chars_per_token)
+
+
+def _tool_tokens(tools: Iterable[StructuredTool]) -> int:
+    """What the bound tool definitions cost every prompt, estimated once per graph.
+
+    They are sent on every call in both guardrail positions - name, description and argument
+    schema - so a budget that counted only the messages would believe a request smaller than the
+    one the endpoint receives. Measured against the endpoint's reported prompt tokens they are the
+    largest fixed part of a request after the system prompt, which is why they are counted rather
+    than absorbed by the headroom.
+    """
+    return sum(
+        _estimate_text(
+            f"{tool.name}{tool.description or ''}{json.dumps(tool.args_schema.model_json_schema())}"
+        )
+        for tool in tools
+    )
 
 
 def _route_after_reason(state: AgentState) -> str:
