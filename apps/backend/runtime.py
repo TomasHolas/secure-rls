@@ -113,8 +113,13 @@ class ConversationsConfig:
     `title_max_chars` caps every stored title. The generated ones are held tighter: the word
     count is what the titling prompt asks the model for (guidance), `generated_title_max_chars`
     is what the sanitizer enforces, and output longer than `generated_title_reject_chars` is
-    prose rather than a label, so it is rejected in favor of the first-message fallback.
-    `title_timeout_s` bounds the titling call - it runs outside the turn, but not forever.
+    prose rather than a label, so it is rejected in favor of the fallback.
+    `title_message_chars` caps how much of one message the titling prompt carries, so a long
+    answer cannot push the instruction out of the titling model's context.
+    `title_turns` is the window: a thread is named again after each of its first that many turns
+    and never after (issue #118) - a thread that opened with a greeting is named from the real
+    question that follows it, and a settled thread keeps the name it has. `title_timeout_s`
+    bounds the titling call - it runs outside the turn, but not forever.
 
     Four ceilings bound the turn history a thread accumulates for replay (ADR 0012 as amended),
     since "persist the whole turn" is otherwise unbounded growth in a store served in one
@@ -132,6 +137,8 @@ class ConversationsConfig:
     generated_title_max_words: int
     generated_title_max_chars: int
     generated_title_reject_chars: int
+    title_message_chars: int
+    title_turns: int
     title_timeout_s: float
     max_turn_events: int
     max_turn_payloads: int
