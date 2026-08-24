@@ -96,24 +96,39 @@ turn than "it ran out of room" does.
 
 The four bounds above cap what a turn may **generate** and how long it may take. None of them
 caps what it **sends**, and the first live off-position eval run showed the cost of that: 8 of
-75 attacks scored non-held, all of them the same event, a multi-turn thread whose accumulated
-history had grown past the context window until the endpoint refused the request outright —
+75 attacks scored non-held, every one of them the endpoint refusing the request outright —
 `request (16921 tokens) exceeds the available context size (16384 tokens)`, with two more at
 16518 and 16421. Nothing leaked; the turn failed closed, which is the right failure. It is still
-a failure: a real user holding a long conversation hits a dead turn with a transport error, and
-`context_window` — a mitigation this ADR added on purpose — is what refuses it.
+a failure: the reader gets a dead turn with a transport error, and `context_window` — a
+mitigation this ADR added on purpose — is what refuses it.
 
-So one more bound, on the other direction of the same call: **before every model call the
-assembled prompt is estimated, and while the estimate exceeds what one call may send, the oldest
-turn is dropped from what is sent.** Three knobs, all under `agent`:
+**Two different failures wear that one error message**, and re-running those attacks against the
+same endpoint separated them. The eight were three single-turn injection attacks per tenant whose
+`query_db` listing came back at the ADR 0007 row cap: one 200-row table, rendered as text for the
+model, is most of a 16384-token window on its own, so the *second* model call of a *single* turn
+overflowed. The other failure is the one nothing had bounded at all: a thread accumulating turns
+until the assembled history no longer fits. That one is not hypothetical either — a live thread of
+ordinary listing questions on this dataset reaches the budget at its ninth turn, measured with the
+knobs below.
+
+**This section bounds the second one.** Before every model call the assembled prompt is
+estimated, and while the estimate exceeds what one call may send, the oldest whole turn is dropped
+from what is sent. It does not bound the first: a turn whose own tool result does not fit is sent
+as it is and meets the endpoint's refusal exactly as before, because the floor below is there to
+keep the current question and this turn's evidence, and trimming that away to satisfy an
+arithmetic check would answer from a table the model can no longer see. Bounding what a single
+tool result may contribute to a prompt is a different bound with a different knob — ADR 0007's row
+cap is where it belongs — and is filed as issue #142 rather than smuggled in here.
+
+Three knobs, all under `agent`:
 
 | Knob | Value | What it decides | Why this value |
 |---|---|---|---|
-| `history_headroom_tokens` | 1024 | The send budget is `context_window - max_output_tokens - history_headroom_tokens`, here 16384 - 4096 - 1024 = 11264 | The window has to hold the prompt *and* the generation, so the answer's cap is subtracted first — the failures were the prompt alone overflowing. The rest is the margin the estimate's own error is paid out of: about 6% of the window, roughly one long tool result's worth of being wrong. |
-| `history_chars_per_token` | 3.0 | The divisor of the estimate: characters over this is tokens | Below the ~4 chars/token English prose averages, because a turn's history is mostly what tokenizes denser than prose — pipe-separated tables of digits, SQL, note text. A low divisor overestimates, which costs memory; a high one underestimates, which costs the turn. |
+| `history_headroom_tokens` | 1024 | The send budget is `context_window - max_output_tokens - history_headroom_tokens`, here 16384 - 4096 - 1024 = 11264 | The window has to hold the prompt *and* the generation, so the answer's cap is subtracted first — the failures were the prompt alone overflowing. The rest, about 6% of the window, is the margin the estimate's own error is paid out of. |
+| `history_chars_per_token` | 2.5 | The divisor of the estimate: characters over this is tokens | Set from measurement, not from the ~4 chars/token English prose averages: on two live listing turns the endpoint's own reported prompt tokens worked out to 3.47 and 2.89 characters per token, because a history is mostly what tokenizes denser than prose — pipe-separated tables of figures, SQL, JSON schemas. 2.5 sits under the denser of the two, so the estimate errs high. A low divisor overestimates, which costs memory; a high one underestimates, which costs the turn. |
 | `min_history_turns` | 2 | The floor: trimming never leaves fewer than this many newest turns | One would be enough to keep the question. Two keeps the exchange it follows on from, which is what a follow-up ("and how does that compare with Sales?") is answered out of — the shape the multi-turn evals are made of. |
 
-Five properties make this defensible rather than a heuristic bolted on:
+Six properties make this defensible rather than a heuristic bolted on:
 
 - **The unit dropped is a whole turn**, a question and everything that question produced. Dropping
   messages one at a time would sooner or later leave a `ToolMessage` without the assistant message
@@ -126,14 +141,28 @@ Five properties make this defensible rather than a heuristic bolted on:
 - **The estimate is honestly an estimate.** It is `len(text) / history_chars_per_token`, rounded
   up, over each message's text plus the JSON of the tool calls it carries — deterministic, no
   tokenizer dependency, no model call, because a bound that needed a model call to measure would
-  put an unbounded call inside a bound. It is therefore wrong by some amount on every turn, which
-  is exactly what `history_headroom_tokens` is for, and it is called an estimate in the code, in
-  the trace and here rather than being dressed up as a count.
+  put an unbounded call inside a bound. It is therefore wrong by some amount on every turn, and
+  the arithmetic says exactly how wrong it may be: at most `2.5 x 11264 = 28160` characters are
+  ever sent, so the request stays inside the 16384-token window as long as the real rate is above
+  `28160 / 16384 = 1.72` characters per token — against 2.89 measured on the densest live turn,
+  which is a margin of about 1.7x. It is called an estimate in the code, in the trace and here
+  rather than being dressed up as a count.
+- **What is counted is the whole request, not just the messages.** The first cut of this bound
+  measured the message list alone and looked comfortable: on a live turn it estimated 2845 tokens
+  where the endpoint reported 4805. The gap was the bound tool definitions — five names,
+  descriptions and argument schemas, some 4000 characters or 1600 estimated tokens, sent on every
+  call in both guardrail positions — so the budget was measuring about three fifths of the request
+  it believed it was measuring. They are now estimated once per graph and counted beside the
+  system prompt, and
+  the same turn re-measured at 6678 estimated against the same 4805 reported: over rather than
+  under, which is the direction a bound has to be wrong in.
 - **A thread that still does not fit at the floor is sent as it is.** One enormous turn — a
-  pasted document, a single question longer than the window — meets the endpoint's own refusal
-  exactly as it does today. That is deliberate: the alternative is trimming away the question the
-  turn exists to answer, or looping to satisfy an arithmetic check that a shorter history cannot
-  satisfy. The failure is not removed, it is confined to genuinely oversized single turns.
+  pasted document, a question longer than the window, or the 200-row tool result the eval run
+  actually died on — meets the endpoint's own refusal exactly as it does today. That is
+  deliberate: the alternative is trimming away the question the turn exists to answer or the
+  result it must answer from, or looping to satisfy an arithmetic check that no shorter history
+  can satisfy. The failure is not removed, it is confined to a single turn that is oversized on
+  its own, and stated here rather than left to be discovered in the next report.
 - **Trimming is what a turn sends, never what it stores.** The checkpointer keeps every message,
   so ADR 0012's replay still shows the whole thread and a later turn whose history happens to fit
   sees all of it again. And a turn that trimmed says so: `done` carries `history_trimmed`, in the
@@ -141,7 +170,12 @@ Five properties make this defensible rather than a heuristic bolted on:
   stated rather than left for the reader to infer from an answer that forgot something. A boolean
   and not a count, because the reader's question is whether this answer had the whole
   conversation behind it; how many turns were left out is only meaningful next to the thread, and
-  it goes to the server log where the operator can see it.
+  the count goes to the server log where the operator can see it.
+
+Measured live on these knobs, on the endpoint the demo runs against: a twelve-turn thread of
+listing questions ended `ok` on all twelve turns, with the first trim on turn 9 (one turn dropped
+from the last model call of that turn) growing to five dropped turns by turn 12 — a conversation
+that shortens its memory and keeps answering, which is the whole point of the bound.
 
 ### Grounded answers (added after issue #94)
 
