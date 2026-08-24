@@ -48,6 +48,13 @@ the one browse seam that IS faked, because it is the only one that would need to
 records the query, tenant and k it was handed, which is how "the tab calls the agent's retrieval
 path, for the token's tenant, with the configured k" is asserted without an endpoint.
 
+A turn outliving its stream (issue #143) is asserted at the ASGI layer, because that is the only
+place a client disconnect exists: the test client buffers a whole response, so it can never stop
+reading one. `_chat_until_disconnected` speaks the scope uvicorn speaks, sends `http.disconnect`
+on the turn's first frame and only then lets `GatedRunner` finish - so the reader provably left
+mid-generation, and the stored history proves the turn carried on without it. The same gated
+runner is what lets a second request meet a thread that is still answering, which is the 409.
+
 `FakeTitler` is the titling seam (`PATCH /conversations/{id}`, ADR 0012 as amended): it answers
 with a canned title or raises like a dead endpoint, which is how "a titling failure leaves the
 thread with the title it had" is asserted without a model. What belongs here rather than in
@@ -57,10 +64,13 @@ transcript is read and before the model is called, and the response carries the 
 
 import csv
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
+import anyio
 import jwt
 import pytest
 from fastapi.testclient import TestClient
@@ -87,6 +97,9 @@ from runtime import runtime
 
 TEST_SECRET = "a1" * 32
 SHORT_SECRET = "too-short"
+# Long enough that a lost frame or an unreleased claim fails the suite instead of hanging it.
+TURN_TIMEOUT_S = 5.0
+IDLE_POLL_S = 0.01
 
 ALICE = ("alice@acme", "demo-acme")
 BOB = ("bob@beta", "demo-beta")
@@ -380,6 +393,39 @@ class FakeNotes:
 
 
 @dataclass
+class GatedRunner:
+    """The canned turn, held after its first frame until it is released (issue #143).
+
+    It is what lets a test stand inside a turn: `started` says the turn has produced its first
+    frame and is waiting, `release` lets it run to its end, `produced` is everything it actually
+    yielded and `finished` says it reached the end of its own generator. So "the turn finished
+    anyway" is asserted from the turn rather than from a sleep.
+    """
+
+    calls: list[dict[str, str]] = field(default_factory=list)
+    produced: list[dict] = field(default_factory=list)
+    started: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+    finished: threading.Event = field(default_factory=threading.Event)
+
+    def __call__(self, *, tenant_id, thread_id, message, model):
+        """Yield the canned events, holding at the gate once the first one is out."""
+        self.calls.append(
+            {"tenant_id": tenant_id, "thread_id": thread_id, "message": message, "model": model}
+        )
+        try:
+            for index, event in enumerate(EVENTS):
+                frame = {**event, "model": model} if event["type"] == "done" else dict(event)
+                self.produced.append(frame)
+                yield frame
+                if index == 0:
+                    self.started.set()
+                    assert self.release.wait(TURN_TIMEOUT_S)
+        finally:
+            self.finished.set()
+
+
+@dataclass
 class BreakingRunner:
     """Yields a prefix of a turn and then raises, the way a broken run reaches the SSE layer."""
 
@@ -554,6 +600,74 @@ def _sse_events(body: str) -> list[dict]:
     """Parse an SSE body: records split on the blank line, each one a `data:` JSON payload."""
     records = [record for record in body.split("\n\n") if record.strip()]
     return [json.loads(record.removeprefix("data: ")) for record in records]
+
+
+def _chat_until_disconnected(application, headers, thread_id: str, runner) -> list[str]:
+    """Open one `/chat` at the ASGI layer, disconnect on its first frame, and let the turn run.
+
+    The scope is the one uvicorn builds, spec version included, so `StreamingResponse` takes the
+    disconnect path it takes in production rather than a shortcut this test invented. The turn is
+    released only once the disconnect is on its way, which is what makes "the reader left in the
+    middle of it" a fact of the test rather than a race it hopes to win.
+    """
+    payload = json.dumps({"thread_id": thread_id, "message": QUESTION}).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/chat",
+        "raw_path": b"/chat",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+            (b"authorization", headers["Authorization"].encode()),
+        ],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+    read: list[str] = []
+
+    async def drive() -> None:
+        """Speak ASGI to the app: one request, then a disconnect once a frame has landed."""
+        disconnected = anyio.Event()
+        requested = False
+
+        async def receive() -> dict:
+            """The body first; every call after it waits for the reader to be declared gone."""
+            nonlocal requested
+            if not requested:
+                requested = True
+                return {"type": "http.request", "body": payload, "more_body": False}
+            await disconnected.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict) -> None:
+            """Collect what reached the wire, then drop the connection and unblock the turn."""
+            if message["type"] != "http.response.body" or not message["body"]:
+                return
+            read.extend(event["type"] for event in _sse_events(message["body"].decode()))
+            disconnected.set()
+            runner.release.set()
+
+        await application(scope, receive, send)
+
+    anyio.run(drive)
+    return read
+
+
+def _idle(client: TestClient, headers: dict[str, str], thread_id: str) -> None:
+    """Wait for the thread's turn to release its claim; its history is written before it does."""
+    deadline = time.monotonic() + TURN_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if not client.get(f"/conversations/{thread_id}", headers=headers).json()["in_flight"]:
+            return
+        time.sleep(IDLE_POLL_S)
+    raise AssertionError(f"{thread_id} is still answering")
 
 
 def test_health_is_open_and_reports_version(wiring):
@@ -1916,3 +2030,85 @@ def test_cors_allows_only_the_frontend_origin(wiring):
     assert allowed.headers["access-control-allow-origin"] == "http://localhost:3002"
     other = wiring.client.get("/health", headers={"Origin": "http://evil.example"})
     assert "access-control-allow-origin" not in other.headers
+
+
+def test_a_turn_finishes_and_is_stored_after_its_reader_disconnects(tmp_path):
+    """The defect this fixes: a reader leaving mid-generation used to take the turn with it.
+
+    Driven at the ASGI layer because that is the only place a disconnect exists - the test client
+    buffers a response whole, so it can never stop reading one. The scope declares the spec
+    version uvicorn declares, so the disconnect travels the path it travels in production: the
+    `http.disconnect` message, `StreamingResponse`'s listener, and the response cancelled under a
+    turn that is one frame into its work.
+    """
+    runner = GatedRunner()
+    transcripts = FakeTranscripts()
+    client = _client(tmp_path, chat_runner=runner, transcript=transcripts)
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers, title=QUESTION)
+    transcripts.stored[thread_id] = [Message(role="user", content=QUESTION)]
+
+    read = _chat_until_disconnected(client.app, headers, thread_id, runner)
+
+    assert runner.finished.wait(TURN_TIMEOUT_S)
+    assert [event["type"] for event in runner.produced] == [event["type"] for event in EVENTS]
+    assert read == [event["type"] for event in runner.produced[: len(read)]]
+    _idle(client, headers, thread_id)
+    events = client.get(f"/conversations/{thread_id}", headers=headers).json()["turns"][0]["events"]
+    assert events[-1]["type"] == "done"
+    assert events[-1]["answer"] == ANSWER
+
+
+def test_a_second_turn_is_refused_while_the_thread_is_still_answering(tmp_path):
+    """One turn per thread: backgrounding a turn must not let two interleave on one memory."""
+    runner = GatedRunner()
+    client = _client(tmp_path, chat_runner=runner, transcript=FakeTranscripts())
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers, title=QUESTION)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(
+            client.post, "/chat", json={"thread_id": thread_id, "message": QUESTION},
+            headers=headers,
+        )
+        assert runner.started.wait(TURN_TIMEOUT_S)
+
+        busy = client.post(
+            "/chat", json={"thread_id": thread_id, "message": "and in sales?"}, headers=headers
+        )
+
+        assert busy.status_code == 409
+        assert busy.json()["detail"]
+        in_flight = client.get(f"/conversations/{thread_id}", headers=headers).json()
+        runner.release.set()
+        streamed = first.result(timeout=TURN_TIMEOUT_S)
+    assert in_flight["in_flight"] is True
+    assert _sse_events(streamed.text)[-1]["type"] == "done"
+    assert len(runner.calls) == 1
+
+
+def test_the_thread_takes_a_new_turn_once_the_first_one_is_over(tmp_path):
+    """The claim is the turn's, not the thread's: it is released the moment the turn ends."""
+    runner = GatedRunner()
+    runner.release.set()
+    client = _client(tmp_path, chat_runner=runner, transcript=FakeTranscripts())
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers, title=QUESTION)
+    first = client.post(
+        "/chat", json={"thread_id": thread_id, "message": QUESTION}, headers=headers
+    )
+
+    second = client.post(
+        "/chat", json={"thread_id": thread_id, "message": "and in sales?"}, headers=headers
+    )
+
+    assert (first.status_code, second.status_code) == (200, 200)
+    assert _sse_events(second.text)[-1]["type"] == "done"
+    assert len(runner.calls) == 2
+    assert client.get(f"/conversations/{thread_id}", headers=headers).json()["in_flight"] is False
+
+
+def test_a_thread_with_no_turn_running_reports_itself_idle(wiring):
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers)
+    conversation = wiring.client.get(f"/conversations/{thread_id}", headers=headers).json()
+    assert conversation["in_flight"] is False

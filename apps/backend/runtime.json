@@ -64,6 +64,7 @@
   },
   "api": {
     "models_timeout_s": 5.0,
-    "default_title": "New conversation"
+    "default_title": "New conversation",
+    "turn_queue_frames": 512
   }
 }

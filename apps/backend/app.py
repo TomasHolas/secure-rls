@@ -23,7 +23,8 @@ Endpoints:
 - `GET  /audit`             one newest-first page of the audit log, all tenants' entries.
 - `GET  /conversations`     the caller's threads, newest first.
 - `POST /conversations`     a new thread; the title is the first user message, truncated.
-- `GET  /conversations/{id}` the caller's own thread row, its transcript and its turn history.
+- `GET  /conversations/{id}` the caller's own thread row, its transcript, its turn history and
+  whether a turn is running on it right now.
 - `PATCH /conversations/{id}` the thread named by the reader, or by the model while it is young.
 - `DELETE /conversations/{id}` the thread plus its checkpointer rows.
 
@@ -63,13 +64,16 @@ settled each call - its payload, the retry with its reason, or the refusal with 
 fired - and the terminal frame with the turn's status, its telemetry and the prompt-guardrail
 position that produced it. So a reopened thread replays the conversation that happened, through
 the same bricks a live turn renders through, instead of a tidied answer. What history keeps of a
-frame is `turns.py`'s decision; this module only feeds it every frame `_sse` puts on the wire and
+frame is `turns.py`'s decision; this module only feeds it every frame the turn produces and
 writes once the turn is over, under the turn number the transcript then reports: one turn is one
 question, so counting the questions is what aligns the history with the answer above it. A turn
 that broke mid-flight stores what it did produce, and a storage failure is logged and never
 reaches the reader - the answer already streamed, and losing a replayable trace is not worth
 failing a turn over. The read path is the strict one: a history that cannot be reconstructed
 raises rather than replaying a partial turn as a whole one.
+
+Whether anybody was still reading is not part of it (issue #143): the recording runs on the
+turn's worker, so a reader who leaves mid-generation shortens the stream and never the record.
 
 Browsing the data itself (ADR 0014 as rewritten). The Records and Notes tabs are the demo's
 control group, so their listings show the WHOLE dataset - all three tenants - with `tenant_id` a
@@ -150,6 +154,16 @@ agent composes `ok`, `blocked`, `gave_up` and `cut_short`; a run that breaks bef
 unreachable model endpoint - is closed here with `status: "failed"` and the reason in `answer`,
 instead of a body that simply stops and leaves the reader waiting. The reason is generic on
 purpose: the exception is logged server-side, never streamed.
+
+The turn outlives the stream (ADR 0012 as amended, issue #143). `_recorded` is not run by the
+response: `inflight.py` runs it on a worker of its own and the `StreamingResponse` reads a
+bounded window onto its frames. A reader who switches threads, reloads or signs out mid-turn
+closes that window and nothing else - the turn finishes, `TurnLog` gets every frame including
+the terminal one, and the thread replays complete when the reader comes back. What still bounds
+the turn is what always did: the per-turn deadline and the tool-round cap inside the graph
+(ADR 0011). One turn per thread is enforced with it - a second question on a thread that is
+still answering is a 409, never two turns interleaved on one checkpointer thread - and
+`GET /conversations/{id}` reports the same claim as `in_flight`.
 
 Bounded generation (ADR 0011 as amended). The model client this module builds carries the two
 generation bounds a turn cannot set for itself: `agent.max_output_tokens` as Ollama's
@@ -240,6 +254,7 @@ from browse import (
 )
 from conversations import ConversationRegistry, NotFound, Thread, TurnHistory
 from db import DEFAULT_CSV_PATH, SecurityViolation, employee_rows, init_db
+from inflight import InFlightTurns, TurnBusy
 from paths import CHECKPOINT_DB_PATH, DB_PATH, STATE_DB_PATH
 from rag import OllamaEmbed, RetrievalUnavailable, ensure_index, search_notes_scoped
 from runtime import runtime
@@ -354,13 +369,18 @@ class NoteHits:
 
 @dataclass(frozen=True)
 class Conversation:
-    """One thread as `GET /conversations/{id}` serves it: the row, the transcript, the history."""
+    """One thread as `GET /conversations/{id}` serves it: the row, the transcript, the history.
+
+    `in_flight` is whether a turn is running on it at this moment, so a thread reopened mid-turn
+    can say it is still answering rather than replaying a turn whose history is not written yet.
+    """
 
     thread_id: str
     title: str
     created: str
     messages: list[Message]
     turns: list[TurnHistory]
+    in_flight: bool
 
 
 def bounded_model(base_url: str, model: str, *, reasoning: bool) -> ChatOllama:
@@ -607,6 +627,7 @@ def create_app(
     replay = transcript or read_transcript
     drop_checkpoints = cleanup or delete_checkpoints
     search_notes = note_search or ollama_note_search(base_url, db_path)
+    running = InFlightTurns()
     load_data()
     try:
         index_notes()
@@ -670,10 +691,17 @@ def create_app(
     ) -> StreamingResponse:
         """Stream one turn as SSE; the thread must belong to the token's identity.
 
-        The turn's history is kept for replay on the way past (ADR 0012 as amended): the log is
-        offered every frame the framing puts on the wire, so what a reopened thread replays is
-        provably what the reader watched, and it is written once the stream is over, so a storage
-        failure cannot change a single frame of it.
+        The turn does not run on this response (ADR 0012 as amended, issue #143). It is started on
+        its own worker and this stream is a window onto it, so a reader who switches threads,
+        reloads or signs out mid-generation interrupts nothing: the turn finishes, its history is
+        written and the audit trail is complete, whether or not anybody is still reading.
+
+        The turn's history is kept for replay on the way past: the log is offered every frame the
+        turn produces, in the worker, and is written once the turn is over - so a storage failure
+        cannot change a single frame of it and a departed reader cannot shorten it.
+
+        One turn per thread at a time. A second question on a thread whose turn is still running is
+        refused with 409 rather than interleaved onto the same checkpointer thread.
         """
         threads.get_thread(identity, body.thread_id)
         model = _resolve_model(body.model, list_models)
@@ -686,9 +714,11 @@ def create_app(
         history = TurnLog(
             lambda kept, cut: _keep_turn(threads, replay, identity, body.thread_id, kept, cut)
         )
-        stream = StreamingResponse(
-            _sse(events, model, history), media_type="text/event-stream"
-        )
+        try:
+            window = running.start(body.thread_id, _recorded(events, model, history))
+        except TurnBusy as busy:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(busy)) from busy
+        stream = StreamingResponse(_sse(window), media_type="text/event-stream")
         refreshed = response.headers.get(REFRESHED_TOKEN_HEADER)
         if refreshed is not None:
             stream.headers[REFRESHED_TOKEN_HEADER] = refreshed
@@ -858,12 +888,19 @@ def create_app(
         reasoning per model round, every tool call with the arguments the model wrote, the outcome
         that settled it, and the terminal frame with the turn's status and telemetry (ADR 0012 as
         amended). A thread never chatted in replays as two empty lists.
+
+        `in_flight` says whether a turn is running on this thread right now (issue #143). A
+        backgrounded turn stores its history only when it ends, so without it a thread reopened
+        mid-turn would replay its newest question as a turn whose trace was never kept - a running
+        turn reading as a lost one. It is read off the same claim that refuses a second turn, so
+        the flag and the 409 can never disagree.
         """
         thread = threads.get_thread(identity, thread_id)
         return Conversation(
             **asdict(thread),
             messages=replay(thread_id),
             turns=threads.thread_turns(identity, thread_id),
+            in_flight=running.running(thread_id),
         )
 
     @app.patch("/conversations/{thread_id}")
@@ -999,13 +1036,13 @@ def _keep_turn(
     threads.record_turn(identity, thread_id, TurnHistory(turn=turn, events=events, cut=cut))
 
 
-def _sse(events: Iterator[TraceEvent], model: str, history: TurnLog) -> Iterator[str]:
-    """Frame each trace event as one SSE `data:` record, and never end the stream on silence.
+def _recorded(events: Iterator[TraceEvent], model: str, history: TurnLog) -> Iterator[TraceEvent]:
+    """The turn as it is recorded and run: every frame kept, and never an end without `done`.
 
     A run that breaks before `done` - an unreachable model endpoint, a recursion limit, anything
-    the agent did not turn into a retry - would otherwise close the body mid-flight and leave the
-    reader with a turn stuck at "streaming". It closes here instead with the terminal `done` frame
-    ADR 0012 defines, status `failed`, so the client always learns how the turn ended. The reason
+    the agent did not turn into a retry - would otherwise stop mid-flight and leave the turn
+    stuck at "streaming". It closes here instead with the terminal `done` frame ADR 0012 defines,
+    status `failed`, so the reader and the history both learn how the turn ended. The reason
     is deliberately generic; the exception is logged, where its detail belongs.
 
     The terminal frame carries the telemetry the turn managed to produce: the seconds it ran
@@ -1017,9 +1054,10 @@ def _sse(events: Iterator[TraceEvent], model: str, history: TurnLog) -> Iterator
     position of its own (ADR 0011 as amended).
 
     History is written from here rather than from around the runner (issue #90), so every frame the
-    reader was sent - this terminal one included - is a frame the turn's stored history holds, and
-    the write happens once the stream is over whether it ended or raised. What that costs the
-    stream is one append per frame; the store is touched after the last one.
+    turn produced - this terminal one included - is a frame the turn's stored history holds, and
+    the write happens once the turn is over whether it ended or raised. Since issue #143 this runs
+    on the turn's own worker rather than on the response (`inflight.py`), so what is recorded is
+    what the turn produced and not what a reader stayed to watch.
     """
     closed = False
     started = perf_counter()
@@ -1027,9 +1065,9 @@ def _sse(events: Iterator[TraceEvent], model: str, history: TurnLog) -> Iterator
         for event in events:
             closed = event["type"] == EVENT_DONE
             history.add(event)
-            yield _frame(event)
+            yield event
     except Exception:
-        _LOG.exception("the chat stream failed")
+        _LOG.exception("the chat turn failed")
         if not closed:
             terminal = DoneEvent(
                 type=EVENT_DONE,
@@ -1044,9 +1082,20 @@ def _sse(events: Iterator[TraceEvent], model: str, history: TurnLog) -> Iterator
                 duration_s=round(perf_counter() - started, runtime().agent.duration_decimals),
             )
             history.add(terminal)
-            yield _frame(terminal)
+            yield terminal
     finally:
         history.close()
+
+
+def _sse(events: Iterator[TraceEvent]) -> Iterator[str]:
+    """Frame the turn's events as SSE `data:` records; the window they come through is closed here.
+
+    Nothing else happens on the response any more (ADR 0012 as amended, issue #143): the turn runs
+    on its own worker, and a reader who leaves closes this generator, which stops the forwarding
+    and nothing else.
+    """
+    for event in events:
+        yield _frame(event)
 
 
 def _frame(event: TraceEvent) -> str:
