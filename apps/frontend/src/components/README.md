@@ -20,7 +20,7 @@ components/
   Icon.tsx         <Icon name="..." /> — Google Material Symbols only
   Pill.tsx         the status chip — tones neutral/accent/ok/warn/danger
   CodeBlock.tsx    labelled monospace block with a copy control (SQL lives here)
-  SqlRewrite.tsx   the generated/executed pair as one statement with the scoping marked
+  SqlRewrite.tsx   the generated/executed pair, scoping highlighted in the executed card
   Markdown.tsx     render a markdown string as sanitized GFM HTML
   DataTable.tsx    backend rows as a compact, visually capped table (optional server-side sort)
   NoteList.tsx     employee-written notes as quoted note cards
@@ -105,11 +105,10 @@ every statement is rendered by the same code in the same register. The copy cont
 itself where `navigator.clipboard` is unavailable (insecure origin, jsdom) instead of
 offering a button that cannot work.
 
-Two optional slots: `actions` puts a control in the header beside `copy` (the
-`SqlRewrite` mode toggle), and `children` is a **marked-up rendering of the same
-`code`** — pass it and the body renders that instead of the plain string, while `code`
-stays what the copy control writes, so a reader never lifts markup out of the demo. A
-caller that passes children owes it that they render the same statement.
+One optional slot: `children` is a **marked-up rendering of the same `code`** — pass
+it and the body renders that instead of the plain string, while `code` stays what the
+copy control writes, so a reader never lifts markup out of the demo. A caller that
+passes children owes it that they render the same statement.
 
 ### SqlRewrite
 
@@ -117,23 +116,30 @@ caller that passes children owes it that they render the same statement.
 <SqlRewrite generated={data.generated_sql} executed={data.executed_sql} />
 ```
 
-**The demo's money shot.** The executed statement rendered once, with what the
-tenant-scoping layer added marked inside it: the model wrote everything unmarked, and
-`(SELECT * FROM employees WHERE employees.tenant_id = ?) AS` is the layer-3 rewrite with
-its bound parameter (ADR 0012 as amended after issue #91). Anything the rewrite *replaced*
-renders as a struck-through deletion beside its replacement, so nothing is hidden, and a
-legend states what the highlight means — colour is never the only signal.
+**The demo's money shot.** Two `CodeBlock`s in a `.sql-pair` grid — what the model wrote
+and what actually ran — **both always visible, with no toggle** (ADR 0012 as amended after
+issue #121). Inside the executed card, what the tenant-scoping layer added is highlighted:
+the model wrote everything unmarked, and
+`(SELECT * FROM employees WHERE employees.tenant_id = ?) AS employees` is the layer-3
+rewrite with its bound parameter. A legend states what the highlight means, and the
+highlight itself carries a heavier weight and a solid rule as well as the tint — colour is
+never the only signal. Either card's `copy` writes plain SQL, never the markup.
 
 `lib/sqldiff.ts` owns the alignment and this brick only paints it. That module diffs
 **tokens**, case-insensitively (sqlglot re-renders the statement onto one flat line with
-uppercased keywords, so a line diff reports everything as changed), and minimises the
-number of edit **runs** rather than the number of edited tokens — the injected subquery
-repeats `employees`, `FROM` and `WHERE`, so the alignment with the most matched tokens
-strands the model's own words inside the insertion and renders the rewrite as confetti.
+uppercased keywords, so a line diff reports everything as changed), minimises the number
+of edit **runs** rather than the number of edited tokens — the injected subquery repeats
+`employees`, `FROM` and `WHERE`, so the alignment with the most matched tokens strands the
+model's own words inside the insertion and renders the rewrite as confetti — and then
+hands the alias of an inserted `AS` to that insertion, since the alignment would otherwise
+account for it with the table reference the model wrote and end the highlight on a
+dangling keyword. Its segments cover only the executed statement, so they concatenate back
+to it exactly. Past its token cap `diffSql` returns null and the pair renders unmarked.
 
-The two `CodeBlock`s in a `.sql-pair` grid are one click behind `show both`, still the
-better read for lifting either statement out whole, and are the fallback for a statement
-too long to align (`diffSql` returns null past its token cap, and the toggle disappears).
+The pair stacks below **700px of its own width** — a `@container` query, because
+collapsing the conversation rail changes the available width by ~200px at an unchanged
+viewport. Stacked, the executed card is second, so "what ran" is the card touching the
+result table.
 
 Pattern from [beautifului.dev](https://www.beautifului.dev) (MIT): its diff surfaces mark
 an edit in place rather than beside it. **Reimplemented, not copied** — its own diffs are
@@ -586,10 +592,11 @@ every stored payload has structured keys, so the fallback is a live-turn path on
   `.btn-xs` register (KB's smallest button is still card-sized).
 - `ModelPicker` uses a native `<select>`: **KB has no select, dropdown or listbox
   anywhere**, so it borrows `.cfg-input`'s metrics and its border-only focus instead.
-- The SQL pair `SqlRewrite` falls back to is KB's two-column `.usage-grid` at `1fr 1fr`;
-  KB's own diff (`.prop-diff`) is inline before/after chips, which cannot hold two SQL
-  statements, and it has no in-place marking of a changed run anywhere, so `.sql-add` /
-  `.sql-del` are new on our state tokens.
+- `SqlRewrite`'s pair is KB's two-column `.usage-grid` at `1fr 1fr`; KB's own diff
+  (`.prop-diff`) is inline before/after chips, which cannot hold two SQL statements, and it
+  has no in-place marking of a changed run anywhere, so `.sql-add` is new on our accent
+  token. **KB has no container query anywhere** either — its own grids collapse on the
+  viewport — so `.sql-pair`'s `@container` breakpoint is ours.
 - `charts/Chart` is one brick where KB has four (`AreaTrend`, `BarTimeline`,
   `RankedBars`, `MonthDrill`), because a single backend contract feeds it: it keeps
   AreaTrend's measured-width SVG scaffolding and `.chart-grid`/`.chart-axis` chrome

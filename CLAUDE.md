@@ -99,7 +99,8 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   default resolved from it — ADR 0005 as amended, ADR 0012),
   `auth.py` (hardcoded tenant users, JWT with tenant claim, ADR 0009).
 - `[x]` **M4 — Frontend.** React SPA on the KB design system: login, streaming
-  chat with live trace (the tenant scoping marked inside the SQL that ran), conversation
+  chat with live trace (the generated and the executed SQL side by side, tenant
+  scoping highlighted inside the one that ran), conversation
   history sidebar, tenant badge, charts, transparent security-refusal and
   truncation states, cross-tenant isolation demo via login switch (ADR 0012).
   Three shell tabs (ADR 0014): **Chat**, **Records** (the tenant's rows, filtered,
@@ -179,7 +180,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Frontend Records / Notes tabs | `apps/frontend/src/views/RecordsView.tsx`, `views/NotesView.tsx` — filters, sorts and pages are query parameters, never in-browser reordering; the tab strip is the `layout/Tabs` brick in the shell header and a visited tab stays mounted; the `ParamProbe` brick is the one control that is not a filter — the reader appends a parameter of their own and reads what the server ignored (ADR 0014 as amended) |
 | Frontend conversation state (thread list, which thread is open, its replay) | `apps/frontend/src/lib/conversations.ts` — the one owner the rail (`views/ConversationsSidebar.tsx`) and the chat view share; `replay` is the open thread's past turns, already folded |
 | Number formatting a reader sees (axis ticks, bin edges, table cells, elapsed seconds, singularized counts) | `apps/frontend/src/lib/format.ts` — the only formatter; the backend emits raw numbers and never a locale-specific string |
-| The generated-versus-executed SQL money shot | `apps/frontend/src/components/SqlRewrite.tsx` paints it, `lib/sqldiff.ts` aligns it — the tenant scoping marked inside the statement that ran, with the two cards one click behind `show both` (ADR 0012 as amended, and `docs/ui-pattern-review.md`) |
+| The generated-versus-executed SQL money shot | `apps/frontend/src/components/SqlRewrite.tsx` paints it, `lib/sqldiff.ts` aligns it — both cards always, no toggle, with the tenant scoping highlighted inside the statement that ran; the pair stacks (executed second) below 700px of its own width, a `@container` query in `styles/app.css` (ADR 0012 as amended, and `docs/ui-pattern-review.md`) |
 | Design tokens / fonts / logo | `apps/frontend/src/styles/tokens.css` + `public/` — copied from knowledgebase, which stays the tracking source |
 | CI / CD | `.github/workflows/ci.yml` |
 | Images / the deployment unit | `apps/backend/Dockerfile`, `apps/frontend/Dockerfile` + `nginx.conf`, `docker-compose.yml` |
