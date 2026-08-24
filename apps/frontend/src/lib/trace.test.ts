@@ -656,4 +656,26 @@ describe("a reopened thread", () => {
     expect(turns[0].items).toEqual([]);
     expect(turns[0].phase).toBe("replayed");
   });
+
+  it("shows the question a turn is still answering as running, not as history that was lost", () => {
+    const turns = replayTurns([...MESSAGES, { role: "user", content: "and in sales?" }], HISTORY, true);
+
+    expect(turns).toHaveLength(3);
+    expect(turns[2].phase).toBe("streaming");
+    expect(turns[2].answer).toBe("");
+    expect(turns[0].phase).toBe("ok");
+    expect(turns[1].phase).toBe("ok");
+  });
+
+  it("leaves an answered turn alone even while the thread has a turn in flight", () => {
+    const turns = replayTurns(MESSAGES, HISTORY, true);
+
+    expect(turns.map((turn) => turn.phase)).toEqual(["ok", "ok"]);
+  });
+
+  it("claims nothing about a thread that is not answering anything", () => {
+    const turns = replayTurns([...MESSAGES, { role: "user", content: "and in sales?" }], HISTORY);
+
+    expect(turns[2].phase).toBe("replayed");
+  });
 });

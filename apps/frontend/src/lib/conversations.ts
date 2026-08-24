@@ -35,6 +35,11 @@
  * they were streamed or reopened. `chatKey` changes on every switch: it is the signal the chat
  * view resets its live turns on.
  *
+ * The thread's `in_flight` goes into that fold (issue #143). A turn runs to its end on the server
+ * whether or not anyone is watching, so a thread can be reopened while one is still going: the
+ * server says so, and the fold renders that last question as still being answered rather than as
+ * a turn whose trace was lost.
+ *
  * `select` answers with the thread it opened, or null when the registry would not hand it over -
  * a deleted thread and another identity's are the same 404 and get the same answer here. The
  * shell restoring a thread named in the URL is the caller that needs to tell the two apart, and
@@ -130,7 +135,11 @@ export function useConversations(): ConversationsStore {
         .then((conversation) => {
           setOpen((previous) => ({
             activeId: conversation.thread_id,
-            replay: replayTurns(conversation.messages, conversation.turns),
+            replay: replayTurns(
+              conversation.messages,
+              conversation.turns,
+              conversation.in_flight,
+            ),
             chatKey: previous.chatKey + 1,
           }));
           return conversation.thread_id;

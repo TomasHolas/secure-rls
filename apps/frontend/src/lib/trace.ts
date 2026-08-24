@@ -191,8 +191,18 @@ export function failTurn(turn: Turn, error: string, now: number = Date.now()): T
  * mid-turn then attaches its history to nothing instead of to the wrong answer. The answer comes
  * from the transcript and the terminal frame does not overwrite it - it is the same text, and the
  * transcript is the copy the server composed the thread's memory from.
+ *
+ * `inFlight` is the server saying a turn is running on this thread right now (issue #143). A turn
+ * stores its history when it ends, so a thread reopened mid-turn has a last question with no
+ * record and no answer: that turn is still being worked on, not a turn whose trace was lost, and
+ * it replays as `streaming` so it says so. It applies to the last turn only, and only when it has
+ * neither - anything else is a finished turn and is left exactly as it was read back.
  */
-export function replayTurns(messages: Message[], history: TurnRecord[]): Turn[] {
+export function replayTurns(
+  messages: Message[],
+  history: TurnRecord[],
+  inFlight = false,
+): Turn[] {
   const turns: Turn[] = [];
   const numbers: number[] = [];
   let asked = 0;
@@ -208,9 +218,20 @@ export function replayTurns(messages: Message[], history: TurnRecord[]): Turn[] 
       turns[last] = { ...turns[last], answer: joinAnswer(turns[last].answer, message.content) };
     }
   }
-  return turns.map((turn, index) =>
+  const replayed = turns.map((turn, index) =>
     replayTurn(turn, history.find((record) => record.turn === numbers[index])),
   );
+  return inFlight ? stillRunning(replayed) : replayed;
+}
+
+/** The last turn as one still being worked on, when it is a question the server has not answered. */
+function stillRunning(turns: Turn[]): Turn[] {
+  const last = turns.length - 1;
+  if (last < 0) return turns;
+  if (turns[last].answer || turns[last].items.length > 0) return turns;
+  const running = [...turns];
+  running[last] = { ...turns[last], phase: "streaming" };
+  return running;
 }
 
 /** One past turn: its stored events folded onto it, and what the caps cut out of them. */

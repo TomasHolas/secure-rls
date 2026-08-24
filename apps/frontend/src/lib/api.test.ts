@@ -180,6 +180,18 @@ describe("sliding session", () => {
     expect(auth.getSession()?.token).toBe(refreshed);
   });
 
+  it("says a thread already answering is busy rather than failing generically", async () => {
+    const { auth, api } = await load();
+    auth.startSession(token);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ detail: "busy" }, 409)));
+
+    await expect(api.openChatStream({ thread_id: "t1", message: "hi" })).rejects.toMatchObject({
+      name: "ApiError",
+      status: 409,
+      message: expect.stringContaining("still answering"),
+    });
+  });
+
   it("does not adopt anything from a 401", async () => {
     const { auth, api } = await load();
     auth.startSession(token);
