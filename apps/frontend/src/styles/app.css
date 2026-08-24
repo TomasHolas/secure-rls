@@ -296,7 +296,9 @@
 .form-card-sub { margin: var(--space-2) 0 0; color: var(--fg-3); font-size: var(--text-sm); }
 
 .field { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-5); }
-.field label {
+/* `.field-label` is the same label over a group of controls rather than one: a chip row names
+   itself through `aria-labelledby`, and a `<label>` with no control to point at would be a lie. */
+.field :is(label, .field-label) {
   font-size: var(--text-xs); font-weight: 600; letter-spacing: var(--tracking-caps);
   text-transform: uppercase; color: var(--fg-4);
 }
@@ -665,14 +667,24 @@
 @keyframes modal-pop { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
 
 /* ---------------- Retrieved notes ---------------- */
+/* The prose is capped at a measure, not at the card (issue #139): the corpus list is ~1600px wide
+   on a demo screen, and a note run across all of it is a wall of text. 68ch of Geist at --text-sm
+   is about 80 rendered characters - the ceiling WCAG 1.4.8 names, and above Bringhurst's 45-75
+   only because `ch` measures the wider "0" advance. Declared here because tokens.css is KB's
+   verbatim copy (ADR 0006) and a metric KB does not define would be lost on the next sync. */
+:root {
+  --note-measure: 68ch;
+}
 .note-list { list-style: none; display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; }
 .note-card { background: var(--bg-surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-3); }
-.note-head { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-1); }
+/* One left-aligned cluster: nothing is pushed into a far corner where a narrow card leaves it as
+   the only thing on screen. It wraps rather than compressing the name. */
+.note-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); margin-bottom: var(--space-2); }
 .note-name { font-size: var(--text-sm); font-weight: 600; color: var(--fg-1); }
-/* What the note is checked against sits beside the name; where it came from stays on the right. */
+/* What the note is checked against sits beside the name; the tenant beside it is a Pill. */
 .note-facts { font-size: var(--text-xs); color: var(--fg-3); }
-.note-meta { margin-left: auto; font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--fg-4); }
-.note-text { margin: 0; font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--fg-3); }
+.note-meta { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--fg-4); }
+.note-text { max-width: var(--note-measure); margin: 0; font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--fg-3); }
 
 /* ---------------- Tabs (shell sections) ---------------- */
 /* KB has no tab strip; the shape is its .pill metrics on a button, in the header row. */
@@ -724,8 +736,43 @@
 /* The Records and Notes cards hold their own padding, unlike the settings rows. */
 .settings-card > .table-scroll, .settings-card > .note-list, .settings-card > .empty,
 .settings-card > .form-error, .settings-card > .data-table-note, .settings-card > .pager,
-.settings-card > .code-block, .settings-card > .notice { margin: var(--space-5); }
+.settings-card > .code-block, .settings-card > .disclosure { margin: var(--space-5); }
 
-/* What the server reports it did not read: one line per parameter, its name in mono. */
-.ignored-list { display: flex; flex-direction: column; gap: var(--space-1); margin: var(--space-2) 0 0; padding-left: var(--space-4); }
-.ignored-list code { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-2); }
+/* The fold under a listing (Disclosure): the trace-step toggle's chrome-less button, off the
+   timeline, so the evidence is one click away instead of a block of monospace leading the tab. */
+.disclosure { display: flex; flex-direction: column; gap: var(--space-3); }
+.disclosure-toggle {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: 0; background: none; border: none; cursor: pointer;
+  font-family: var(--font-body); font-size: var(--text-xs); color: var(--fg-4);
+}
+.disclosure-toggle:hover { color: var(--fg-2); }
+.disclosure-body { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+
+/* One low-cardinality filter as a row of chips instead of a native select (issue #139): a
+   `<select>` popup is drawn by the OS, so its selection highlight cannot be themed and arrives in
+   the system accent green over our own. The strip takes one --control-height as a cell, which is
+   what keeps it on the filter grid's baseline, and the chips inside are deliberately smaller -
+   they are a set of choices, not a box to type in. */
+:root {
+  --chip-height: 30px;
+}
+.chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.control-row .chip-row { min-height: var(--control-height); }
+.chip {
+  display: inline-flex; align-items: center; height: var(--chip-height);
+  padding: 0 var(--space-3); border-radius: var(--radius-pill);
+  background: transparent; border: 1px solid var(--border-subtle);
+  font-family: var(--font-body); font-size: var(--text-xs); font-weight: 500; color: var(--fg-3);
+  cursor: pointer; white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.control-row .chip { height: var(--chip-height); }
+.chip:hover { background: var(--bg-hover); color: var(--fg-1); }
+/* The picked chip is lifted rather than merely tinted - a surface a shade up, a stronger border,
+   a shadow and a heavier weight - so it survives greyscale and the CVD palette (WCAG 1.4.1). */
+.chip[aria-pressed="true"] {
+  background: var(--bg-surface-2); border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm); color: var(--fg-1); font-weight: 600;
+}
+.chip:disabled { opacity: 0.6; cursor: not-allowed; }

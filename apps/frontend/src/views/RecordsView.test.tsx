@@ -7,16 +7,20 @@
  * which is the property these tests pin: every reorder is a request.
  *
  * The fixture page is now the dataset's 1000 rows rather than one tenant's 450, because the
- * listing is (issue #117). Two things are pinned that were not there before: the tenant select is
+ * listing is (issue #117). Two things are pinned that were not there before: the tenant chips are
  * a real filter that reaches the query, and no total on screen appears without saying what it is
  * a total of - "1000 rows · all tenants" or "450 rows · tenant acme", never a bare number.
+ *
+ * The statement is pinned in both of its states (issue #139): the fact that this listing carries
+ * no scoping is a caption a reader cannot miss, and the SQL behind it is closed until asked for -
+ * present in the document only once the disclosure is open, and never deleted.
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RecordsView } from "./RecordsView";
-import { expectOneControlHeight } from "../test/styles";
+import { expectChipStripHeight, expectOneControlHeight } from "../test/styles";
 
 const api = vi.hoisted(() => ({
   browseRecords: vi.fn(),
@@ -82,10 +86,9 @@ function lastQuery(): Record<string, unknown> {
   return calls[calls.length - 1][0] as Record<string, unknown>;
 }
 
-/** The extra parameter the most recent request carried, which is the second argument. */
-function lastProbe(): string | undefined {
-  const calls = api.browseRecords.mock.calls;
-  return calls[calls.length - 1][1] as string | undefined;
+/** The tenant chip a reader clicks; `All` is the chip that clears the filter. */
+function tenantChip(name: string): HTMLElement {
+  return screen.getByRole("button", { name, pressed: false });
 }
 
 beforeEach(() => {
@@ -100,22 +103,39 @@ afterEach(() => {
 });
 
 describe("the records tab", () => {
-  it("shows the whole dataset, the true total and the statement the server ran", async () => {
+  it("shows the whole dataset and the true total, saying what the total counts", async () => {
     const view = await show();
 
     expect(screen.getByText(/Every row of the dataset, all tenants/)).toBeTruthy();
     expect(screen.getByText(/1,000 matching rows · all tenants/)).toBeTruthy();
     expect(screen.getByText(/showing 2 of 1,000 rows · all tenants/)).toBeTruthy();
     expect(view.container.querySelectorAll("tbody tr")).toHaveLength(2);
-    expect(view.container.querySelector(".code-block")?.textContent).toContain(EXECUTED);
   });
 
-  it("says the listing carries no tenant scoping, rather than claiming a rewrite it lacks", async () => {
+  it("states that the listing carries no tenant scoping without a reader opening anything", async () => {
     const view = await show();
 
-    expect(view.container.querySelector(".code-block")?.textContent).toContain(
-      "executed without tenant scoping",
+    expect(
+      screen.getByText(/This listing is the whole dataset, unscoped by design/),
+    ).toBeTruthy();
+    expect(view.container.querySelector(".code-block")).toBeNull();
+    expect(screen.getByRole("button", { name: /show the SQL this page ran/ })).toHaveProperty(
+      "ariaExpanded",
+      "false",
     );
+  });
+
+  it("hands over the statement it ran on one click, still labelled as unscoped", async () => {
+    const view = await show();
+
+    fireEvent.click(screen.getByRole("button", { name: /show the SQL this page ran/ }));
+
+    const block = view.container.querySelector(".code-block")!;
+    expect(block.textContent).toContain(EXECUTED);
+    expect(block.textContent).toContain("executed without tenant scoping");
+
+    fireEvent.click(screen.getByRole("button", { name: /hide the SQL this page ran/ }));
+    expect(view.container.querySelector(".code-block")).toBeNull();
   });
 
   it("shows every row of the page, not the trace's visual cap", async () => {
@@ -165,14 +185,23 @@ describe("the records tab", () => {
     expect(options).toEqual(["any department", "Engineering (206)", "Sales (214)"]);
   });
 
-  it("offers the dataset's tenants and their row counts, which is the control group", async () => {
+  it("offers the dataset's tenants as chips, with no counts on them and All pressed", async () => {
+    const view = await show();
+
+    const chips = Array.from(view.container.querySelectorAll(".chip"));
+    expect(chips.map((chip) => chip.textContent)).toEqual(["All", "acme", "beta", "gamma"]);
+    expect(chips.map((chip) => chip.getAttribute("aria-pressed"))).toEqual([
+      "true",
+      "false",
+      "false",
+      "false",
+    ]);
+  });
+
+  it("names the chip group so the strip is not a row of unlabelled buttons", async () => {
     await show();
 
-    const options = Array.from(
-      (screen.getByLabelText("Tenant") as HTMLSelectElement).options,
-      (option) => option.textContent,
-    );
-    expect(options).toEqual(["any tenant", "acme (450)", "beta (350)", "gamma (200)"]);
+    expect(screen.getByRole("group", { name: "Tenant" })).toBeTruthy();
   });
 
   it("clears the filters and asks again on reset", async () => {
@@ -246,27 +275,11 @@ describe("the records tab", () => {
     expect(screen.getByText(/0 matching rows · all tenants/)).toBeTruthy();
   });
 
-  it("sends a parameter the reader appended and shows what the server did with it", async () => {
-    await show();
-
-    fireEvent.change(screen.getByLabelText("Extra query parameter"), {
-      target: { value: "role=admin" },
-    });
-    api.browseRecords.mockResolvedValue({
-      ...PAGE,
-      ignored: [{ name: "role", reason: "not a parameter this listing reads; it reads sort" }],
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-
-    await waitFor(() => expect(lastProbe()).toBe("role=admin"));
-    expect(await screen.findByText(/not a parameter this listing reads/)).toBeTruthy();
-    expect(screen.getByText(/1,000 matching rows/)).toBeTruthy();
-  });
-
   it("keeps every filter control on one height and one baseline", async () => {
     const view = await show();
 
-    expectOneControlHeight(view.container.querySelector(".filter-grid"), 11);
+    expectOneControlHeight(view.container.querySelector(".filter-grid"), 10);
+    expectChipStripHeight(view.container.querySelector(".chip-row"));
   });
 
   it("keeps the two bounds of a filter in one cell, so no wrap can split them", async () => {
@@ -308,10 +321,10 @@ describe("the records tab", () => {
     await waitFor(() => expect(lastQuery().hired_from).toBe("2020-01-31"));
   });
 
-  it("sends the tenant the reader picked, and says what the filtered total counts", async () => {
+  it("sends the tenant chip the reader picked, and says what the filtered total counts", async () => {
     await show();
 
-    fireEvent.change(screen.getByLabelText("Tenant"), { target: { value: "acme" } });
+    fireEvent.click(tenantChip("acme"));
     api.browseRecords.mockResolvedValue({ ...PAGE, total: 450 });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
@@ -319,12 +332,27 @@ describe("the records tab", () => {
     expect(lastQuery().page).toBe(1);
     expect(await screen.findByText(/450 matching rows · tenant acme/)).toBeTruthy();
     expect(screen.getByText(/showing 2 of 450 rows · tenant acme/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "acme" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("clears the tenant filter through the All chip", async () => {
+    await show();
+
+    fireEvent.click(tenantChip("acme"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(lastQuery().tenant_id).toBe("acme"));
+
+    fireEvent.click(tenantChip("All"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(lastQuery().tenant_id).toBe(""));
+    expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("re-counts the department options for the tenant the reader applied", async () => {
     await show();
 
-    fireEvent.change(screen.getByLabelText("Tenant"), { target: { value: "acme" } });
+    fireEvent.click(tenantChip("acme"));
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
     await waitFor(() => expect(api.listDepartments).toHaveBeenLastCalledWith("acme"));
@@ -334,9 +362,9 @@ describe("the records tab", () => {
     api.listDepartments.mockRejectedValue(new Error("boom"));
     api.listTenants.mockRejectedValue(new Error("boom"));
 
-    await show();
+    const view = await show();
 
     expect((screen.getByLabelText("Department") as HTMLSelectElement).options).toHaveLength(1);
-    expect((screen.getByLabelText("Tenant") as HTMLSelectElement).options).toHaveLength(1);
+    expect(view.container.querySelectorAll(".chip")).toHaveLength(1);
   });
 });

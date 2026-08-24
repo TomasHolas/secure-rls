@@ -16,11 +16,27 @@ import "../styles/app.css";
 
 const SHARED_HEIGHT = "var(--control-height)";
 
-/** The computed height of every control in a row, in document order. */
+/**
+ * The computed height of every control in a row, in document order. A chip is not one of them: a
+ * `ChipRow` is one cell that takes the row's height as a strip, with deliberately smaller chips
+ * inside it (issue #139), and `expectChipStripHeight` pins that instead.
+ */
 export function controlHeights(row: Element): string[] {
-  return Array.from(row.querySelectorAll("input, select, button, textarea")).map(
+  return Array.from(row.querySelectorAll("input, select, button:not(.chip), textarea")).map(
     (control) => getComputedStyle(control).height,
   );
+}
+
+/** A chip strip is one cell of a control row: the strip keeps the row's height, its chips do not. */
+export function expectChipStripHeight(strip: Element | null): void {
+  if (!strip) throw new Error("no chip row was rendered");
+  const height = getComputedStyle(strip).minHeight;
+  if (height !== SHARED_HEIGHT) throw new Error(`the chip strip is not one control tall: ${height}`);
+  for (const chip of strip.querySelectorAll(".chip")) {
+    if (getComputedStyle(chip).height === SHARED_HEIGHT) {
+      throw new Error("a chip took the row's height instead of its own");
+    }
+  }
 }
 
 /** How many rules in the parsed stylesheet declare the shared height; one is the contract. */

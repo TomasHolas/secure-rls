@@ -5,18 +5,21 @@
  * the tenant its token names. Showing one tenant's 450 with nothing saying 1000 exist threw that
  * comparison away and made the number look like a bug.
  *
- * `tenant_id` is therefore a filter of the same kind as `department`: a select in the same grid,
- * its options and counts read off the data by `GET /records/tenants`, its value bound server-side
- * like every other filter value. What no request can choose is the tenant the AGENT sees — that
- * comes from the verified token and reaches the tools by closure (ADR 0002, layer 1).
+ * `tenant_id` is therefore a filter of the same kind as `department`: a `ChipRow` in the same grid,
+ * its options read off the data by `GET /records/tenants`, its value bound server-side like every
+ * other filter value. What no request can choose is the tenant the AGENT sees — that comes from
+ * the verified token and reaches the tools by closure (ADR 0002, layer 1).
  *
- * The view owns no query logic: the filter boxes and the sort headers turn into query parameters,
- * and `GET /records` answers with the page plus the true total and the statement it ran. Filters
- * are applied on submit rather than on every keystroke — a filter row of nine boxes would
- * otherwise fire a request per character, and the reader is composing a question, not narrowing
- * live. The executed SQL is shown under the table for the same reason the chat trace shows it,
- * and here it is evidence of the opposite thing: this listing is the one read in the app that
- * carries no tenant scoping, and the label says so rather than claiming a rewrite that is absent.
+ * The view owns no query logic: the filter controls and the sort headers turn into query
+ * parameters, and `GET /records` answers with the page plus the true total and the statement it
+ * ran. Filters are applied on submit rather than on every keystroke — a filter row of nine boxes
+ * would otherwise fire a request per character, and the reader is composing a question, not
+ * narrowing live. The executed SQL is still under the table, for the same reason the chat trace
+ * shows it, and here it is evidence of the opposite thing: this listing is the one read in the app
+ * that carries no tenant scoping. That fact is a caption a reader passes over and the statement
+ * itself is one click behind a `Disclosure` (issue #139) — an always-open block of monospace led
+ * the tab with the least readable thing on it, and shouted a label promising no rewrite twice
+ * over. It is never deleted: it is what makes the claim checkable rather than asserted.
  *
  * Every total states what it is a total of. "1000 rows · all tenants" and "450 rows · tenant
  * acme" are different facts, and a pager that said only "450" would be the orphaned number the
@@ -35,18 +38,21 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/Button";
 import { CodeBlock } from "../components/CodeBlock";
 import { DataTable } from "../components/DataTable";
+import { Disclosure } from "../components/Disclosure";
 import { Loader } from "../components/Loader";
-import { ParamProbe } from "../components/ParamProbe";
 import { Pill } from "../components/Pill";
-import { FieldPair, SelectField, TextField } from "../components/forms";
+import { ChipRow, FieldPair, SelectField, TextField } from "../components/forms";
 import { EmptyState, Page, PageHeader, Section } from "../components/layout";
 import { ApiError, browseRecords, listDepartments, listTenants } from "../lib/api";
 import type { BrowsePage, FilterOption } from "../lib/api";
 import { formatCount, formatNumber } from "../lib/format";
 
 const LOAD_FAILURE = "The rows could not be loaded.";
-const EXECUTED_LABEL = "executed without tenant scoping - this listing is the whole dataset";
-const PROBE_TITLE = "Probe the request";
+const EXECUTED_LABEL = "executed without tenant scoping";
+const UNSCOPED_NOTE =
+  "This listing is the whole dataset, unscoped by design - the agent's queries never are.";
+const SHOW_SQL = "show the SQL this page ran";
+const HIDE_SQL = "hide the SQL this page ran";
 const ALL_TENANTS = "all tenants";
 const SORTABLE = [
   "user_id",
@@ -91,7 +97,6 @@ export function RecordsView({ tenant }: { tenant: string }) {
   const [sort, setSort] = useState(SORTABLE[0]);
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(FIRST_PAGE);
-  const [probe, setProbe] = useState("");
   const [rows, setRows] = useState<BrowsePage | null>(null);
   const [tenants, setTenants] = useState<FilterOption[]>([]);
   const [departments, setDepartments] = useState<FilterOption[]>([]);
@@ -131,7 +136,7 @@ export function RecordsView({ tenant }: { tenant: string }) {
   useEffect(() => {
     let live = true;
     setLoading(true);
-    browseRecords({ ...applied, sort, direction, page }, probe)
+    browseRecords({ ...applied, sort, direction, page })
       .then((serverPage) => {
         if (live) {
           setRows(serverPage);
@@ -147,7 +152,7 @@ export function RecordsView({ tenant }: { tenant: string }) {
     return () => {
       live = false;
     };
-  }, [applied, sort, direction, page, probe]);
+  }, [applied, sort, direction, page]);
 
   const sortBy = useCallback(
     (column: string) => {
@@ -202,16 +207,12 @@ export function RecordsView({ tenant }: { tenant: string }) {
             apply();
           }}
         >
-          <SelectField
+          <ChipRow
             id="records-tenant"
             label="Tenant"
             value={draft.tenant_id}
-            options={tenants.map((entry) => ({
-              value: entry.value,
-              label: `${entry.value} (${formatNumber(entry.employees)})`,
-            }))}
+            options={tenants.map((entry) => entry.value)}
             onChange={field("tenant_id")}
-            placeholder="any tenant"
           />
           <TextField
             id="records-name"
@@ -290,15 +291,6 @@ export function RecordsView({ tenant }: { tenant: string }) {
         </form>
       </Section>
 
-      <Section title={PROBE_TITLE}>
-        <ParamProbe
-          id="records-probe"
-          ignored={rows?.ignored ?? []}
-          onSend={setProbe}
-          disabled={loading}
-        />
-      </Section>
-
       <Section
         title="Rows"
         aside={
@@ -346,15 +338,13 @@ export function RecordsView({ tenant }: { tenant: string }) {
                 Next
               </Button>
             </div>
+            <p className="data-table-note">{UNSCOPED_NOTE}</p>
+            <Disclosure show={SHOW_SQL} hide={HIDE_SQL}>
+              <CodeBlock label={EXECUTED_LABEL} code={rows.executed_sql} tone="accent" />
+            </Disclosure>
           </>
         )}
       </Section>
-
-      {rows ? (
-        <Section title="What the server ran">
-          <CodeBlock label={EXECUTED_LABEL} code={rows.executed_sql} tone="accent" />
-        </Section>
-      ) : null}
     </Page>
   );
 }

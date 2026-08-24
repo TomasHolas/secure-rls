@@ -25,14 +25,14 @@ components/
   Markdown.tsx     render a markdown string as sanitized GFM HTML
   DataTable.tsx    backend rows as a compact, visually capped table (optional server-side sort)
   NoteList.tsx     employee-written notes as quoted note cards
-  ParamProbe.tsx   the reader's own query parameter, and what the server ignored of it
+  Disclosure.tsx   a closed-by-default fold: the trace's chevron toggle, off the timeline
   TenantPill.tsx   the identity chip (tenant + user) in the header slot
   IdentityMenu.tsx the identity chip as a control: the pill, and the menu carrying sign-out
   InlineSearch.tsx a search box that grows right-to-left out of its own icon
   GlideList.tsx    a row group with one highlight that glides to the row under the pointer
   Modal.tsx        the one dialog brick — portal, backdrop, Escape/backdrop/× dismissal
   ConfirmDialog.tsx  the confirm step in front of a delete, on Modal + Button
-  forms/           FormCard, TextField, SelectField, FieldPair (+ index barrel)
+  forms/           FormCard, TextField, SelectField, ChipRow, FieldPair (+ index barrel)
   layout/          AppLayout, Header, Tabs, Sidebar, Page, PageHeader, Section,
                    EmptyState (+ index barrel)
   charts/          Chart — renders a backend ChartSpec (+ index barrel)
@@ -53,9 +53,11 @@ CSS for every brick lives in `styles/app.css`; colors, spacing, radii, motion an
 fonts come from `styles/tokens.css`.
 
 **A row of controls carries `control-row`.** Any element that puts an input, a select and a
-button on one line — the Records filter grid, the Notes search, `ParamProbe` — adds that class
+button on one line — the Records filter grid, the Notes search — adds that class
 beside its own layout class, and every control inside takes one height from `--control-height`
-and loses the field's bottom margin, so the row is one height and one baseline (issue #115). The
+and loses the field's bottom margin, so the row is one height and one baseline (issue #115). A
+`ChipRow` is the one exception and an explicit one: the strip takes that height as a cell and its
+chips are deliberately smaller, which `test/styles.ts` pins separately (issue #139). The
 property is declared once, at the top of `app.css` rather than in `tokens.css`, because that file
 is KB's verbatim copy (ADR 0006) and a metric KB does not define would be lost on the next sync.
 `styles/controls.test.ts` asserts the contract against the real stylesheet in jsdom, so a control
@@ -245,36 +247,43 @@ the server's to decide. Without those props it is the plain table the chat trace
 <NoteList notes={hits.hits} flagged={kinds} empty="…" /> // the Notes tab: search hits
 ```
 
-Employee-written notes as quoted data, never as instructions — one card per note with its
-name, the `department` and `performance_score` of the row it belongs to (the note's tone is
-composed coherent with that score, ADR 0008, so the pair is a check a reader can make at a
-glance), `#user_id`, the `tenant_id` the row came from and, when retrieval produced one, the
-`distance` it scored. Every field but the name and the text is optional — the card shows what
-its caller has. `flagged` is a `{user_id: payload_kind}` map (from `GET /notes/flagged`, the
-committed `poisoned_manifest.json`) and marks a planted injection payload with a warn `Pill`,
-which is what lets the demo point at a payload before the agent reads it (ADR 0014). The chat
-trace and the Notes tab share this brick, so a note reads identically wherever it is served.
+Employee-written notes as quoted data, never as instructions — one card per note: the name
+strong, the `department` and `performance_score` of the row beside it (the note's tone is composed
+coherent with that score, ADR 0008, so the pair is a check a reader can make at a glance), the
+`tenant_id` as a neutral `Pill`, and the note itself underneath at a fixed measure
+(`--note-measure`, ~80 rendered characters). Every field but the name and the text is optional —
+the card shows what its caller has.
 
-### ParamProbe
+**The rank is a search-hit field, not a card field** (issue #139). `distance` is what tells a hit
+from a listing, so a card with one carries `#user_id · distance 0.213` and a card without one
+carries neither: on the corpus list a `#N` is row position dressed as a fact. The head is one
+left-aligned cluster for the same reason the prose is capped — the list is 1600px wide on a demo
+screen, and a card whose only visible content at a narrow crop was grey microtext in the far
+corner was the defect this brick was restyled for.
+
+`flagged` is a `{user_id: payload_kind}` map (from `GET /notes/flagged`, the committed
+`poisoned_manifest.json`) and marks a planted injection payload with a warn `Pill`, which is what
+lets the demo point at a payload before the agent reads it (ADR 0014). The chat trace and the
+Notes tab share this brick, so a note reads identically wherever it is served.
+
+### Disclosure
 
 ```tsx
-<ParamProbe id="records-probe" ignored={page.ignored} onSend={setProbe} disabled={loading} />
+<Disclosure show="show the SQL this page ran" hide="hide the SQL this page ran">
+  <CodeBlock label="executed without tenant scoping" code={page.executed_sql} tone="accent" />
+</Disclosure>
 ```
 
-The Records and Notes tabs' one control that is not a filter (issue #107). A box appends a raw
-`name=value` of the reader's own choosing to the next listing request, and the notice below it
-names every parameter the response reports as unread, with the server's own reason — verbatim,
-so the report a reviewer reads on screen is the server's and not a paraphrase of it. `onSend`
-hands the parent the text as typed; the parent sends it beside its filters and feeds `ignored`
-back. The notice renders nothing when nothing was ignored.
+A fold that is closed until a reader asks, and whose body is out of the document rather than
+hidden inside it. The interaction is `chat/TraceStep`'s — a chrome-less button carrying
+`aria-expanded`, the chevron turning from right to down — reused rather than reinvented; that step
+is a timeline row with an icon rail and cannot be dropped under a table, and a native `<details>`
+brings its own marker, focus behaviour and always-present body. Both labels are the caller's,
+because a trigger still reading "show" once it has shown misdescribes the next click.
 
-It no longer claims that no request can name a tenant, because on these listings one can:
-`tenant_id` is a real filter there, since the tabs show the whole dataset (ADR 0014 as rewritten
-by issue #117). The claim it makes instead is the one that survived — a request gets exactly the
-parameters the endpoint declares and is told about the rest — and the explainer points the tenant
-claim at where it is still true: the agent's tenant comes from the verified token and reaches its
-tools by closure, so no tool argument can name one. It is still not a named control of any kind: a
-parameter box implies nothing, because a query parameter is what the request already is.
+It carries the Records tab's executed statement (issue #139). The fact that the listing is
+unscoped is a caption above it that a reader cannot miss; the statement itself is the evidence
+behind it, one click away and never deleted.
 
 ### Brand mark
 
@@ -388,9 +397,31 @@ region, vertically as well as horizontally.
 `<select>` on the `.select` metrics `chat/ModelPicker` uses, inside the `.field` + label
 pattern `TextField` owns. It exists because a filter must not let a reader type a value the
 data does not hold — the options are whatever the server listed (`GET /records/departments`,
-`GET /records/tenants`, both `FilterOption[]`), and `placeholder` renders the empty "no filter"
-option. Both pickers carry the count beside the value, and both counts follow the listing they
-describe, so nothing on screen is a number attached to a set nobody asked for.
+`GET /records/departments`, `FilterOption[]`), and `placeholder` renders the empty "no filter"
+option. The department picker carries each department's count beside the value, and the count
+follows the listing it describes, so nothing on screen is a number attached to a set nobody asked
+for. The tenant filter used to be a second one of these; it is a `ChipRow` now (issue #139).
+
+### forms/ChipRow
+
+```tsx
+<ChipRow id="records-tenant" label="Tenant" value={draft.tenant_id}
+  options={tenants.map((entry) => entry.value)} onChange={setTenant} />
+```
+
+One low-cardinality filter as a row of `aria-pressed` chips — `All` first, then one chip per value
+— the pattern [beautifului.dev](https://www.beautifului.dev)'s FilterTable uses, on our tokens
+(issue #139). It is `SelectField`'s contract with a different body: `value` is the caller's, `""`
+is no filter, `onChange` fires with what the reader picked, so swapping one for the other changes
+nothing about when a request goes out.
+
+Why not the select it replaced: a native `<select>`'s popup is drawn by the OS, so its selected
+row arrives in the system accent — unstyleable, and the wrong green beside ours — and it hides
+three options behind a click for no gain. **The chips carry no counts**: advertising bucket sizes
+on a filter is the half of the reference pattern the owner rejected. The pressed chip is *lifted*
+(surface, border, shadow, weight) rather than only tinted, so the state survives greyscale and the
+CVD palette (WCAG 1.4.1), and the group names itself off the field label, since a `<label>` with
+no single control to point at would be a lie.
 
 ### forms/TextField
 
@@ -740,6 +771,10 @@ every stored payload has structured keys, so the fallback is a live-turn path on
   with no tab strip and no select anywhere. `NoteList` is new too, lifted out of
   `chat/ToolResultView` when the Notes tab needed the same cards - the trace and the tab now
   compose one brick instead of two copies drifting apart.
+- `Disclosure` and `forms/ChipRow` are new (issue #139): **KB has no disclosure and no chip
+  filter anywhere**. Neither visual is invented, though - the fold is the trace step's own toggle
+  with the timeline taken away, and the chip is `.tab`'s pill metrics with a pressed state, so the
+  app still has one disclosure idiom and one pill shape rather than two of each.
 - `Pill` replaces KB's hardcoded hexes with the state tokens, and **adds the amber
   `.pill-warn` KB lacks** — KB's only alert tone is red, and the truncation notice needs
   its own. The same split applies to `.notice-warn`, where KB's `Notice` collapses
