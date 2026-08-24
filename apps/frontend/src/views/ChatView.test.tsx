@@ -41,9 +41,6 @@ const VIEWPORT = 400;
 /** The titling window the fake `/health` reports, small enough to close inside one test. */
 const TITLE_TURNS = 2;
 const CONTENT = 2000;
-/** The steps of the pipeline the empty state stands in place of an icon (PipelineCanvas). */
-const PIPELINE_STEPS = 6;
-
 const THOUGHT = "the question asks for an average per department";
 const COST = { input_tokens: 250, output_tokens: 28, duration_s: 2 };
 
@@ -311,16 +308,15 @@ describe("the chat view", () => {
     expect(screen.getByText(/Ask a question to start/)).toBeTruthy();
   });
 
-  it("stands the pipeline canvas in the empty state, and takes it away with the first turn", async () => {
+  it("renders only the hint in the empty state, and takes it away with the first turn", async () => {
     const { view } = await renderReady();
 
-    expect(view.container.querySelectorAll(".pipeline-node")).toHaveLength(PIPELINE_STEPS);
-    expect(view.container.querySelector(".empty")).toBeNull();
+    expect(view.container.querySelector(".pipeline-canvas")).toBeNull();
+    expect(screen.getByText(/Ask a question to start/)).toBeTruthy();
 
     ask();
     await screen.findByText("Engineering leads at 91000.");
 
-    expect(view.container.querySelector(".pipeline-canvas")).toBeNull();
     expect(screen.queryByText(/Ask a question to start/)).toBeNull();
   });
 

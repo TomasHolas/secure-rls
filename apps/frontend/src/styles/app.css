@@ -173,6 +173,11 @@
 .rail-item:hover { background: var(--bg-hover); }
 .sidebar-list.gliding .rail-item:not(.active):hover { background: transparent; }
 .rail-item.active { background: var(--bg-surface); box-shadow: var(--shadow-sm); }
+/* The global focus ring would wrap the inner button - narrower than the row, another radius -
+   so it reads as a broken box (owner screenshot). The row carries a row-shaped ring instead,
+   and only for keyboard focus. */
+.rail-item-open:focus, .rail-item-open:focus-visible { outline: none; box-shadow: none; }
+.rail-item:has(.rail-item-open:focus-visible) { box-shadow: var(--focus-ring); }
 /* ONE highlight for the group, travelling to the row the pointer or the focus is on (GlideList).
    It is a sibling row behind the others: first in the list, so the rows paint over it. */
 .rail-glide {
@@ -565,85 +570,7 @@
 .model-picker-chevron { position: absolute; right: var(--space-2); color: var(--fg-4); pointer-events: none; }
 .model-picker-empty { font-size: var(--text-xs); color: var(--caution-500); }
 
-/* ==================== PipelineCanvas — the chat's empty state ==================== */
-/* The query pipeline as a flowchart on a dotted canvas, ported from beautifului.dev's Flowchart
-   onto our tokens: cards drag, a selected card lights its connectors, and the connectors are one
-   SVG of measured beziers under them. Every metric a reader sees is here rather than in the
-   brick; the brick keeps only what is pointer or path math. The dot pattern is the reference's
-   radial gradient, its colour a border token, so the grid reads as a surface rather than as
-   content. --pipe-x is the card's 0-1 position across the width and --pipe-dx/--pipe-dy are its
-   drag offset: the brick sets all three inline, and the fallbacks here keep an unset card centred
-   rather than dropping an invalid transform. */
-:root {
-  --pipe-node-w: 360px;
-  --pipe-node-max: 88%;
-  --pipe-row-gap: var(--space-4);
-  --pipe-pad: var(--space-4);
-  --pipe-dot-gap: 22px;
-  --pipe-dot-size: 1px;
-  --pipe-glyph: 30px;
-  --pipe-edge-width: 1.25px;
-}
-.pipeline { display: flex; flex-direction: column; gap: var(--space-3); }
-.pipeline-lead { margin: 0; color: var(--fg-4); font-size: var(--text-xs); line-height: var(--leading-normal); }
-.pipeline-canvas {
-  position: relative; box-sizing: border-box;
-  display: flex; flex-direction: column; align-items: flex-start; gap: var(--pipe-row-gap);
-  padding: var(--pipe-pad) 0;
-  border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
-  background-color: var(--bg-page);
-  background-image: radial-gradient(var(--border-default) var(--pipe-dot-size), transparent calc(var(--pipe-dot-size) + 0.25px));
-  background-size: var(--pipe-dot-gap) var(--pipe-dot-gap);
-  background-position: center;
-  /* A card dragged to the edge is clipped, never a reason for the page to scroll sideways. */
-  overflow: hidden;
-  user-select: none;
-}
-.pipeline-edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.pipeline-edge {
-  fill: none; stroke: var(--border-strong); stroke-width: var(--pipe-edge-width);
-  transition: stroke var(--dur-fast) var(--ease-out);
-}
-.pipeline-edge.lit { stroke: var(--accent-500); }
-/* The card is centred on --pipe-x by the -50% translate, which is also what carries the drag, and
-   the clamp is what stops a narrow canvas placing a card half outside itself. */
-.pipeline-node {
-  --pipe-x: 0.5; --pipe-dx: 0px; --pipe-dy: 0px;
-  --pipe-w: min(var(--pipe-node-w), var(--pipe-node-max));
-  position: relative; box-sizing: border-box; width: var(--pipe-w);
-  margin-left: clamp(calc(var(--pipe-w) / 2), calc(var(--pipe-x) * 100%), calc(100% - var(--pipe-w) / 2));
-  transform: translate(calc(-50% + var(--pipe-dx)), var(--pipe-dy));
-  display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1);
-  touch-action: none; z-index: 1;
-}
-/* A card being dragged is under the pointer by definition, so hover is what raises it over the
-   cards it passes - no z-index the brick has to compute, and the keyboard gets the same lift. */
-.pipeline-node:hover, .pipeline-node:focus-within { z-index: 2; }
-.pipeline-card {
-  box-sizing: border-box; width: 100%;
-  display: flex; align-items: flex-start; gap: var(--space-3);
-  padding: var(--space-3); text-align: left; font: inherit; color: inherit; cursor: pointer;
-  background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
-}
-.pipeline-card:hover { border-color: var(--border-default); box-shadow: var(--shadow-md); }
-.pipeline-card:active { cursor: grabbing; }
-.pipeline-card.selected { border-color: var(--accent-500); box-shadow: var(--shadow-md), 0 0 0 1.5px var(--accent-500); }
-/* The step's hue lives on the glyph rather than on the kind pill: the pill is the `Pill` brick. */
-.pipeline-glyph {
-  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-  width: var(--pipe-glyph); height: var(--pipe-glyph); border-radius: var(--radius-md);
-  color: var(--pipe-hue);
-  background: color-mix(in srgb, var(--pipe-hue) 14%, var(--bg-surface));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--pipe-hue) 22%, transparent);
-}
-.pipeline-copy { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
-.pipeline-title { font-size: var(--text-sm); font-weight: 600; color: var(--fg-1); }
-.pipeline-mech { font-size: var(--text-xs); line-height: var(--leading-snug); color: var(--fg-3); }
-
-/* ==================== PipelineStrip — where one statement actually got ==================== */
-/* The canvas above is the map; this is the journey, and it sits under one executed statement in
+/* The pipeline strip is the journey, and it sits under one executed statement in
    the trace: the same six steps as chips, joined by the canvas's connector with the curve taken
    out. It must not compete with the SQL pair over it, so it is one text line of `Pill` bricks -
    the chips are that brick, and the only thing added here is the dashed outline of a step the
@@ -714,9 +641,6 @@
   /* The rail's moving parts (issue #114): the collapse, the copy fading with it, the search
      growing out of its icon and the hover highlight all land where they belong at once. */
   .sidebar, .rail-copy, .rail-search-input, .rail-glide { transition: none; }
-  /* The pipeline canvas: a selected card and its connectors take their colour at once. Selecting,
-     dragging and every card's copy are unaffected - only the fade to the lit stroke goes. */
-  .pipeline-edge, .pipeline-card { transition: none; }
 }
 .trace-text { margin: 0; padding: var(--space-3); background: var(--bg-surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-3); white-space: pre-wrap; overflow-x: auto; }
 
@@ -825,7 +749,7 @@
   background: transparent; border: 1px solid transparent; color: var(--fg-3); cursor: pointer;
   transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
-.tab:hover { background: var(--bg-surface-2); color: var(--fg-1); }
+.tab:hover { background: color-mix(in srgb, var(--accent-500) 10%, transparent); color: var(--fg-brand); }
 .tab.active { background: color-mix(in srgb, var(--accent-500) 18%, transparent); color: var(--fg-brand); }
 
 /* The open section fills the main region; the ones a reader has visited stay mounted, hidden. */

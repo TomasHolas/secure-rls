@@ -30,7 +30,6 @@ components/
   TenantPill.tsx   the identity chip (tenant + user) in the header slot
   InlineSearch.tsx a search box that grows right-to-left out of its own icon
   GlideList.tsx    a row group with one highlight that glides to the row under the pointer
-  PipelineCanvas.tsx  the query pipeline as draggable cards on a dotted canvas (the chat's empty state)
   pipelineSteps.ts    the six steps themselves - the ONE list the canvas and the strip both read
   Modal.tsx        the one dialog brick — portal, backdrop, Escape/backdrop/× dismissal
   ConfirmDialog.tsx  the confirm step in front of a delete, on Modal + Button
@@ -361,49 +360,6 @@ rows are one group. The highlight is a first `<li>` behind the others, positione
 row's own offsets; where that measurement has not happened - no layout yet, no scripting - the
 stylesheet's plain `:hover` per row is the floor, and the `gliding` class is what switches it off
 in favour of the travelling one. The active row keeps its own background either way.
-
-### PipelineCanvas
-
-```tsx
-<PipelineCanvas />   {/* takes nothing: the pipeline is the same for every question */}
-```
-
-The chat's empty state, and the one diagram in the app: six cards on a dotted canvas saying what
-happens to every SQL statement the model writes - the statement, layers 2, 2.5, 3 and 4, and the
-rows that survive them - joined by connectors that light when a card is selected. The copy is one
-line per layer from the README's security table, so the screen and the docs cannot drift, and the
-brick takes no props because there is nothing per-caller about it. The steps themselves live in
-`pipelineSteps.ts`, which `chat/PipelineStrip` reads too: this canvas is the map of the path, the
-strip is the journey one statement took down it, and neither keeps a copy of the other's labels.
-
-It is allowed to look like a plan because it *is* one: the order is fixed in `security.py` and
-`db.py` and holds whatever is asked. That is the line against the plan-shaped displays issue #91
-rejected, which showed a **live** run as a known sequence of steps (`docs/ui-pattern-review.md`).
-Nothing here is fed by a turn, and the first turn takes it off the screen.
-
-Three mechanisms are worth knowing about, all three from
-[beautifului.dev](https://www.beautifului.dev)'s Flowchart on our tokens:
-
-- **The connectors are measured.** Each card reports its own box through a `ResizeObserver`, and
-  an edge is one cubic bezier between two of those boxes, its control points a fraction of the
-  span it crosses. A card that wraps to a third line, a collapsed rail or a 900px viewport moves
-  the curve with it - nothing is positioned from a number a designer typed.
-- **A card's x is a 0-1 fraction of the canvas width**, and the CSS clamps it so a narrow canvas
-  keeps every card inside itself. The `-50%` translate that centres a card on that fraction is
-  also what carries its drag offset, which is why the node's layout left *is* its centre line.
-- **Dragging and selecting are one gesture apart.** A pointer that travels past the slop marks
-  the drag and the click it ends with is swallowed, so moving a card never also toggles it. The
-  pointer is captured on the **card**, not on the node around it: a capture retargets the
-  compatibility mouse events too, and captured a level up every click lands on the node and the
-  button is never told it was pressed. That one is our correction to the reference.
-
-Cards are buttons carrying `aria-pressed`, so Enter and Space toggle a selection with no key
-handler; the reduced-motion block drops the fade to the lit stroke and keeps everything working.
-Every metric - node width, row gap, canvas padding, dot spacing, glyph size - is a custom property
-in `app.css`; the only numbers in the brick are the curvature of a connector, the pointer slop and
-the inset a dragged card keeps from the edge. The per-step hues are `--chart-*` plus
-`--caution-500` for the model's untrusted statement and `--positive-500` for the rows that come
-back; the kind pill is the `Pill` brick, which is why the hue sits on the card's glyph.
 
 ### Modal
 
@@ -764,10 +720,9 @@ reasoning, retry or step timing, because none of those are stored.
 <PipelineStrip refusal={outcome} />        {/* under the blocked notice, in TracePanel */}
 ```
 
-Where **one** statement actually got down the pipeline, in one text line. `PipelineCanvas` on the
-empty chat is the map; this is the journey, and both read `components/pipelineSteps.ts`, so the six
-steps have one owner and the two drawings cannot come to disagree. The chips are the `Pill` brick,
-one per step, joined by a short rule.
+Where **one** statement actually got down the pipeline, in one text line. The six steps live in
+`components/pipelineSteps.ts`, the one owner of their names and order. The chips are the `Pill`
+brick, one per step, joined by a short rule.
 
 It is fed by a turn, unlike the canvas, and the rule that keeps it on the right side of the line
 issue #91 drew is that **it draws only completed facts**: no strip while a call is in flight, and
@@ -865,11 +820,10 @@ every stored payload has structured keys, so the fallback is a live-turn path on
   (`.rail-search`, `.rail-glide`) are ours on KB's tokens. The rail's own empty and loading states
   stay `.sidebar-note` paragraphs rather than the `EmptyState` brick, which is a centred card
   sized for a page region, not a 272px column.
-- `PipelineCanvas` is new: **KB has no diagram, no canvas and nothing draggable**, so its dot
-  grid, its measured connectors and its drag are ours on KB's tokens - the pattern from
-  beautifului.dev's Flowchart, the colours from `tokens.css` by construction. It replaced the
-  `EmptyState` brick in the chat only; every other empty region still uses that brick, which is
-  a centred icon-and-sentence card and was exactly the "big empty area" this canvas took over.
+- `PipelineStrip` is new: **KB has no diagram of any kind**, so the step chips and their
+  connectors are ours on KB's tokens - the six steps in `pipelineSteps.ts`, the chips the `Pill`
+  brick. (A draggable canvas version briefly served as the chat's empty state and was removed on
+  owner review; the strip under each executed statement is the pipeline's one home.)
 - **KB has no chat UI at all** (no bubbles, no streaming text, no composer beyond its
   one-shot Ask box), so the `chat/` bricks are new. Their visuals still come from KB:
   the bubble is its `.ask-answer` card plus the icon + caps role header it puts above an
