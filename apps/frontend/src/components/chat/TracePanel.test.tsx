@@ -208,7 +208,7 @@ describe("a tool card's own state", () => {
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(strip?.querySelectorAll(".pipeline-strip-passed")).toHaveLength(6);
     expect(strip?.querySelector(".pipeline-strip-note")?.textContent).toBe("model");
-    expect(strip?.textContent).toContain("3 rows");
+    expect([...strip!.querySelectorAll(".pipeline-strip-note")].pop()?.textContent).toBe("3");
   });
 
   it("states the truncation on the card that was capped", () => {

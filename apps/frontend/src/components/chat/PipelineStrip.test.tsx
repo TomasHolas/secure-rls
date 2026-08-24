@@ -89,7 +89,7 @@ describe("a statement that ran", () => {
     const drawn = chips(container);
 
     expect(drawn[0].note).toBe("model");
-    expect(drawn[drawn.length - 1].note).toBe("3 rows");
+    expect(drawn[drawn.length - 1].note).toBe("3");
   });
 
   it("marks a fixed-template tool's statement as the server's, and still lights layer 2", () => {

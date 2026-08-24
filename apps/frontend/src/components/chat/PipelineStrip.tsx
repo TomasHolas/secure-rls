@@ -41,7 +41,7 @@ import { Pill } from "../Pill";
 import type { PillTone } from "../Pill";
 import { PIPELINE_STEPS } from "../pipelineSteps";
 import type { PipelineStep, PipelineStepId } from "../pipelineSteps";
-import { formatCount } from "../../lib/format";
+import { formatNumber } from "../../lib/format";
 import type { SecurityEvent, ToolResultData } from "../../lib/sse";
 
 /** What one chip claims about its step, and the glyph that says it without colour. */
@@ -187,9 +187,7 @@ function refusedChips(event: SecurityEvent): Chip[] | null {
 /** What the first and the last chip carry beside their label: who wrote the SQL, and the rows. */
 function runNote(id: PipelineStepId, data: ToolResultData, generated: boolean): string | undefined {
   if (id === "sql") return generated ? MODEL_NOTE : TEMPLATE_NOTE;
-  if (id === "rows" && data.returned_count !== undefined) {
-    return formatCount(data.returned_count, "row");
-  }
+  if (id === "rows" && data.returned_count !== undefined) return formatNumber(data.returned_count);
   return undefined;
 }
 
