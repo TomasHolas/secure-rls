@@ -3,6 +3,11 @@
 Three corpora: queries the analyst agent must be able to run, hostile queries that are
 terminal policy violations (ADR 0011: zero retries), and malformed SQL that is an honest
 error the agent may retry.
+
+Every test in this module runs twice, once in each position of `agent.prompt_guardrails`
+(issue #102). The switch removes prompt lines and nothing else (ADR 0011 as amended), so the
+allowlist's verdicts, its retryable flags and its reasons must be identical across it - the
+validator does not read `runtime.json` at all, and this is what proves it stays that way.
 """
 
 import ast
@@ -15,6 +20,11 @@ from sqlglot import exp
 from security import QueryRejected, validate_sql
 
 _SECURITY_SOURCE = Path(__file__).resolve().parents[1] / "security.py"
+
+
+@pytest.fixture(autouse=True)
+def _both_prompt_positions(guardrails):
+    """Run this whole suite in both prompt-guardrail positions (`conftest.guardrails`)."""
 
 VALID = [
     "SELECT * FROM employees",

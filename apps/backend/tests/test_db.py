@@ -5,6 +5,11 @@ against the real employees.csv. Three acme rows would prove the happy path; the 
 tests are the ones that disable a layer to prove the next one down still holds, which they do
 by monkeypatching this module's own internals - there is no production flag that turns a layer
 off. The bypass helpers below say exactly which layers a test is standing down.
+
+Every test in this module runs twice, once in each position of `agent.prompt_guardrails`
+(issue #102). The switch is prompt text and nothing else (ADR 0011 as amended), so the scoping
+rewrite, the declared-parameter counting and the egress check must be byte-identical across it;
+that is ADR 0002's "no prompt line is a boundary" stated as a test rather than as a sentence.
 """
 
 import ast
@@ -24,6 +29,11 @@ from security import QueryRejected
 ACME = "acme"
 BETA = "beta"
 GAMMA = "gamma"
+
+
+@pytest.fixture(autouse=True)
+def _both_prompt_positions(guardrails):
+    """Run this whole suite in both prompt-guardrail positions (`conftest.guardrails`)."""
 
 _HEADER = (
     "user_id",

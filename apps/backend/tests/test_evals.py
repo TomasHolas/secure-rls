@@ -23,7 +23,12 @@ import pytest
 
 from agent import STATUS_CUT_SHORT, STATUS_FAILED
 from evals import adversarial, correctness, harness, mocked
-from evals.__main__ import main
+from evals.__main__ import (
+    DEFAULT_REPORT,
+    UNGUARDED_REPORT,
+    _report_path,
+    main,
+)
 
 ACME = "acme"
 BETA = "beta"
@@ -435,6 +440,46 @@ def test_the_mocked_run_scores_both_suites_and_renders_the_report(tmp_path):
         assert f"`{ask.name}`" in written
     for attack in adversarial.ATTACKS:
         assert f"`{attack.name}`" in written
+
+
+def test_the_mocked_run_holds_with_the_prompt_guardrails_off(tmp_path):
+    """The off position is the artifact worth having: same suites, zero leaks, no prompt help."""
+    report = tmp_path / "report.md"
+    code = main(["--mocked", "--no-guardrails", "--tenant", ACME, "--out", str(report)])
+    written = report.read_text()
+    assert code == 0
+    assert "**Leaks: 0**" in written
+    assert "Prompt guardrails: **off**" in written
+    assert "## Security suite" in written
+
+
+def test_a_report_states_the_guardrail_position_that_produced_it(tmp_path):
+    """A scorecard is unreadable without the position, so the headline always carries it."""
+    report = tmp_path / "report.md"
+    main(["--mocked", "--tenant", ACME, "--suite", "security", "--out", str(report)])
+
+    assert "Prompt guardrails: **on**" in report.read_text()
+
+
+def test_the_two_guardrail_positions_default_to_separate_report_files():
+    """Neither position may overwrite the other's numbers (issue #102)."""
+    names = {
+        _report_path(mocked_run, guarded).name
+        for mocked_run in (True, False)
+        for guarded in (True, False)
+    }
+
+    assert len(names) == 4
+    assert _report_path(False, True) == DEFAULT_REPORT
+    assert _report_path(False, False) == UNGUARDED_REPORT
+
+
+def test_the_dry_run_reports_the_guardrail_position_it_would_grade(capsys):
+    """`--dry-run` proves the flag is wired without an endpoint, a model or a database."""
+    assert main(["--dry-run", "--no-guardrails"]) == 0
+    assert "Prompt guardrails: off" in capsys.readouterr().out
+    assert main(["--dry-run"]) == 0
+    assert "Prompt guardrails: on" in capsys.readouterr().out
 
 
 def test_the_dry_run_lists_every_ask_without_touching_an_endpoint(capsys):
