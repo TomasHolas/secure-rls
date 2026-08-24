@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import { startSession } from "../auth";
 import { Button } from "../components/Button";
-import { Icon } from "../components/Icon";
+import { Loader } from "../components/Loader";
 import { FormCard, TextField } from "../components/forms";
 import { ApiError, login } from "../lib/api";
 
@@ -60,7 +60,7 @@ export function LoginView() {
 
       <Button variant="primary" type="submit" className="btn-block" disabled={pending || !ready}>
         {/* No glyph at rest: the subset has no authenticate mark, and a wrong one misreads the action. */}
-        {pending && <Icon name="loader" size={16} className="loader-spin" />}
+        {pending && <Loader />}
         {pending ? "Signing in..." : "Sign in"}
       </Button>
     </FormCard>

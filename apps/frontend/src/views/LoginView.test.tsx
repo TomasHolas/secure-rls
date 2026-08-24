@@ -66,7 +66,7 @@ describe("LoginView", () => {
     expect(container.querySelector("button.btn.btn-primary.btn-block")).not.toBeNull();
   });
 
-  it("carries no glyph on the submit button at rest, and the spinner only while pending", async () => {
+  it("carries no glyph on the submit button at rest, and the loader only while pending", async () => {
     const { LoginView } = await load();
     let settle: ((response: Response) => void) | undefined;
     vi.stubGlobal(
@@ -80,17 +80,22 @@ describe("LoginView", () => {
     const { container } = render(<LoginView />);
 
     const glyphs = () => container.querySelectorAll("button.btn-block .material-symbols-outlined");
+    const loaders = () => container.querySelectorAll("button.btn-block .loader");
     expect(glyphs()).toHaveLength(0);
+    expect(loaders()).toHaveLength(0);
 
     fillCredentials();
     fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
-    expect(glyphs()).toHaveLength(1);
-    expect(glyphs()[0].textContent).toBe("progress_activity");
+    // The grid alone at button scale: the button's own "Signing in..." is the label already.
+    expect(glyphs()).toHaveLength(0);
+    expect(loaders()).toHaveLength(1);
+    expect(loaders()[0].querySelectorAll(".loader-cell")).toHaveLength(9);
+    expect(loaders()[0].querySelector(".loader-label")).toBeNull();
 
     settle?.(jsonResponse({ detail: "nope" }, 401));
     await screen.findByRole("alert");
-    expect(glyphs()).toHaveLength(0);
+    expect(loaders()).toHaveLength(0);
   });
 
   it("names no credentials anywhere in the UI", async () => {

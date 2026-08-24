@@ -36,6 +36,35 @@ export function controlHeightDeclarations(): number {
 }
 
 /**
+ * The declarations a selector picks up inside the reduced-motion block. jsdom does not evaluate a
+ * media condition, so the rule is read out of the parsed stylesheet rather than computed on an
+ * element - which is enough to pin what the block does and to which selector (issue #123).
+ */
+export function reducedMotionStyle(selector: string): CSSStyleDeclaration | null {
+  for (const sheet of Array.from(document.styleSheets)) {
+    for (const rule of Array.from(sheet.cssRules)) {
+      const media = rule as CSSMediaRule;
+      if (!media.conditionText?.includes("prefers-reduced-motion")) continue;
+      for (const inner of Array.from(media.cssRules)) {
+        const styleRule = inner as CSSStyleRule;
+        if (styleRule.selectorText === selector) return styleRule.style;
+      }
+    }
+  }
+  return null;
+}
+
+/** Whether the stylesheet still carries a rule for a selector at all - a deleted idiom stays deleted. */
+export function hasRule(selector: string): boolean {
+  for (const sheet of Array.from(document.styleSheets)) {
+    for (const rule of Array.from(sheet.cssRules)) {
+      if ((rule as CSSStyleRule).selectorText === selector) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Assert a row is one row: every control in it takes the shared height, and no field inside adds
  * a bottom margin that would drop the button below the box beside it.
  */

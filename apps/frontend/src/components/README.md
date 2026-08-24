@@ -19,6 +19,7 @@ components/
   Button.tsx       the one button brick — variants primary/ghost
   Icon.tsx         <Icon name="..." /> — Google Material Symbols only
   Pill.tsx         the status chip — tones neutral/accent/ok/warn/danger
+  Loader.tsx       the one loading signal — pixel grid, optional label, optional elapsed
   CodeBlock.tsx    labelled monospace block with a copy control (SQL lives here)
   SqlRewrite.tsx   the generated/executed pair, scoping highlighted in the executed card
   Markdown.tsx     render a markdown string as sanitized GFM HTML
@@ -101,6 +102,44 @@ and of each finished turn (`ChatView`'s `GuardrailPill`, `danger` when the guard
 are off). `tone` is `neutral | accent | ok | warn | danger`, mapped onto the
 `--positive-500` / `--caution-500` / `--critical-500` state tokens. `TenantPill` stays
 separate because it is the identity chip, not a status.
+
+### Loader — the one "work is in flight" signal
+
+```tsx
+<Loader />                                            {/* a pending button, the trace header */}
+<Loader scale="page" label="Loading notes…" />         {/* a panel with nothing in it yet */}
+<Loader label="Thinking" since={item.startedAt} />     {/* and how long it has been */}
+```
+
+A 3x3 pixel grid whose chevron wavefront sweeps across it — the middle row leads, the
+corners trail — with an optional shimmering label and an optional live elapsed time. It
+replaced a spinning `progress_activity` glyph at every place the app shows work in
+flight (issue #123), so there is one loading idiom rather than one per view: the trace
+header while a turn streams, the thinking step, the login button's pending state, and
+the Records and Notes tabs before their first page arrives.
+
+It composes rather than insisting. The grid alone is the whole loader where the text
+beside it already says what is happening; `label` turns it into a panel's loading state;
+`since` (a start timestamp) adds the elapsed time where how long this is taking is the
+reader's real question — the model thinking. `scale` is `inline` (default, a 22px grid in
+a row of text or a button) or `page` (a 41px grid, centred in the empty panel it fills).
+
+Every metric — cell, gap, the wavefront's step and cycle, the two opacities — is a custom
+property in `app.css`'s own `:root`, so nothing is a number in JSX and the two scales
+differ by two declarations. The cycle is deliberately shorter than the time a front takes
+to cross the grid, which is what keeps a second front in flight behind the first. The
+elapsed time is subtracted from the start timestamp on every read and formatted by
+`lib/format.ts`, never accumulated in the interval — a counter that adds its own ticks
+under-reports a long turn. Under `prefers-reduced-motion` the grid freezes at its dim
+opacity and the label stops sweeping, while the elapsed time keeps ticking: that is
+information, not decoration.
+
+The wrapper is the `role="status"` region, the grid is `aria-hidden`, and the label is
+real text under a clipped gradient — selectable, and readable by a screen reader. The
+elapsed time is hidden from the region too: it changes ten times a second, and a live
+region that noisy is noise. Pattern credited to
+[beautifului.dev](https://www.beautifului.dev), ported onto our CSS and tokens — no
+Tailwind, no dependency, and DOM rather than a glyph, since `Icon` is a fixed subset.
 
 ### CodeBlock
 

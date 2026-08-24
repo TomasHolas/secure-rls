@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "../components/Button";
+import { Loader } from "../components/Loader";
 import { NoteList } from "../components/NoteList";
 import { ParamProbe } from "../components/ParamProbe";
 import { Pill } from "../components/Pill";
@@ -185,7 +186,11 @@ export function NotesView({ tenant }: { tenant: string }) {
       >
         {error ? <p className="form-error">{error}</p> : null}
         {corpus === null ? (
-          <EmptyState icon="loader">{error ? "Nothing to show." : "Loading notes…"}</EmptyState>
+          error ? (
+            <EmptyState>Nothing to show.</EmptyState>
+          ) : (
+            <Loader scale="page" label="Loading notes…" />
+          )
         ) : (
           <>
             <NoteList
