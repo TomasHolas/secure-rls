@@ -56,7 +56,8 @@ from pathlib import Path
 from sqlglot import exp
 
 from analytics import DEFAULT_GROUP_BY, get_stats
-from db import DEFAULT_DB_PATH, execute_scoped
+from db import execute_scoped
+from paths import DB_PATH
 from runtime import runtime
 from security import ALLOWED_TABLE, QueryRejected, require_allowed
 
@@ -164,7 +165,7 @@ def browse_records(
     page: int = _FIRST_PAGE,
     page_size: int | None = None,
     requested: Iterable[str] = (),
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path = DB_PATH,
 ) -> BrowsePage:
     """One sorted, filtered page of the tenant's employee rows, plus how many match in all."""
     return _page(
@@ -181,7 +182,7 @@ def browse_notes(
     page: int = _FIRST_PAGE,
     page_size: int | None = None,
     requested: Iterable[str] = (),
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path = DB_PATH,
 ) -> BrowsePage:
     """The same page over the note corpus: a note is a column of the employee row that owns it."""
     return _page(
@@ -220,7 +221,7 @@ def ignored_params(
     )
 
 
-def departments(tenant_id: str, *, db_path: Path = DEFAULT_DB_PATH) -> list[dict[str, object]]:
+def departments(tenant_id: str, *, db_path: Path = DB_PATH) -> list[dict[str, object]]:
     """The tenant's departments and their headcounts, so the filter offers real values only.
 
     The count comes from `analytics.get_stats`, the aggregate template the agent's own
@@ -251,7 +252,7 @@ def annotate_note_hits(
     tenant_id: str,
     hits: list[dict[str, object]],
     *,
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path = DB_PATH,
 ) -> list[dict[str, object]]:
     """The retrieval's own hits, each carrying the department and score of the row it came from.
 

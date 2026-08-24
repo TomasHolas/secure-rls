@@ -74,7 +74,8 @@ from typing import NotRequired, TypedDict
 import numpy as np
 from sqlglot import exp
 
-from db import DEFAULT_DB_PATH, QueryResult, execute_scoped
+from db import QueryResult, execute_scoped
+from paths import DB_PATH
 from runtime import runtime
 from security import ALLOWED_TABLE, QueryRejected, require_allowed
 
@@ -171,7 +172,7 @@ def get_stats(
     group_by: str | None,
     tenant_id: str,
     *,
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path = DB_PATH,
 ) -> QueryResult:
     """One aggregate over the tenant's rows, optionally per group, from a fixed query template."""
     require_allowed(metric, METRICS, "metric")
@@ -187,7 +188,7 @@ def detect_anomalies(
     tenant_id: str,
     group_by: str = DEFAULT_GROUP_BY,
     *,
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path = DB_PATH,
 ) -> list[Anomaly]:
     """The tenant's rows lying beyond 1.5 x IQR from their own group's quartiles (Tukey fences)."""
     require_allowed(column, NUMERIC_COLUMNS, "column")
@@ -213,7 +214,7 @@ def plot_data(
     series_by: str | None = None,
     bins: int | None = None,
     *,
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path = DB_PATH,
 ) -> ChartSpec:
     """The ChartSpec for one chart, its values fetched here so no number passes through a model."""
     require_allowed(kind, CHART_KINDS, "kind")

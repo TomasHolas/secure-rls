@@ -50,6 +50,11 @@ starts recorded as an unexplained failure and each classified outcome overwrites
 path nobody anticipated still leaves a row. A failure to audit is raised, never swallowed:
 data read without a trace is the fault we are protecting against.
 
+`audit.db` and `vectors.db` are derived as siblings of whatever database this module was handed,
+which is a relation between files rather than a location: a tmp database keeps its own audit
+trail and its own vectors. Where the served database itself sits is `paths.py`'s call - in the
+deployment, a mounted volume, so a rebuilt image keeps the trail and the embeddings (issue #125).
+
 The caller's error surface stays two exceptions: `QueryRejected` from layer 2 (reused, with
 its retryable flag - a query the engine itself refuses is an honest, retryable error, while a
 timeout is terminal) and `SecurityViolation` when an inner layer trips, which the agent never
@@ -99,11 +104,11 @@ from pathlib import Path
 import sqlite_vec
 from sqlglot import exp
 
+from paths import DB_PATH
 from runtime import DbConfig, runtime
 from security import ALLOWED_TABLE, FORBIDDEN_FUNCTIONS, QueryRejected, validate_sql
 
 TENANT_COLUMN = "tenant_id"
-DEFAULT_DB_PATH = Path(__file__).resolve().parent / "employees.db"
 DEFAULT_CSV_PATH = Path(__file__).resolve().parent / "employees.csv"
 AUDIT_DB_NAME = "audit.db"
 VECTOR_DB_NAME = "vectors.db"
@@ -328,7 +333,7 @@ def init_db(csv_path: str | Path, db_path: str | Path) -> None:
     _open_audit(_audit_path(db_path)).close()
 
 
-def employee_rows(db_path: Path = DEFAULT_DB_PATH) -> int:
+def employee_rows(db_path: Path = DB_PATH) -> int:
     """How many employee rows db_path holds; 0 when it was never loaded (issue #96).
 
     The counterpart to `vector_store_rows`: a load-time admin read, never a serving path, so
@@ -351,7 +356,7 @@ def execute_scoped(
     tenant_id: str,
     *,
     params: Sequence[object] = (),
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path = DB_PATH,
     clock: Callable[[], datetime] = _utc_now,
 ) -> QueryResult:
     """Validate, scope, run and audit sql for tenant_id; the one path from a query to the data.
@@ -384,7 +389,7 @@ def execute_scoped(
         _write_audit(_audit_path(db_path), attempt, clock)
 
 
-def notes_for_indexing(db_path: Path = DEFAULT_DB_PATH) -> list[NoteRow]:
+def notes_for_indexing(db_path: Path = DB_PATH) -> list[NoteRow]:
     """Every tenant's notes, read once at load time to build the vector index (ADR 0010).
 
     A load-time admin read like `init_db`, not a serving path: it is unscoped by nature because
@@ -483,7 +488,7 @@ def search_vectors(
         raise guard.explain(error) from error
 
 
-def audit_entries(db_path: Path = DEFAULT_DB_PATH) -> list[AuditEntry]:
+def audit_entries(db_path: Path = DB_PATH) -> list[AuditEntry]:
     """Every audit row for db_path's store, oldest first: the trace source for the UI and evals."""
     with closing(_open_audit(_audit_path(db_path))) as conn:
         return [AuditEntry(*row) for row in conn.execute(_AUDIT_SELECT)]
