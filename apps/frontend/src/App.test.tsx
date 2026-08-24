@@ -719,6 +719,19 @@ describe("the location in the URL", () => {
     expect(window.history.length).toBe(entries);
   });
 
+  it("stops naming a thread the reader deleted", async () => {
+    await signIn();
+    await screen.findByText(OLDEST.title);
+    openThread(OLDEST.title);
+    await screen.findByText("Engineering leads at 91000.");
+
+    fireEvent.click(screen.getByLabelText(`Delete conversation ${OLDEST.title}`));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(window.location.hash).toBe("#/chat"));
+    expect(screen.getByText(/Ask a question to start/)).toBeTruthy();
+  });
+
   it("drops the fragment on sign out, so the login view carries no thread", async () => {
     await signIn();
     await screen.findByText(OLDEST.title);
