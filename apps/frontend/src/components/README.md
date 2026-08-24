@@ -22,6 +22,7 @@ components/
   Loader.tsx       the one loading signal — pixel grid (droppable), label, elapsed
   CodeBlock.tsx    labelled monospace block with a copy control (SQL lives here)
   SqlRewrite.tsx   the generated/executed pair, scoping highlighted in the executed card
+                   (+ SqlTemplate: one template statement, the same scoping mark)
   Markdown.tsx     render a markdown string as sanitized GFM HTML
   DataTable.tsx    backend rows as a compact, visually capped table (optional server-side sort)
   NoteList.tsx     employee-written notes as quoted note cards
@@ -46,7 +47,8 @@ session), `src/lib/api.ts` (the one HTTP client), `src/lib/sse.ts` (the SSE stre
 typed trace events), `src/lib/trace.ts` (those events folded into one turn's state),
 `src/lib/conversations.ts` (which thread is open, and the thread list around it),
 `src/lib/format.ts` (the one formatter every reader-facing number, duration and count goes
-through) and `src/lib/sqldiff.ts` (the token alignment `SqlRewrite` paints).
+through) and `src/lib/sqldiff.ts` (the token alignment `SqlRewrite` paints, and the scoping
+pattern `SqlTemplate` paints).
 
 CSS for every brick lives in `styles/app.css`; colors, spacing, radii, motion and
 fonts come from `styles/tokens.css`.
@@ -201,6 +203,22 @@ result table.
 Pattern from [beautifului.dev](https://www.beautifului.dev) (MIT): its diff surfaces mark
 an edit in place rather than beside it. **Reimplemented, not copied** — its own diffs are
 line-granular with a `+`/`−` gutter, which cannot show a change that lives inside one line.
+
+### SqlTemplate
+
+```tsx
+<SqlTemplate sql={data.executed_sql} />
+```
+
+The same card for a tool that reports no generated statement — `get_stats`, `plot`,
+`detect_anomalies`, whose SQL the server composes from allowlisted arguments and the model
+never writes. Its label keeps the word **template** for exactly that reason. There is no
+pair to diff, so `markScoping` (same module) finds every
+`(SELECT * FROM employees WHERE employees.tenant_id = ?) AS …` in the one statement by its
+known shape and returns the same segments the alignment does; the card then paints them
+through the same `Mark` and the same `Legend` as the pair, so the two trace cards cannot
+drift. A statement without the pattern renders unmarked with no legend — the claim is made
+only where the pattern is actually there.
 
 ### Markdown
 
@@ -690,7 +708,8 @@ settles, and the reader's click wins from then on whatever the caller does after
 ```
 
 A `tool_result` payload, each key through the brick that owns it: `generated_sql` +
-`executed_sql` through `SqlRewrite`, `columns`/`rows` through `DataTable`,
+`executed_sql` through `SqlRewrite` (an `executed_sql` with no generated side through
+`SqlTemplate`), `columns`/`rows` through `DataTable`,
 `chart_spec` through `Chart` verbatim, `notes` as note cards (employee-written text,
 quoted as data), `anomalies` as a derived table. A payload with no structured keys falls
 back to the text the model itself read, so no result ever renders as nothing. A replayed
