@@ -11,15 +11,23 @@
  * a real filter that reaches the query, and no total on screen appears without saying what it is
  * a total of - "1000 rows · all tenants" or "450 rows · tenant acme", never a bare number.
  *
+ * Every filter applies itself (issue #152), which is the second contract these tests hold: a chip
+ * or a select reaches the server on the change with nothing else clicked, a typed box reaches it
+ * one interval after the last keystroke and not once per character, Reset cancels a keystroke
+ * still waiting, a slower earlier answer can never overwrite a newer one, and the refusal a
+ * half-typed date earns stays off the screen until the typing has settled. There is no Apply
+ * button left to click, on this tab or the other one.
+ *
  * The statement is pinned in both of its states (issue #139): the fact that this listing carries
  * no scoping is a caption a reader cannot miss, and the SQL behind it is closed until asked for -
  * present in the document only once the disclosure is open, and never deleted.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RecordsView } from "./RecordsView";
+import { FILTER_DEBOUNCE_MS } from "../lib/debounce";
 import { expectChipStripHeight, expectOneControlHeight } from "../test/styles";
 
 const api = vi.hoisted(() => ({
@@ -99,8 +107,23 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
+
+/** Lets the debounce come due and the request it fires settle, under fake timers. */
+async function pause(by: number = FILTER_DEBOUNCE_MS): Promise<void> {
+  await act(async () => {
+    vi.advanceTimersByTime(by);
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+function type(label: string, value: string): void {
+  fireEvent.change(screen.getByLabelText(label), { target: { value } });
+}
 
 describe("the records tab", () => {
   it("shows the whole dataset and the true total, saying what the total counts", async () => {
@@ -159,20 +182,37 @@ describe("the records tab", () => {
   it("asks the server for the filters the reader applied, from the first page", async () => {
     await show();
 
-    fireEvent.change(screen.getByLabelText("Name contains"), { target: { value: "ada" } });
-    fireEvent.change(screen.getByLabelText("Salary from"), { target: { value: "90000" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    type("Name contains", "ada");
+    type("Salary from", "90000");
 
     await waitFor(() => expect(lastQuery().name).toBe("ada"));
     expect(lastQuery()).toMatchObject({ name: "ada", salary_min: "90000", page: 1 });
   });
 
-  it("does not request anything while the reader is still typing", async () => {
+  it("fires one request once the typing pauses, never one per character", async () => {
+    await show();
+    vi.useFakeTimers();
+
+    type("Name contains", "a");
+    type("Name contains", "ad");
+    type("Name contains", "ada");
+    expect(api.browseRecords).toHaveBeenCalledTimes(1);
+
+    await pause(FILTER_DEBOUNCE_MS - 1);
+    expect(api.browseRecords).toHaveBeenCalledTimes(1);
+
+    await pause(1);
+    expect(api.browseRecords).toHaveBeenCalledTimes(2);
+    expect(lastQuery()).toMatchObject({ name: "ada", page: 1 });
+  });
+
+  it("applies a select the moment it changes, with nothing else clicked", async () => {
     await show();
 
-    fireEvent.change(screen.getByLabelText("Name contains"), { target: { value: "ada" } });
+    fireEvent.change(screen.getByLabelText("Department"), { target: { value: "Sales" } });
 
-    expect(api.browseRecords).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(lastQuery().department).toBe("Sales"));
+    expect(api.browseRecords).toHaveBeenCalledTimes(2);
   });
 
   it("offers the departments the listing holds, with their counts", async () => {
@@ -206,8 +246,7 @@ describe("the records tab", () => {
 
   it("clears the filters and asks again on reset", async () => {
     await show();
-    fireEvent.change(screen.getByLabelText("Name contains"), { target: { value: "ada" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    type("Name contains", "ada");
     await waitFor(() => expect(lastQuery().name).toBe("ada"));
 
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
@@ -278,7 +317,7 @@ describe("the records tab", () => {
   it("keeps every filter control on one height and one baseline", async () => {
     const view = await show();
 
-    expectOneControlHeight(view.container.querySelector(".filter-grid"), 10);
+    expectOneControlHeight(view.container.querySelector(".filter-grid"), 9);
     expectChipStripHeight(view.container.querySelector(".chip-row"));
   });
 
@@ -304,8 +343,8 @@ describe("the records tab", () => {
     expect(grid.lastElementChild).toBe(actions);
     expect(Array.from(actions.querySelectorAll("button"), (button) => button.textContent)).toEqual([
       "Reset",
-      "Apply",
     ]);
+    expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
   });
 
   it("asks for a date in ISO, the way the table and the server both write it", async () => {
@@ -316,7 +355,6 @@ describe("the records tab", () => {
     expect(from.placeholder).toBe("2020-01-31");
 
     fireEvent.change(from, { target: { value: "2020-01-31" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
     await waitFor(() => expect(lastQuery().hired_from).toBe("2020-01-31"));
   });
@@ -324,9 +362,8 @@ describe("the records tab", () => {
   it("sends the tenant chip the reader picked, and says what the filtered total counts", async () => {
     await show();
 
-    fireEvent.click(tenantChip("acme"));
     api.browseRecords.mockResolvedValue({ ...PAGE, total: 450 });
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    fireEvent.click(tenantChip("acme"));
 
     await waitFor(() => expect(lastQuery().tenant_id).toBe("acme"));
     expect(lastQuery().page).toBe(1);
@@ -339,11 +376,9 @@ describe("the records tab", () => {
     await show();
 
     fireEvent.click(tenantChip("acme"));
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(lastQuery().tenant_id).toBe("acme"));
 
     fireEvent.click(tenantChip("All"));
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
     await waitFor(() => expect(lastQuery().tenant_id).toBe(""));
     expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
@@ -353,9 +388,88 @@ describe("the records tab", () => {
     await show();
 
     fireEvent.click(tenantChip("acme"));
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
     await waitFor(() => expect(api.listDepartments).toHaveBeenLastCalledWith("acme"));
+  });
+
+  it("goes back to the first page whenever a filter changes", async () => {
+    await show();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(lastQuery().page).toBe(2));
+
+    fireEvent.click(tenantChip("beta"));
+
+    await waitFor(() => expect(lastQuery().tenant_id).toBe("beta"));
+    expect(lastQuery().page).toBe(1);
+  });
+
+  it("carries a box the reader typed into the request a chip fires on the spot", async () => {
+    await show();
+    vi.useFakeTimers();
+
+    type("Name contains", "ada");
+    fireEvent.click(tenantChip("acme"));
+
+    expect(lastQuery()).toMatchObject({ name: "ada", tenant_id: "acme", page: 1 });
+    await pause();
+    expect(api.browseRecords).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets Reset cancel a keystroke that was still waiting", async () => {
+    await show();
+    vi.useFakeTimers();
+
+    type("Name contains", "ada");
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await pause();
+
+    expect(api.browseRecords).toHaveBeenCalledTimes(1);
+    expect((screen.getByLabelText("Name contains") as HTMLInputElement).value).toBe("");
+  });
+
+  it("never lets a slower earlier answer overwrite a newer one", async () => {
+    await show();
+    let answerFirst: ((page: unknown) => void) | undefined;
+    api.browseRecords.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerFirst = resolve;
+        }),
+    );
+
+    fireEvent.click(tenantChip("acme"));
+    api.browseRecords.mockResolvedValue({ ...PAGE, total: 200 });
+    fireEvent.click(tenantChip("beta"));
+    await waitFor(() => expect(screen.getByText(/200 matching rows · tenant beta/)).toBeTruthy());
+
+    await act(async () => {
+      answerFirst!({ ...PAGE, total: 450 });
+    });
+
+    expect(screen.getByText(/200 matching rows · tenant beta/)).toBeTruthy();
+    expect(screen.queryByText(/450 matching rows/)).toBeNull();
+  });
+
+  it("keeps a half-typed value's refusal off the screen until the typing settles", async () => {
+    const { ApiError } = await import("../lib/api");
+    const refusal = "hired_from must be an ISO date like 2020-01-31";
+    await show();
+    vi.useFakeTimers();
+    api.browseRecords.mockRejectedValue(new ApiError(400, refusal));
+
+    type("Hired from", "2020-0");
+    expect(screen.queryByText(refusal)).toBeNull();
+
+    await pause();
+    expect(screen.getByText(refusal)).toBeTruthy();
+
+    type("Hired from", "2020-01");
+    expect(screen.queryByText(refusal)).toBeNull();
+
+    api.browseRecords.mockResolvedValue(PAGE);
+    await pause();
+    expect(screen.queryByText(refusal)).toBeNull();
+    expect(screen.getByText("Ada Lovelace")).toBeTruthy();
   });
 
   it("keeps the rows readable when either option list is unavailable", async () => {
