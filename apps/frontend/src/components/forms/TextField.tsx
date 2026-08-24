@@ -3,9 +3,12 @@
  * which KB writes inline in its views; here it is a brick so no view re-styles an
  * input). Feed it a value and onChange; it stays uncontrolled of everything else.
  *
- * `type` covers the four the app needs: text, password, and the number and date a filter
- * row asks for. The value stays a string whatever the type is, because the server parses
- * and refuses it - a half-typed date is not the browser's to interpret.
+ * `type` covers the three the app needs: text, password, and the number a filter row asks for.
+ * There is deliberately no `date`: a native date input renders its placeholder in the viewer's
+ * locale (`dd.mm.yyyy` here, `mm/dd/yyyy` elsewhere) while the table cells, the executed SQL and
+ * the server's own refusal all speak ISO, so a date filter is a text field carrying an ISO
+ * placeholder instead (issue #115). The value stays a string whatever the type is, because the
+ * server parses and refuses it - a half-typed date is not the browser's to interpret.
  */
 
 export function TextField({
@@ -23,7 +26,7 @@ export function TextField({
   label: string;
   value: string;
   onChange: (value: string) => void;
-  type?: "text" | "password" | "number" | "date";
+  type?: "text" | "password" | "number";
   autoComplete?: string;
   autoFocus?: boolean;
   disabled?: boolean;

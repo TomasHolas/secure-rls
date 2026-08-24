@@ -133,7 +133,7 @@ export function NotesView({ tenant }: { tenant: string }) {
         aside={hits ? <Pill tone="accent">top {formatNumber(hits.k)}</Pill> : null}
       >
         <form
-          className="search-row"
+          className="search-row control-row"
           onSubmit={(event) => {
             event.preventDefault();
             search();
