@@ -642,6 +642,37 @@
 .pipeline-title { font-size: var(--text-sm); font-weight: 600; color: var(--fg-1); }
 .pipeline-mech { font-size: var(--text-xs); line-height: var(--leading-snug); color: var(--fg-3); }
 
+/* ==================== PipelineStrip — where one statement actually got ==================== */
+/* The canvas above is the map; this is the journey, and it sits under one executed statement in
+   the trace: the same six steps as chips, joined by the canvas's connector with the curve taken
+   out. It must not compete with the SQL pair over it, so it is one text line of `Pill` bricks -
+   the chips are that brick, and the only thing added here is the dashed outline of a step the
+   statement never reached, which is that state's second, colour-free channel. */
+:root {
+  --strip-link: 10px;
+  --strip-link-color: var(--border-strong);
+}
+.pipeline-strip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1);
+  margin: 0; padding: 0; list-style: none;
+}
+.pipeline-strip-lead {
+  margin-right: var(--space-1);
+  font-size: var(--text-2xs); font-weight: 600; letter-spacing: var(--tracking-caps);
+  text-transform: uppercase; color: var(--fg-4);
+}
+.pipeline-strip-step { display: flex; align-items: center; gap: var(--space-1); }
+/* The connector between two chips is a rule, never a glyph, and there is none after the last one
+   so the row ends on a chip. */
+.pipeline-strip-step:not(:last-child)::after {
+  content: ""; width: var(--strip-link); height: 1px; background: var(--strip-link-color);
+}
+.pipeline-strip-unreached .pill {
+  border: 1px dashed var(--border-default); background: none; color: var(--fg-4);
+}
+/* What a chip carries beside its label: who wrote the statement, and the rows that came back. */
+.pipeline-strip-note { margin-left: var(--space-1); font-family: var(--font-mono); font-weight: 400; opacity: 0.85; }
+
 /* ---------------- Live trace ---------------- */
 /* Disclosure from KB's Collapsible (chevron + caps label + count chip); the step rail is
    KB's .md-item log row with its date gutter turned into an icon rail. */

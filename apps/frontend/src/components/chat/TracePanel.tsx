@@ -17,7 +17,10 @@
  * that it stays where the reader put it (the disclosure is KB's `Collapsible`: a chevron, a caps
  * label and a count chip). Each item is one `TraceStep`; a call carries its arguments, then its
  * result, its retry or its refusal, so the failing statement and the reason it failed read as
- * one card, and it states its own pending state until one of them lands.
+ * one card, and it states its own pending state until one of them lands. A refusal carries the
+ * `PipelineStrip` under its notice - the same six steps the empty chat's canvas draws, with the
+ * layer that stopped this statement marked and everything the statement never reached left dark;
+ * a layer identifier the strip cannot place renders no strip rather than a wrong one.
  *
  * One thinking step per model round, closed to start with, labelled with its round from the second
  * one on: a turn that thought again after its tool results shows two, and which is which is on the
@@ -37,6 +40,7 @@ import { Pill } from "../Pill";
 import { CodeBlock } from "../CodeBlock";
 import { TraceStep } from "./TraceStep";
 import type { StepTone } from "./TraceStep";
+import { PipelineStrip } from "./PipelineStrip";
 import { ToolResultView } from "./ToolResultView";
 import { formatCount, formatNumber, formatSeconds } from "../../lib/format";
 import { FIRST_ROUND } from "../../lib/trace";
@@ -242,13 +246,16 @@ function OutcomeBody({ outcome }: { outcome: CallOutcome }) {
   }
   if (outcome.type === "security_event") {
     return (
-      <div className="notice notice-alert">
-        <Icon name="x" size={16} />
-        <span>
-          <strong>Blocked:</strong> {outcome.reason} - {outcome.layer} layer
-          <span className="notice-kind">{outcome.kind}</span>
-        </span>
-      </div>
+      <>
+        <div className="notice notice-alert">
+          <Icon name="x" size={16} />
+          <span>
+            <strong>Blocked:</strong> {outcome.reason} - {outcome.layer} layer
+            <span className="notice-kind">{outcome.kind}</span>
+          </span>
+        </div>
+        <PipelineStrip refusal={outcome} />
+      </>
     );
   }
   return (
