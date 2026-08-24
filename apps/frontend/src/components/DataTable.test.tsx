@@ -1,4 +1,7 @@
-/** DataTable fixtures: the cap, the empty state, and numeric cells through the one formatter. */
+/**
+ * DataTable fixtures: the cap, the empty state, numeric cells through the one formatter, and the
+ * `render` escape hatch - a listed column drawn by its caller while every other one is untouched.
+ */
 
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -39,6 +42,35 @@ describe("DataTable", () => {
 
     expect(container.querySelectorAll("tbody tr")).toHaveLength(2);
     expect(container.querySelector(".data-table-note")?.textContent).toContain("3 more of the 5");
+  });
+
+  it("draws a listed column through the caller and leaves every other one alone", () => {
+    const { container } = render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        render={{ name: (value) => <span className="tag">{String(value)}</span> }}
+      />,
+    );
+
+    const row = container.querySelectorAll("tbody tr:first-child td");
+    expect(row[0].querySelector(".tag")?.textContent).toBe("Ada");
+    expect(row[0].className).toBe("");
+    expect(row[1].textContent).toBe("155,230");
+    expect(row[1].className).toBe("num mono");
+  });
+
+  it("hands a render function the whole row, so a cell can read its neighbours", () => {
+    const { container } = render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        render={{ notes: (value, row) => <span>{`${String(row[0])}: ${String(value)}`}</span> }}
+      />,
+    );
+
+    const cells = container.querySelectorAll("tbody tr:first-child td");
+    expect(cells[3].textContent).toBe("Ada: solid quarter");
   });
 
   it("shows the empty message instead of a headerless table", () => {

@@ -226,6 +226,23 @@ describe("a browse request", () => {
     expect(url.searchParams.get("tenant_id")).toBe("beta");
   });
 
+  // The audit log takes a page and nothing else: it carries no tenant, because narrowing the
+  // server's own trail to the caller is the one thing that would empty it of its point.
+  it("asks the audit log for a page and for nothing else", async () => {
+    const { api } = await load();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ entries: [], total: 0, page: 2, page_size: 25 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.browseAudit(2);
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]), "http://localhost");
+    expect(url.pathname).toBe("/audit");
+    expect([...url.searchParams.keys()]).toEqual(["page"]);
+    expect(url.searchParams.get("page")).toBe("2");
+  });
+
   it("carries the tenant to the department options so their counts match the listing", async () => {
     const { api } = await load();
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));

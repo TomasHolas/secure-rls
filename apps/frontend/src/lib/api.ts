@@ -176,6 +176,33 @@ export interface NoteHits {
   hits: NoteHit[];
 }
 
+/**
+ * One row of the server's audit log (ADR 0002): what the data path was asked to run and what the
+ * layers decided about it. `executed_sql` is the statement that actually ran — absent when a layer
+ * refused before anything ran — and `error_kind` names the layer that refused or the failure.
+ *
+ * These are statements and metadata. No result row is in this store, so nothing here is tenant
+ * data the Records tab does not already show outright.
+ */
+export interface AuditEntry {
+  id: number;
+  ts: string;
+  tenant: string;
+  generated_sql: string;
+  verdict: string;
+  executed_sql: string | null;
+  rowcount: number | null;
+  error_kind: string | null;
+}
+
+/** `GET /audit`: one newest-first page of that log, with how many rows it holds in all. */
+export interface AuditLog {
+  entries: AuditEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 /** Which rows the committed poison manifest plants a payload in, and of what kind — all tenants. */
 export interface FlaggedNotes {
   user_ids: number[];
@@ -225,6 +252,19 @@ export async function searchNotes(query: string, k?: number): Promise<NoteHits> 
   const response = await apiFetch(`/notes/search${queryString({ q: query, k })}`);
   if (!response.ok) throw new ApiError(response.status, await detail(response, "The search failed. Try again."));
   return (await response.json()) as NoteHits;
+}
+
+/**
+ * GET /audit: one newest-first page of the server's audit log, every tenant's entries.
+ *
+ * The log is the record of what the data path ran, so it is not narrowed by the caller — the
+ * comparison between one tenant's scoped statement and another's is the reason the page exists.
+ * A token is still required, exactly as on every other listing.
+ */
+export async function browseAudit(page: number): Promise<AuditLog> {
+  const response = await apiFetch(`/audit${queryString({ page })}`);
+  if (!response.ok) throw new ApiError(response.status, await detail(response, "The audit log could not be loaded."));
+  return (await response.json()) as AuditLog;
 }
 
 /** GET /notes/flagged: every manifest-planted row, so the corpus listing marks them all. */

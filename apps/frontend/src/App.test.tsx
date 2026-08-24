@@ -32,6 +32,7 @@ const api = vi.hoisted(() => ({
   listModels: vi.fn(),
   browseRecords: vi.fn(),
   browseNotes: vi.fn(),
+  browseAudit: vi.fn(),
   listDepartments: vi.fn(),
   listTenants: vi.fn(),
   listFlaggedNotes: vi.fn(),
@@ -124,6 +125,24 @@ const NOTES_PAGE = {
   ...RECORDS_PAGE,
   columns: ["user_id", "tenant_id", "name", "department", "notes"],
   rows: [[1, "acme", "Ada Lovelace", "Engineering", "shipped the compiler"]],
+};
+
+const AUDIT_LOG = {
+  entries: [
+    {
+      id: 7,
+      ts: "2026-08-24T18:12:07+00:00",
+      tenant: "beta",
+      generated_sql: "SELECT * FROM employees",
+      verdict: "approved",
+      executed_sql: "SELECT * FROM (SELECT * FROM employees WHERE employees.tenant_id = ?)",
+      rowcount: 350,
+      error_kind: null,
+    },
+  ],
+  total: 7,
+  page: 1,
+  page_size: 25,
 };
 
 const TURN = [
@@ -245,6 +264,7 @@ beforeEach(() => {
   api.openChatStream.mockImplementation(() => Promise.resolve(sseResponse(TURN)));
   api.browseRecords.mockResolvedValue(RECORDS_PAGE);
   api.browseNotes.mockResolvedValue(NOTES_PAGE);
+  api.browseAudit.mockResolvedValue(AUDIT_LOG);
   api.listDepartments.mockResolvedValue([{ value: "Engineering", employees: 206 }]);
   api.listTenants.mockResolvedValue([{ value: "acme", employees: 450 }]);
   api.listFlaggedNotes.mockResolvedValue({ user_ids: [], kinds: {} });
@@ -575,6 +595,19 @@ describe("the section tabs", () => {
     expect(api.browseRecords).toHaveBeenCalledTimes(1);
   });
 
+  it("opens the audit tab from the strip and asks for the log only then", async () => {
+    await signIn();
+    await screen.findByText(NEWEST.title);
+
+    expect(api.browseAudit).not.toHaveBeenCalled();
+
+    openTab("Audit");
+
+    expect(await screen.findByText("What the data path ran")).toBeTruthy();
+    expect(api.browseAudit).toHaveBeenCalledTimes(1);
+    expect(window.location.hash).toBe("#/audit");
+  });
+
   it("shows one section at a time", async () => {
     const { view } = await signIn();
     await screen.findByText(NEWEST.title);
@@ -609,6 +642,17 @@ describe("the location in the URL", () => {
     expect(api.browseRecords).not.toHaveBeenCalled();
     expect(api.getConversation).not.toHaveBeenCalled();
     expect(window.location.hash).toBe("#/notes");
+  });
+
+  it("restores the audit tab the same way, and it fetches only the log", async () => {
+    await reloadAt("#/audit");
+
+    expect(await screen.findByText("What the data path ran")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Audit" }).getAttribute("aria-selected")).toBe("true");
+    expect(api.browseAudit).toHaveBeenCalledWith(1);
+    expect(api.browseRecords).not.toHaveBeenCalled();
+    expect(api.browseNotes).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe("#/audit");
   });
 
   it("renders the draft with no hash at all, and states where that is", async () => {

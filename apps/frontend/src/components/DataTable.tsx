@@ -10,12 +10,19 @@
  * Numeric cells print through `lib/format.ts`, the same formatter the chart axes use, so a
  * salary reads the same whether the trace shows it as a row or as a bar.
  *
+ * `render` is the one escape hatch, keyed by column name: a column listed there draws its cell
+ * through the caller's function instead of the default formatter, which is how the Audit tab puts
+ * a `Pill` in a tenant cell and a truncated statement in a SQL one without a second table brick
+ * existing. A column not listed is untouched, so every other caller is unaffected.
+ *
  * Sorting is optional and server-side: pass `sortable` (the columns the server will sort by),
  * the `sort`/`direction` it is currently sorting by, and `onSort`, and those headers become
  * buttons that ask for a sort — the table never reorders rows itself, because it is holding one
  * page and the order of the rest is the server's to decide. Without those props it is the plain
  * table the chat trace shows.
  */
+
+import type { ReactNode } from "react";
 
 import { formatNumber } from "../lib/format";
 
@@ -33,6 +40,7 @@ export function DataTable({
   sort,
   direction = ASCENDING,
   onSort,
+  render,
 }: {
   columns: string[];
   rows: unknown[][];
@@ -42,6 +50,7 @@ export function DataTable({
   sort?: string;
   direction?: "asc" | "desc";
   onSort?: (column: string) => void;
+  render?: Record<string, (value: unknown, row: unknown[]) => ReactNode>;
 }) {
   if (rows.length === 0) return <p className="data-table-note">{empty}</p>;
   const shown = rows.slice(0, maxRows);
@@ -72,8 +81,8 @@ export function DataTable({
           {shown.map((row, index) => (
             <tr key={index}>
               {columns.map((column, cell) => (
-                <td key={column} className={cellClass(row[cell])}>
-                  {format(row[cell])}
+                <td key={column} className={render?.[column] ? "" : cellClass(row[cell])}>
+                  {render?.[column] ? render[column](row[cell], row) : format(row[cell])}
                 </td>
               ))}
             </tr>
