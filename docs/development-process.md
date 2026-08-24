@@ -85,7 +85,7 @@ tenant's own session, and the correctness ground truth differs per tenant — ov
 171 live turns per guardrail position. Each position writes its own report file:
 [`report.md`](../apps/backend/evals/report.md) and
 [`report-no-guardrails.md`](../apps/backend/evals/report-no-guardrails.md); the
-[README](../README.md#tests-and-evaluation) carries their headline table.
+[README](../README.md#evaluation) carries their headline table.
 
 Correctness ground truth is computed **independently with pandas** over
 `employees.csv` — never through this project's own SQL path, which is the whole
