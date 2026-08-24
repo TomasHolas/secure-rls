@@ -99,11 +99,12 @@ export interface ChatRequest {
 }
 
 /**
- * One page of the caller's own rows, as `GET /records` and `GET /notes` serve it (ADR 0014).
- * `total` is how many rows match the filters at all, counted server-side over the same scoped
- * query, and `page_size` is the size actually used — the server clamps a page larger than its
- * row cap and says so here. `executed_sql` is the tenant-scoped statement that produced the
- * page, which is the same evidence the chat trace shows for a tool call.
+ * One page of the DATASET's rows, as `GET /records` and `GET /notes` serve it (ADR 0014).
+ * The listings are the demo's control group and span every tenant; `tenant_id` is a filter like
+ * any other. `total` is how many rows match the filters at all, counted server-side, and
+ * `page_size` is the size actually used — the server clamps a page larger than its row cap and
+ * says so here. `executed_sql` is the statement that produced the page, and on this surface it
+ * deliberately carries no tenant scoping — the one place in the app where that is true.
  */
 export interface BrowsePage {
   columns: string[];
@@ -119,8 +120,7 @@ export interface BrowsePage {
 
 /**
  * One parameter the request carried that the listing does not read, and the server's reason.
- * The server sends the name only, never the value it carried, and `tenant_id`/`tenant` carry
- * their own reason rather than a generic one (issue #107).
+ * The server sends the name only, never the value it carried (issue #107).
  */
 export interface IgnoredParam {
   name: string;
@@ -129,7 +129,6 @@ export interface IgnoredParam {
 
 /** The filters, sort and window a listing accepts; anything else is not a parameter it reads. */
 export interface BrowseQuery {
-  // Carried empty until the listings show every tenant and this becomes a filter like the rest (#117).
   tenant_id?: string;
   name?: string;
   department?: string;
@@ -145,9 +144,13 @@ export interface BrowseQuery {
   page_size?: number;
 }
 
-/** One department of the caller's tenant and its headcount: the filter's only options. */
-export interface DepartmentCount {
-  department: string;
+/**
+ * One value a categorical filter may be set to, and how many rows of the listing carry it.
+ * Both pickers share the shape: the tenants (450/350/200 — the control group in one line) and
+ * the departments, whose counts follow the tenant filter so no number is orphaned.
+ */
+export interface FilterOption {
+  value: string;
   employees: number;
 }
 
@@ -173,14 +176,14 @@ export interface NoteHits {
   hits: NoteHit[];
 }
 
-/** Which of the caller's rows the committed poison manifest plants a payload in, and of what kind. */
+/** Which rows the committed poison manifest plants a payload in, and of what kind — all tenants. */
 export interface FlaggedNotes {
   user_ids: number[];
   kinds: Record<string, string>;
 }
 
 /**
- * GET /records: one filtered, sorted page of the caller's own employee rows (ADR 0014).
+ * GET /records: one filtered, sorted page of the dataset's employee rows, every tenant (ADR 0014).
  *
  * `probe` is the reader's own `name=value`, sent alongside the filters exactly as typed so the
  * server can answer what it does with a parameter it does not read (issue #107). It is a
@@ -190,7 +193,7 @@ export async function browseRecords(query: BrowseQuery, probe?: string): Promise
   return browse("/records", query, probe);
 }
 
-/** GET /notes: one page of the caller's note corpus, filtered, sorted and probed the same way. */
+/** GET /notes: one page of the whole note corpus, filtered, sorted and probed the same way. */
 export async function browseNotes(query: BrowseQuery, probe?: string): Promise<BrowsePage> {
   return browse("/notes", query, probe);
 }
@@ -201,12 +204,26 @@ async function browse(path: string, query: BrowseQuery, probe?: string): Promise
   return (await response.json()) as BrowsePage;
 }
 
-/** GET /records/departments: the caller's departments and headcounts, for the filter's options. */
-export async function listDepartments(): Promise<DepartmentCount[]> {
-  const response = await apiFetch("/records/departments");
-  if (!response.ok) throw new ApiError(response.status, "The department list is unavailable.");
+/**
+ * GET /records/departments: the departments the listing holds and their counts.
+ *
+ * The tenant filter travels with it, so the count beside an option counts the rows the reader is
+ * actually looking at rather than a set they did not ask for.
+ */
+export async function listDepartments(tenantId?: string): Promise<FilterOption[]> {
+  return options(`/records/departments${queryString({ tenant_id: tenantId })}`, "department");
+}
+
+/** GET /records/tenants: the dataset's tenants and their row counts, for the tenant filter. */
+export async function listTenants(): Promise<FilterOption[]> {
+  return options("/records/tenants", "tenant");
+}
+
+async function options(path: string, kind: string): Promise<FilterOption[]> {
+  const response = await apiFetch(path);
+  if (!response.ok) throw new ApiError(response.status, `The ${kind} list is unavailable.`);
   const body = (await response.json()) as unknown;
-  return Array.isArray(body) ? (body as DepartmentCount[]) : [];
+  return Array.isArray(body) ? (body as FilterOption[]) : [];
 }
 
 /** GET /notes/search: the same retrieval the agent's search_notes tool runs, scored. */
@@ -216,7 +233,7 @@ export async function searchNotes(query: string, k?: number): Promise<NoteHits> 
   return (await response.json()) as NoteHits;
 }
 
-/** GET /notes/flagged: the manifest-planted rows of this tenant, so the corpus marks them. */
+/** GET /notes/flagged: every manifest-planted row, so the corpus listing marks them all. */
 export async function listFlaggedNotes(): Promise<FlaggedNotes> {
   const response = await apiFetch("/notes/flagged");
   if (!response.ok) throw new ApiError(response.status, "The flagged notes are unavailable.");

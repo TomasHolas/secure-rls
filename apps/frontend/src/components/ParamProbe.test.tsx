@@ -14,11 +14,9 @@ import { expectOneControlHeight } from "../test/styles";
 
 afterEach(cleanup);
 
-const TENANT_REASON =
-  "the tenant is not a parameter of this request: it is read from your verified token and " +
-  "bound into the query server-side (ADR 0002, layer 1), so no request can name one";
+const UNKNOWN_REASON = "not a parameter this listing reads; it reads name, sort, tenant_id";
 const IGNORED = [
-  { name: "tenant_id", reason: TENANT_REASON },
+  { name: "tenant", reason: UNKNOWN_REASON },
   { name: "db_path", reason: "not a parameter this listing reads; it reads name, sort" },
 ];
 
@@ -28,8 +26,8 @@ describe("ParamProbe", () => {
 
     const notice = view.container.querySelector(".notice-warn");
     expect(notice?.textContent).toContain("did not read every parameter");
-    expect(notice?.textContent).toContain("tenant_id");
-    expect(notice?.textContent).toContain(TENANT_REASON);
+    expect(notice?.textContent).toContain("tenant");
+    expect(notice?.textContent).toContain(UNKNOWN_REASON);
     expect(notice?.textContent).toContain("db_path");
     expect(view.container.querySelectorAll(".ignored-list li")).toHaveLength(2);
   });
@@ -58,10 +56,13 @@ describe("ParamProbe", () => {
     expectOneControlHeight(view.container.querySelector(".search-row"), 2);
   });
 
-  it("offers a parameter box rather than a tenant to pick", () => {
+  it("claims only what is still true of a listing that filters by tenant", () => {
     render(<ParamProbe id="probe" ignored={[]} onSend={vi.fn()} />);
 
-    expect(screen.getByText(/not a filter and not a tenant picker/i)).toBeTruthy();
+    const explainer = screen.getByText(/whatever you type is appended/i).textContent ?? "";
+    expect(explainer).toContain("tenant_id IS a filter here");
+    expect(explainer).toContain("comes from your verified token");
+    expect(explainer).not.toMatch(/no request can name a tenant/i);
     expect(screen.queryByRole("combobox")).toBeNull();
   });
 });

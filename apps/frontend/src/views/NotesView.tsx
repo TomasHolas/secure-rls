@@ -1,19 +1,25 @@
 /**
- * The Notes tab: the corpus the agent retrieves over, and a search box that runs the agent's own
- * retrieval path for a reader's query (ADR 0014). Two things become visible that the chat alone
- * only asserts — that a tenant's corpus is its own, and that "semantic search" is a real ranked
- * result with distances rather than a story the model tells about one.
+ * The Notes tab: the whole note corpus the agent retrieves over, and a search box that runs the
+ * agent's own retrieval path for a reader's query (ADR 0014 as rewritten by issue #117).
  *
- * The rows the committed manifest plants an injection payload in are marked as such, which is
- * what makes the second-order injection demo concrete: point at the payload here, then ask the
- * agent something that retrieves it and watch it quote the text instead of obeying it.
+ * The asymmetry between those two is the demonstration, and it is deliberate. The LIST is the
+ * dataset's - every tenant's notes, with a tenant filter so a reader can go straight to another
+ * tenant's rows. The SEARCH is not: it is `rag.search_notes_scoped` for the signed-in tenant, the
+ * same partition-filtered vector search the `search_notes` tool calls. So a reader can read
+ * beta's planted injection payload in the list, search for its exact text as acme, and get
+ * nothing back. Neither half proves much alone; together they are the point of the tab.
+ *
+ * The rows the committed manifest plants a payload in are marked as such, in every tenant now
+ * that the list shows every tenant, which is what makes the second-order injection demo concrete:
+ * point at the payload here, then ask the agent something that retrieves it and watch it quote
+ * the text instead of obeying it.
  *
  * A missing note index is an operator condition, not a failure of the tab: the server answers
  * 503 with its own sentence and that sentence is what the reader is shown (ADR 0010 as amended).
  *
  * The corpus listing takes the same filters `/records` does, so it owes a reader the same
  * honesty about a parameter it does not read: the `ParamProbe` here appends one of the reader's
- * own to the corpus request and shows what the server reports it ignored, tenant included (#107).
+ * own to the corpus request and shows what the server reports it ignored (#107).
  *
  * Every request here is guarded against its own staleness the same way - the corpus and the
  * manifest by the effect's `live` flag, the search by a ticket - so a slower earlier answer can
@@ -27,19 +33,22 @@ import { Loader } from "../components/Loader";
 import { NoteList } from "../components/NoteList";
 import { ParamProbe } from "../components/ParamProbe";
 import { Pill } from "../components/Pill";
-import { TextField } from "../components/forms";
+import { SelectField, TextField } from "../components/forms";
 import { EmptyState, Page, PageHeader, Section } from "../components/layout";
 import type { NoteEntry } from "../components/NoteList";
-import { ApiError, browseNotes, listFlaggedNotes, searchNotes } from "../lib/api";
-import type { BrowsePage, NoteHits } from "../lib/api";
+import { ApiError, browseNotes, listFlaggedNotes, listTenants, searchNotes } from "../lib/api";
+import type { BrowsePage, FilterOption, NoteHits } from "../lib/api";
 import { formatCount, formatNumber } from "../lib/format";
 
 const LOAD_FAILURE = "The notes could not be loaded.";
 const SEARCH_FAILURE = "The search failed. Try again.";
 const RETRIEVAL_NOTE =
   "This is rag.search_notes_scoped - the same partition-filtered vector search the agent's " +
-  "search_notes tool calls, with the distance it scored each note by.";
-const PROBE_TITLE = "Attack it yourself";
+  "search_notes tool calls, with the distance it scored each note by. It answers for your " +
+  "tenant only, while the corpus below is the whole dataset: a note you can read there and not " +
+  "retrieve here is the isolation, shown twice on one screen.";
+const PROBE_TITLE = "Probe the request";
+const ALL_TENANTS = "all tenants";
 const FIRST_PAGE = 1;
 const USER_ID = "user_id";
 const TENANT_ID = "tenant_id";
@@ -51,7 +60,9 @@ const NOTES = "notes";
 export function NotesView({ tenant }: { tenant: string }) {
   const [page, setPage] = useState(FIRST_PAGE);
   const [probe, setProbe] = useState("");
+  const [filtered, setFiltered] = useState("");
   const [corpus, setCorpus] = useState<BrowsePage | null>(null);
+  const [tenants, setTenants] = useState<FilterOption[]>([]);
   const [flagged, setFlagged] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +81,13 @@ export function NotesView({ tenant }: { tenant: string }) {
         // Nothing marked is the honest fallback: the manifest is a demo aid, not the data.
         if (live) setFlagged({});
       });
+    listTenants()
+      .then((list) => {
+        if (live) setTenants(list);
+      })
+      .catch(() => {
+        if (live) setTenants([]);
+      });
     return () => {
       live = false;
     };
@@ -78,7 +96,7 @@ export function NotesView({ tenant }: { tenant: string }) {
   useEffect(() => {
     let live = true;
     setLoading(true);
-    browseNotes({ page }, probe)
+    browseNotes({ page, tenant_id: filtered }, probe)
       .then((serverPage) => {
         if (live) {
           setCorpus(serverPage);
@@ -94,7 +112,7 @@ export function NotesView({ tenant }: { tenant: string }) {
     return () => {
       live = false;
     };
-  }, [page, probe]);
+  }, [page, filtered, probe]);
 
   // Only the newest search may write: a slower earlier one must not overwrite it on arrival.
   const latest = useRef(0);
@@ -119,14 +137,21 @@ export function NotesView({ tenant }: { tenant: string }) {
       });
   }, [query]);
 
+  // A select is one deliberate action, so it applies on change; a page of typing would not.
+  const filterBy = useCallback((value: string) => {
+    setPage(FIRST_PAGE);
+    setFiltered(value);
+  }, []);
+
   const pages = corpus ? Math.max(1, Math.ceil(corpus.total / corpus.page_size)) : 1;
+  const scope = filtered ? `tenant ${filtered}` : ALL_TENANTS;
 
   return (
     <Page className="section-stack">
       <PageHeader
         eyebrow="Notes"
         title="The note corpus"
-        subtitle={`The free-text notes on the ${tenant} tenant's rows - the text the agent retrieves over, and the same rows it can never leave.`}
+        subtitle={`Every tenant's free-text notes - the text the agent retrieves over. The search below answers for ${tenant} alone, which is what the list beside it makes checkable.`}
       />
 
       <Section
@@ -158,7 +183,7 @@ export function NotesView({ tenant }: { tenant: string }) {
             <NoteList
               notes={hits.hits}
               flagged={flagged}
-              empty="No note of this tenant was close enough to that query."
+              empty={`No note of the ${tenant} tenant was close enough to that query.`}
             />
           </>
         ) : null}
@@ -178,12 +203,26 @@ export function NotesView({ tenant }: { tenant: string }) {
         aside={
           corpus ? (
             <Pill tone="neutral">
-              {formatCount(corpus.total, "note")} · page {formatNumber(corpus.page)} of{" "}
+              {formatCount(corpus.total, "note")} · {scope} · page {formatNumber(corpus.page)} of{" "}
               {formatNumber(pages)}
             </Pill>
           ) : null
         }
       >
+        <div className="search-row control-row">
+          <SelectField
+            id="notes-tenant"
+            label="Tenant"
+            value={filtered}
+            options={tenants.map((entry) => ({
+              value: entry.value,
+              label: `${entry.value} (${formatNumber(entry.employees)})`,
+            }))}
+            onChange={filterBy}
+            placeholder="any tenant"
+            disabled={loading}
+          />
+        </div>
         {error ? <p className="form-error">{error}</p> : null}
         {corpus === null ? (
           error ? (
@@ -196,7 +235,7 @@ export function NotesView({ tenant }: { tenant: string }) {
             <NoteList
               notes={asNotes(corpus)}
               flagged={flagged}
-              empty="This tenant has no notes."
+              empty="No note in the dataset matches that filter."
             />
             <div className="pager">
               <Button
@@ -206,7 +245,8 @@ export function NotesView({ tenant }: { tenant: string }) {
                 Previous
               </Button>
               <span className="pager-state">
-                showing {formatNumber(corpus.rows.length)} of {formatCount(corpus.total, "note")}
+                showing {formatNumber(corpus.rows.length)} of{" "}
+                {formatCount(corpus.total, "note")} · {scope}
               </span>
               <Button
                 onClick={() => setPage((current) => current + 1)}

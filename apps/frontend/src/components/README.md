@@ -259,15 +259,17 @@ trace and the Notes tab share this brick, so a note reads identically wherever i
 The Records and Notes tabs' one control that is not a filter (issue #107). A box appends a raw
 `name=value` of the reader's own choosing to the next listing request, and the notice below it
 names every parameter the response reports as unread, with the server's own reason — verbatim,
-because the reason for `tenant_id` *is* the security claim (the tenant is read from the verified
-token, ADR 0002 layer 1) and paraphrasing it here would weaken the one sentence a reviewer should
-read on screen. `onSend` hands the parent the text as typed; the parent sends it beside its
-filters and feeds `ignored` back. The notice renders nothing when nothing was ignored.
+so the report a reviewer reads on screen is the server's and not a paraphrase of it. `onSend`
+hands the parent the text as typed; the parent sends it beside its filters and feeds `ignored`
+back. The notice renders nothing when nothing was ignored.
 
-Deliberately not a tenant picker or a "reach another tenant" button: there is no tenant to pick,
-and a control named after one would imply the UI could select it and the server merely declines
-(ADR 0014 as amended). A parameter box implies nothing — a query parameter is what the request
-already is — and it lets a viewer type the attack themselves rather than watch a canned one.
+It no longer claims that no request can name a tenant, because on these listings one can:
+`tenant_id` is a real filter there, since the tabs show the whole dataset (ADR 0014 as rewritten
+by issue #117). The claim it makes instead is the one that survived — a request gets exactly the
+parameters the endpoint declares and is told about the rest — and the explainer points the tenant
+claim at where it is still true: the agent's tenant comes from the verified token and reaches its
+tools by closure, so no tool argument can name one. It is still not a named control of any kind: a
+parameter box implies nothing, because a query parameter is what the request already is.
 
 ### Brand mark
 
@@ -373,15 +375,17 @@ region, vertically as well as horizontally.
 
 ```tsx
 <SelectField id="records-department" label="Department" value={draft.department}
-  options={departments.map((d) => ({ value: d.department, label: d.department }))}
+  options={departments.map((d) => ({ value: d.value, label: `${d.value} (${d.employees})` }))}
   onChange={setDepartment} placeholder="any department" />
 ```
 
 `TextField`'s counterpart for a value that comes from a fixed set: the labelled native
 `<select>` on the `.select` metrics `chat/ModelPicker` uses, inside the `.field` + label
-pattern `TextField` owns. It exists because a filter must not let a reader type a department
-the tenant does not have — the options are whatever the server listed, and `placeholder`
-renders the empty "no filter" option.
+pattern `TextField` owns. It exists because a filter must not let a reader type a value the
+data does not hold — the options are whatever the server listed (`GET /records/departments`,
+`GET /records/tenants`, both `FilterOption[]`), and `placeholder` renders the empty "no filter"
+option. Both pickers carry the count beside the value, and both counts follow the listing they
+describe, so nothing on screen is a number attached to a set nobody asked for.
 
 ### forms/TextField
 

@@ -1,15 +1,26 @@
 /**
- * The Records tab: every row the signed-in tenant can see, filtered, sorted and paged
- * server-side (ADR 0014). It is the isolation claim made checkable without the agent — sign in
- * as one tenant and the total is one number, sign in as another and it is a different one, and
- * both come from the same request against the same table.
+ * The Records tab: every row of the dataset, all three tenants, filtered, sorted and paged
+ * server-side (ADR 0014 as rewritten by issue #117). It is the demo's control group, not a tenant
+ * view — a reader sees exactly what exists, and then watches the agent in the same app reach only
+ * the tenant its token names. Showing one tenant's 450 with nothing saying 1000 exist threw that
+ * comparison away and made the number look like a bug.
+ *
+ * `tenant_id` is therefore a filter of the same kind as `department`: a select in the same grid,
+ * its options and counts read off the data by `GET /records/tenants`, its value bound server-side
+ * like every other filter value. What no request can choose is the tenant the AGENT sees — that
+ * comes from the verified token and reaches the tools by closure (ADR 0002, layer 1).
  *
  * The view owns no query logic: the filter boxes and the sort headers turn into query parameters,
  * and `GET /records` answers with the page plus the true total and the statement it ran. Filters
- * are applied on submit rather than on every keystroke — a filter row of eight boxes would
+ * are applied on submit rather than on every keystroke — a filter row of nine boxes would
  * otherwise fire a request per character, and the reader is composing a question, not narrowing
- * live. The executed SQL is shown under the table for the same reason the chat trace shows it:
- * the scoping subquery with its bound tenant is the evidence, and hiding it would waste it.
+ * live. The executed SQL is shown under the table for the same reason the chat trace shows it,
+ * and here it is evidence of the opposite thing: this listing is the one read in the app that
+ * carries no tenant scoping, and the label says so rather than claiming a rewrite that is absent.
+ *
+ * Every total states what it is a total of. "1000 rows · all tenants" and "450 rows · tenant
+ * acme" are different facts, and a pager that said only "450" would be the orphaned number the
+ * old design shipped.
  *
  * The grid is six cells - three single filters and three `FieldPair`s - because a bound pair
  * that is one cell cannot be split across rows by the wrap, and six is full at three, two and
@@ -17,12 +28,6 @@
  * text rather than native date inputs: a native picker prints `dd.mm.yyyy` or `mm/dd/yyyy`
  * depending on the viewer's machine, while the table cells, the executed statement and the
  * server's own refusal all speak ISO, so what a reader types now matches what they read.
- *
- * There is deliberately no tenant filter — a caller holds exactly one tenant, and offering to
- * pick one would imply otherwise. What there is instead is the `ParamProbe`: a reader may append
- * a query parameter of their own to the request and read back what the server did with it, so
- * `?tenant_id=beta` produces the tenant's own 450 rows *and* the server's sentence about why no
- * request can name a tenant, rather than an unchanged page they have to take on faith (#107).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -35,14 +40,23 @@ import { ParamProbe } from "../components/ParamProbe";
 import { Pill } from "../components/Pill";
 import { FieldPair, SelectField, TextField } from "../components/forms";
 import { EmptyState, Page, PageHeader, Section } from "../components/layout";
-import { ApiError, browseRecords, listDepartments } from "../lib/api";
-import type { BrowsePage, DepartmentCount } from "../lib/api";
+import { ApiError, browseRecords, listDepartments, listTenants } from "../lib/api";
+import type { BrowsePage, FilterOption } from "../lib/api";
 import { formatCount, formatNumber } from "../lib/format";
 
 const LOAD_FAILURE = "The rows could not be loaded.";
-const EXECUTED_LABEL = "executed after tenant scoping";
-const PROBE_TITLE = "Attack it yourself";
-const SORTABLE = ["user_id", "name", "department", "salary", "performance_score", "hire_date"];
+const EXECUTED_LABEL = "executed without tenant scoping - this listing is the whole dataset";
+const PROBE_TITLE = "Probe the request";
+const ALL_TENANTS = "all tenants";
+const SORTABLE = [
+  "user_id",
+  "tenant_id",
+  "name",
+  "department",
+  "salary",
+  "performance_score",
+  "hire_date",
+];
 const FIRST_PAGE = 1;
 // The same example date the server's own refusal names, so the hint and the error agree.
 const ISO_DATE_HINT = "2020-01-31";
@@ -79,24 +93,40 @@ export function RecordsView({ tenant }: { tenant: string }) {
   const [page, setPage] = useState(FIRST_PAGE);
   const [probe, setProbe] = useState("");
   const [rows, setRows] = useState<BrowsePage | null>(null);
-  const [departments, setDepartments] = useState<DepartmentCount[]>([]);
+  const [tenants, setTenants] = useState<FilterOption[]>([]);
+  const [departments, setDepartments] = useState<FilterOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
-    listDepartments()
+    listTenants()
       .then((list) => {
-        if (live) setDepartments(list);
+        if (live) setTenants(list);
       })
       .catch(() => {
         // Without the list there is nothing to pick, which is what an empty select says.
-        if (live) setDepartments([]);
+        if (live) setTenants([]);
       });
     return () => {
       live = false;
     };
   }, []);
+
+  // The department counts follow the applied tenant, so no count describes a set nobody asked for.
+  useEffect(() => {
+    let live = true;
+    listDepartments(applied.tenant_id)
+      .then((list) => {
+        if (live) setDepartments(list);
+      })
+      .catch(() => {
+        if (live) setDepartments([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [applied.tenant_id]);
 
   useEffect(() => {
     let live = true;
@@ -145,18 +175,25 @@ export function RecordsView({ tenant }: { tenant: string }) {
   );
 
   const pages = rows ? Math.max(1, Math.ceil(rows.total / rows.page_size)) : 1;
+  const scope = applied.tenant_id ? `tenant ${applied.tenant_id}` : ALL_TENANTS;
 
   return (
     <Page className="section-stack">
       <PageHeader
         eyebrow="Records"
         title="Employee rows"
-        subtitle={`Every row the ${tenant} tenant can see, fetched through the same scoped executor the agent's tools use.`}
+        subtitle={`Every row of the dataset, all tenants - the control group. The agent, signed in as ${tenant}, can only ever reach ${tenant}'s part of it.`}
       />
 
       <Section
         title="Filters"
-        aside={rows ? <Pill tone="accent">{formatCount(rows.total, "matching row")}</Pill> : null}
+        aside={
+          rows ? (
+            <Pill tone="accent">
+              {formatCount(rows.total, "matching row")} · {scope}
+            </Pill>
+          ) : null
+        }
       >
         <form
           className="filter-grid control-row"
@@ -165,15 +202,16 @@ export function RecordsView({ tenant }: { tenant: string }) {
             apply();
           }}
         >
-          {/* A filter of the same kind as department once the listings show all tenants (#117). */}
           <SelectField
             id="records-tenant"
             label="Tenant"
             value={draft.tenant_id}
-            options={[]}
+            options={tenants.map((entry) => ({
+              value: entry.value,
+              label: `${entry.value} (${formatNumber(entry.employees)})`,
+            }))}
             onChange={field("tenant_id")}
             placeholder="any tenant"
-            disabled
           />
           <TextField
             id="records-name"
@@ -187,8 +225,8 @@ export function RecordsView({ tenant }: { tenant: string }) {
             label="Department"
             value={draft.department}
             options={departments.map((entry) => ({
-              value: entry.department,
-              label: `${entry.department} (${formatNumber(entry.employees)})`,
+              value: entry.value,
+              label: `${entry.value} (${formatNumber(entry.employees)})`,
             }))}
             onChange={field("department")}
             placeholder="any department"
@@ -284,7 +322,7 @@ export function RecordsView({ tenant }: { tenant: string }) {
               columns={rows.columns}
               rows={rows.rows}
               maxRows={rows.page_size}
-              empty="No row of this tenant matches those filters."
+              empty="No row of the dataset matches those filters."
               sortable={SORTABLE}
               sort={rows.sort}
               direction={rows.direction === "desc" ? "desc" : "asc"}
@@ -298,7 +336,8 @@ export function RecordsView({ tenant }: { tenant: string }) {
                 Previous
               </Button>
               <span className="pager-state">
-                showing {formatNumber(rows.rows.length)} of {formatCount(rows.total, "row")}
+                showing {formatNumber(rows.rows.length)} of {formatCount(rows.total, "row")} ·{" "}
+                {scope}
               </span>
               <Button
                 onClick={() => setPage((current) => current + 1)}

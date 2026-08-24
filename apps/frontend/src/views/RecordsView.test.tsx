@@ -1,10 +1,15 @@
 /**
- * The Records tab, rendered against a faked HTTP client (issue #88, ADR 0014).
+ * The Records tab, rendered against a faked HTTP client (issue #88, ADR 0014, issue #117).
  *
  * What is asserted is the contract between the view and the server: the filters, the sort and
  * the page it asks for, and that what it shows is what came back - the true total, the page the
- * server actually served, and the tenant-scoped statement it ran. The view sorts and pages
- * nothing itself, which is the property these tests pin: every reorder is a request.
+ * server actually served, and the statement it ran. The view sorts and pages nothing itself,
+ * which is the property these tests pin: every reorder is a request.
+ *
+ * The fixture page is now the dataset's 1000 rows rather than one tenant's 450, because the
+ * listing is (issue #117). Two things are pinned that were not there before: the tenant select is
+ * a real filter that reaches the query, and no total on screen appears without saying what it is
+ * a total of - "1000 rows · all tenants" or "450 rows · tenant acme", never a bare number.
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -16,6 +21,7 @@ import { expectOneControlHeight } from "../test/styles";
 const api = vi.hoisted(() => ({
   browseRecords: vi.fn(),
   listDepartments: vi.fn(),
+  listTenants: vi.fn(),
 }));
 
 vi.mock("../lib/api", () => ({
@@ -40,14 +46,13 @@ const COLUMNS = [
 ];
 const ROWS = [
   [1, "acme", "Ada Lovelace", "Engineering", 100000, 4.5, "2019-01-01"],
-  [2, "acme", "Alan Turing", "Engineering", 120000, 3.5, "2020-02-02"],
+  [2, "beta", "Alan Turing", "Engineering", 120000, 3.5, "2020-02-02"],
 ];
-const EXECUTED =
-  "SELECT user_id, tenant_id, name FROM (SELECT * FROM employees WHERE employees.tenant_id = ?) AS employees";
+const EXECUTED = "SELECT user_id, tenant_id, name FROM employees ORDER BY user_id LIMIT 25";
 const PAGE = {
   columns: COLUMNS,
   rows: ROWS,
-  total: 450,
+  total: 1000,
   page: 1,
   page_size: 25,
   sort: "user_id",
@@ -56,8 +61,13 @@ const PAGE = {
   ignored: [],
 };
 const DEPARTMENTS = [
-  { department: "Engineering", employees: 95 },
-  { department: "Sales", employees: 94 },
+  { value: "Engineering", employees: 206 },
+  { value: "Sales", employees: 214 },
+];
+const TENANTS = [
+  { value: "acme", employees: 450 },
+  { value: "beta", employees: 350 },
+  { value: "gamma", employees: 200 },
 ];
 
 async function show() {
@@ -81,6 +91,7 @@ function lastProbe(): string | undefined {
 beforeEach(() => {
   api.browseRecords.mockResolvedValue(PAGE);
   api.listDepartments.mockResolvedValue(DEPARTMENTS);
+  api.listTenants.mockResolvedValue(TENANTS);
 });
 
 afterEach(() => {
@@ -89,20 +100,28 @@ afterEach(() => {
 });
 
 describe("the records tab", () => {
-  it("shows the tenant's rows, the true total and the statement the server ran", async () => {
+  it("shows the whole dataset, the true total and the statement the server ran", async () => {
     const view = await show();
 
-    expect(screen.getByText(/Every row the acme tenant can see/)).toBeTruthy();
-    expect(screen.getByText("450 matching rows")).toBeTruthy();
-    expect(screen.getByText(/showing 2 of 450 rows/)).toBeTruthy();
+    expect(screen.getByText(/Every row of the dataset, all tenants/)).toBeTruthy();
+    expect(screen.getByText(/1,000 matching rows · all tenants/)).toBeTruthy();
+    expect(screen.getByText(/showing 2 of 1,000 rows · all tenants/)).toBeTruthy();
     expect(view.container.querySelectorAll("tbody tr")).toHaveLength(2);
     expect(view.container.querySelector(".code-block")?.textContent).toContain(EXECUTED);
+  });
+
+  it("says the listing carries no tenant scoping, rather than claiming a rewrite it lacks", async () => {
+    const view = await show();
+
+    expect(view.container.querySelector(".code-block")?.textContent).toContain(
+      "executed without tenant scoping",
+    );
   });
 
   it("shows every row of the page, not the trace's visual cap", async () => {
     const many = Array.from({ length: 25 }, (_, index) => [
       index + 1,
-      "acme",
+      "beta",
       `Person ${index + 1}`,
       "Sales",
       1000,
@@ -136,14 +155,24 @@ describe("the records tab", () => {
     expect(api.browseRecords).toHaveBeenCalledTimes(1);
   });
 
-  it("offers only the departments the tenant has, with their headcounts", async () => {
+  it("offers the departments the listing holds, with their counts", async () => {
     await show();
 
     const options = Array.from(
       (screen.getByLabelText("Department") as HTMLSelectElement).options,
       (option) => option.textContent,
     );
-    expect(options).toEqual(["any department", "Engineering (95)", "Sales (94)"]);
+    expect(options).toEqual(["any department", "Engineering (206)", "Sales (214)"]);
+  });
+
+  it("offers the dataset's tenants and their row counts, which is the control group", async () => {
+    await show();
+
+    const options = Array.from(
+      (screen.getByLabelText("Tenant") as HTMLSelectElement).options,
+      (option) => option.textContent,
+    );
+    expect(options).toEqual(["any tenant", "acme (450)", "beta (350)", "gamma (200)"]);
   });
 
   it("clears the filters and asks again on reset", async () => {
@@ -190,13 +219,13 @@ describe("the records tab", () => {
 
     await waitFor(() => expect(lastQuery().page).toBe(2));
 
-    api.browseRecords.mockResolvedValue({ ...PAGE, page: 18, total: 450 });
+    api.browseRecords.mockResolvedValue({ ...PAGE, page: 40, total: 1000 });
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
 
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Next" })).toHaveProperty("disabled", true),
     );
-    expect(screen.getByText(/page 18 of 18/)).toBeTruthy();
+    expect(screen.getByText(/page 40 of 40/)).toBeTruthy();
   });
 
   it("says what the server refused, in the server's own words", async () => {
@@ -213,25 +242,25 @@ describe("the records tab", () => {
 
     render(<RecordsView tenant="acme" />);
 
-    expect(await screen.findByText(/No row of this tenant matches those filters/)).toBeTruthy();
-    expect(screen.getByText("0 matching rows")).toBeTruthy();
+    expect(await screen.findByText(/No row of the dataset matches those filters/)).toBeTruthy();
+    expect(screen.getByText(/0 matching rows · all tenants/)).toBeTruthy();
   });
 
   it("sends a parameter the reader appended and shows what the server did with it", async () => {
     await show();
 
     fireEvent.change(screen.getByLabelText("Extra query parameter"), {
-      target: { value: "tenant_id=beta" },
+      target: { value: "role=admin" },
     });
     api.browseRecords.mockResolvedValue({
       ...PAGE,
-      ignored: [{ name: "tenant_id", reason: "read from your verified token (ADR 0002, layer 1)" }],
+      ignored: [{ name: "role", reason: "not a parameter this listing reads; it reads sort" }],
     });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
-    await waitFor(() => expect(lastProbe()).toBe("tenant_id=beta"));
-    expect(await screen.findByText(/read from your verified token/)).toBeTruthy();
-    expect(screen.getByText("450 matching rows")).toBeTruthy();
+    await waitFor(() => expect(lastProbe()).toBe("role=admin"));
+    expect(await screen.findByText(/not a parameter this listing reads/)).toBeTruthy();
+    expect(screen.getByText(/1,000 matching rows/)).toBeTruthy();
   });
 
   it("keeps every filter control on one height and one baseline", async () => {
@@ -279,20 +308,35 @@ describe("the records tab", () => {
     await waitFor(() => expect(lastQuery().hired_from).toBe("2020-01-31"));
   });
 
-  it("carries a tenant control that asks the server for nothing until it is a filter", async () => {
+  it("sends the tenant the reader picked, and says what the filtered total counts", async () => {
     await show();
 
-    expect((screen.getByLabelText("Tenant") as HTMLSelectElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Tenant"), { target: { value: "acme" } });
+    api.browseRecords.mockResolvedValue({ ...PAGE, total: 450 });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
-    await waitFor(() => expect(lastQuery().tenant_id).toBe(""));
+    await waitFor(() => expect(lastQuery().tenant_id).toBe("acme"));
+    expect(lastQuery().page).toBe(1);
+    expect(await screen.findByText(/450 matching rows · tenant acme/)).toBeTruthy();
+    expect(screen.getByText(/showing 2 of 450 rows · tenant acme/)).toBeTruthy();
   });
 
-  it("keeps the rows readable when the department list is unavailable", async () => {
+  it("re-counts the department options for the tenant the reader applied", async () => {
+    await show();
+
+    fireEvent.change(screen.getByLabelText("Tenant"), { target: { value: "acme" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(api.listDepartments).toHaveBeenLastCalledWith("acme"));
+  });
+
+  it("keeps the rows readable when either option list is unavailable", async () => {
     api.listDepartments.mockRejectedValue(new Error("boom"));
+    api.listTenants.mockRejectedValue(new Error("boom"));
 
     await show();
 
     expect((screen.getByLabelText("Department") as HTMLSelectElement).options).toHaveLength(1);
+    expect((screen.getByLabelText("Tenant") as HTMLSelectElement).options).toHaveLength(1);
   });
 });
