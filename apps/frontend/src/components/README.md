@@ -27,6 +27,9 @@ components/
   NoteList.tsx     employee-written notes as quoted note cards
   ParamProbe.tsx   the reader's own query parameter, and what the server ignored of it
   TenantPill.tsx   the identity chip (tenant + user) in the header slot
+  IdentityMenu.tsx the identity chip as a control: the pill, and the menu carrying sign-out
+  InlineSearch.tsx a search box that grows right-to-left out of its own icon
+  GlideList.tsx    a row group with one highlight that glides to the row under the pointer
   Modal.tsx        the one dialog brick — portal, backdrop, Escape/backdrop/× dismissal
   ConfirmDialog.tsx  the confirm step in front of a delete, on Modal + Button
   forms/           FormCard, TextField, SelectField, FieldPair (+ index barrel)
@@ -281,6 +284,51 @@ The identity chip in the header slot: tenant id (mono) plus the signed-in user. 
 values come from `auth.ts`, which reads them out of the JWT payload **for display
 only** — the server derives the real tenant from the verified token.
 
+### IdentityMenu
+
+```tsx
+<IdentityMenu tenant={session.tenantId} username={session.username} onSignOut={clearSession} />
+```
+
+The identity chip **as a control**: the `TenantPill` brick plus a chevron, opening a small menu
+that carries sign-out (issue #114). It closes on an outside pointerdown and on Escape, which
+hands focus back to the trigger. The panel is `position: fixed`, placed off the trigger's own box,
+because the conversation rail is drawn with a clip and an absolutely positioned panel would be cut
+off at the rail's edge in the collapsed state; the gap under the trigger is the panel's margin, so
+the component carries no number of its own. Display only, like the pill it wraps.
+
+Pattern from [beautifului.dev](https://www.beautifului.dev) (MIT): its rail leads with the account
+and keeps the session actions behind it. Its workspace switcher is **not** ported - there is one
+tenant per session and it is not a choice a client makes (ADR 0002 layer 1).
+
+### InlineSearch
+
+```tsx
+<InlineSearch id="rail-search" label="Search conversations" placeholder="Search chats"
+  value={query} onChange={setQuery} hidden={collapsed} />
+```
+
+A search box that **grows right-to-left out of its own icon control** and focuses itself; Escape
+closes it, clears the query and hands focus back to the icon (issue #114). The wrapper sits at the
+end of its row, so the box growing inside it pushes its own left edge leftwards over whatever
+label was there. The query is the **caller's** state - the caller filters what it has already
+loaded, and this brick owns nothing but the disclosure. `hidden` is for a container that clips it
+out of view: the box closes, clears, and both controls leave the Tab order and the accessibility
+tree. While closed the box is `aria-hidden`, which is why it and the icon can share one name.
+
+### GlideList
+
+```tsx
+<GlideList hidden={collapsed}>{rows /* <li> each */}</GlideList>
+```
+
+A row group with **one** highlight that glides to the row the pointer or the keyboard is on,
+instead of every row lighting a background of its own (issue #114). The travel is what says the
+rows are one group. The highlight is a first `<li>` behind the others, positioned from the hovered
+row's own offsets; where that measurement has not happened - no layout yet, no scripting - the
+stylesheet's plain `:hover` per row is the floor, and the `gliding` class is what switches it off
+in favour of the travelling one. The active row keeps its own background either way.
+
 ### Modal
 
 The one dialog brick: a dimmed backdrop over the page, a centered panel with a title and a
@@ -402,18 +450,35 @@ switching never costs a reader the state of the one they left.
 ### layout/Sidebar
 
 ```tsx
-<Sidebar title="Conversations" actions={<Button className="side-add">New chat</Button>}>
-  <ul className="sidebar-list">{rows}</ul>
+<Sidebar title="Conversations" identity={<IdentityMenu … />} search={<InlineSearch … />}
+  actions={<Button className="side-add">New chat</Button>}>
+  <GlideList>{rows}</GlideList>
 </Sidebar>
 ```
 
-The shell's left rail: a caps title, an actions slot and the list itself, a full-height
-column with its own scroll so a long list never scrolls the page beside it — and so its
-right border reads as the page's divider rather than stopping under the last row. It owns its
-collapse state the way KB's `Collapsible` owns its open flag — collapsed, the rail keeps
-only the reopen control and gives the width back to the main region — so no view threads
-that state through. The rows are `.rail-item` (+ `.active`): a `.rail-item-open` label over
-its meta line, with an optional trailing control.
+The shell's left rail: the `identity` slot, then a head row carrying the collapse control, the
+caps `title` and the `search` slot, then `actions`, then the list — a full-height column whose
+body has its own scroll so a long list never scrolls the page beside it, and so its right border
+reads as the page's divider rather than stopping under the last row. The rows are `.rail-item`
+(+ `.active`): a `.rail-item-open` label over its meta line, with an optional trailing control.
+
+**The collapse is the brick's mechanism** (issue #114, from
+[beautifului.dev](https://www.beautifului.dev)): the aside animates its own width and clips, while
+the column inside it stays laid out at the expanded width whatever the state. Nothing is re-laid
+out, so an icon cannot slide sideways when the copy beside it leaves — which is the whole point,
+and why the collapsed state is not a second, narrower layout. Two consequences a caller has to
+know about:
+
+- The clip is `overflow: clip`, not `hidden`. A hidden box is still a scroll container, so
+  focusing a control the collapse had clipped made the browser scroll the whole column sideways
+  to reveal it; a clip container cannot be scrolled at all.
+- Copy that would otherwise be cut off mid-word carries `rail-copy` and fades out instead, and a
+  slot whose controls end up clipped takes them out of the Tab order and the accessibility tree
+  itself — `useSidebarCollapsed()` is how it reads that state, so nothing is threaded through a
+  view. The brick still owns the state, the way KB's `Collapsible` owns its open flag.
+
+Everything a designer would touch — the two widths, the shared icon inset, how far the search
+grows, the durations and the easing — is a custom property in the rail's block in `app.css`.
 
 ### layout/Header
 
@@ -644,6 +709,14 @@ every stored payload has structured keys, so the fallback is a live-turn path on
   (`.wiki-sec-item` renamed `.rail-item`, since nothing here is a wiki, and its trailing
   count chip replaced by the row's delete control); lifting it into `AppLayout` is what keeps
   the thread list alive across the chat instead of belonging to one page.
+- `IdentityMenu`, `InlineSearch` and `GlideList` are new, and so is the rail's collapse
+  mechanism (issue #114): **KB has no menu, popover, disclosure-search or hover-tracking
+  anywhere**, so their control registers (`.rail-menu`, `.rail-search`, `.rail-glide`) are ours
+  on KB's tokens. `.rail-menu-item` is a raw `role="menuitem"` button rather than the `Button`
+  brick, which carries neither a role nor the flat full-width metrics a menu row needs — the same
+  reason `.rail-item-open` and `.trace-step-toggle` are raw. The rail's own empty and loading
+  states stay `.sidebar-note` paragraphs rather than the `EmptyState` brick, which is a centred
+  card sized for a page region, not a 272px column.
 - **KB has no chat UI at all** (no bubbles, no streaming text, no composer beyond its
   one-shot Ask box), so the `chat/` bricks are new. Their visuals still come from KB:
   the bubble is its `.ask-answer` card plus the icon + caps role header it puts above an

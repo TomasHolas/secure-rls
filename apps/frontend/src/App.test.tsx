@@ -411,17 +411,24 @@ describe("the conversation rail", () => {
     expect(await screen.findByText(/Could not load your conversations/)).toBeTruthy();
   });
 
-  it("collapses the rail down to its reopen control", async () => {
+  // Rewritten with issue #114: the collapse now clips the rail rather than unmounting its
+  // contents, which is what keeps the icon column from moving, so the shell's promise is a
+  // narrow aside whose list is no longer reachable - not an empty DOM. New chat stays reachable
+  // because its icon is still on screen. views/ConversationsSidebar.test.tsx owns the detail.
+  it("collapses the rail to its icon column and expands it again", async () => {
     const { view } = await signIn();
     await screen.findByText(NEWEST.title);
 
     fireEvent.click(screen.getByLabelText("Hide conversations"));
 
-    expect(titles(view.container)).toEqual([]);
-    expect(screen.queryByRole("button", { name: /new chat/i })).toBeNull();
+    expect(view.container.querySelector(".sidebar-collapsed")).toBeTruthy();
+    expect(view.container.querySelector(".sidebar-list")?.getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByRole("button", { name: /new chat/i })).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText("Show conversations"));
 
+    expect(view.container.querySelector(".sidebar-collapsed")).toBeNull();
+    expect(view.container.querySelector(".sidebar-list")?.getAttribute("aria-hidden")).toBeNull();
     expect(titles(view.container)).toEqual([NEWEST.title, OLDEST.title]);
   });
 });

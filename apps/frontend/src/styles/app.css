@@ -79,34 +79,135 @@
 /* KB's .wiki-sidebar rail, lifted into the shell: in KB every view owns its own rail and
    none of them collapse, but the thread list outlives the page it sits next to. The column is
    a full-height flex item with its own scroll, so a long history never scrolls the transcript
-   and the divider runs the whole page rather than stopping under the last thread. */
-.sidebar {
-  box-sizing: border-box; flex: 0 0 272px; width: 272px;
-  min-height: 0; overflow-y: auto;
-  display: flex; flex-direction: column; gap: var(--space-2);
-  padding: var(--space-5) var(--space-4);
-  border-right: 1px solid var(--border-subtle);
+   and the divider runs the whole page rather than stopping under the last thread.
+
+   Its shape and its four moving parts are beautifului.dev's sidebar patterns on our tokens
+   (issue #114, docs/ui-pattern-review.md). Everything a designer would touch - the two widths,
+   the icon inset every row shares, how far the search grows and how long each part takes -
+   is a custom property here, because that file is KB's verbatim copy (ADR 0006) and a value
+   KB does not define would be lost on the next sync. */
+:root {
+  --rail-width: 272px;
+  --rail-collapsed-width: 60px;
+  --rail-icon-inset: 9px;
+  --rail-row-height: 36px;
+  --rail-search-width: 176px;
+  --rail-menu-width: 180px;
+  --rail-dur: var(--dur-base);
+  --rail-glide-dur: var(--dur-fast);
+  --rail-ease: var(--ease-out);
 }
-.sidebar-collapsed { flex-basis: auto; width: auto; padding: var(--space-5) var(--space-3); }
-.sidebar-head { display: flex; align-items: center; gap: var(--space-2); min-height: 28px; }
+
+/* The collapse: the aside animates its own width and clips, and the column inside it stays laid
+   out at the expanded width whatever happens (.sidebar-inner below). That is the whole trick -
+   no row is re-laid out, so no icon can slide sideways when the copy beside it leaves. It clips
+   with `clip` rather than `hidden` because a hidden box is still a scroll container: focusing a
+   control the collapsed rail had clipped made the browser scroll the whole column sideways to
+   reveal it, icons included. A clip container cannot be scrolled, by a reader or by the engine. */
+.sidebar {
+  box-sizing: border-box; flex: 0 0 var(--rail-width); width: var(--rail-width);
+  min-height: 0; overflow: clip;
+  border-right: 1px solid var(--border-subtle);
+  transition: flex-basis var(--rail-dur) var(--rail-ease), width var(--rail-dur) var(--rail-ease);
+}
+.sidebar-collapsed { flex-basis: var(--rail-collapsed-width); width: var(--rail-collapsed-width); }
+.sidebar-inner {
+  box-sizing: border-box; width: var(--rail-width); height: 100%;
+  display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-5) var(--space-3);
+}
+.sidebar-identity, .sidebar-head, .sidebar-actions { flex: 0 0 auto; }
+.sidebar-head { display: flex; align-items: center; gap: var(--space-2); min-height: var(--rail-row-height); }
+/* The caps label yields its width to the search box growing over it, cut rather than ellipsised
+   so the collapse and the growth both end on nothing instead of a stranded dot. */
 .sidebar-title {
+  flex: 1; min-width: 0; overflow: hidden; white-space: nowrap;
   font-size: var(--text-2xs); font-weight: 600; letter-spacing: var(--tracking-caps);
   text-transform: uppercase; color: var(--fg-4);
 }
-.sidebar-toggle { margin-left: auto; width: 28px; height: 28px; }
-.sidebar-actions { margin-top: var(--space-2); }
-.sidebar-body { display: flex; flex-direction: column; min-height: 0; }
+/* The one collapse control, first in the icon column: at the row's right it would be clipped
+   away in the collapsed state and there would be nothing left to expand the rail with. */
+.sidebar-toggle { flex: none; width: var(--rail-row-height); height: var(--rail-row-height); }
+.sidebar-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 .sidebar-note { margin: var(--space-2) 0 0; color: var(--fg-4); font-size: var(--text-xs); line-height: var(--leading-normal); }
-.sidebar-list { list-style: none; display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; }
-/* KB's rail "Add record" button, in the actions slot. */
-.side-add { width: 100%; justify-content: center; }
+.sidebar-list { position: relative; list-style: none; display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; }
+/* KB's rail "Add record" button, in the actions slot; its icon takes the shared inset so it
+   lines up with the identity chip above it and the collapse control beside it (.btn owns the
+   centring this overrides, so the selector has to outweigh it rather than follow it). */
+.btn.side-add { width: 100%; justify-content: flex-start; gap: var(--space-3); min-height: var(--rail-row-height); padding-left: calc(var(--rail-icon-inset) - 1px); }
 .side-add:hover { color: var(--fg-brand); background: color-mix(in srgb, var(--accent-500) 12%, transparent); border-color: color-mix(in srgb, var(--accent-500) 35%, var(--border-default)); }
+
+/* Collapsed, the copy beside the icons leaves instead of being cut off mid-word, and the chrome
+   that framed it goes with it: what is left is the icon column, at the x the clip found it. */
+.rail-copy, .sidebar-inner .rail-search,
+.sidebar-inner .tenant-pill-tenant, .sidebar-inner .tenant-pill-user {
+  transition: opacity var(--rail-dur) var(--rail-ease);
+}
+.sidebar-collapsed .rail-copy, .sidebar-collapsed .rail-search,
+.sidebar-collapsed .tenant-pill-tenant, .sidebar-collapsed .tenant-pill-user { opacity: 0; }
+/* Faded is not gone: without this a click could still land on a row behind the rail's edge. */
+.sidebar-collapsed .sidebar-body, .sidebar-collapsed .rail-search { pointer-events: none; }
+.sidebar-collapsed .tenant-pill, .sidebar-collapsed .btn.side-add { background: none; border-color: transparent; }
+
+/* ---- The identity chip as a control, and the menu it opens (IdentityMenu) ---- */
+.rail-identity-wrap { position: relative; }
+.rail-identity {
+  display: flex; align-items: center; gap: var(--space-2); width: 100%;
+  min-height: var(--rail-row-height); padding: 0;
+  background: none; border: none; border-radius: var(--radius-md); cursor: pointer;
+}
+.rail-identity-chevron { color: var(--fg-4); margin-left: auto; margin-right: var(--space-2); }
+.rail-identity:hover .rail-identity-chevron { color: var(--fg-2); }
+/* Fixed, so the panel escapes the clip the collapsed rail is drawn with; the gap under the
+   trigger is this margin rather than a number the component would have to carry. */
+.rail-menu {
+  position: fixed; z-index: 40; margin-top: var(--space-1); min-width: var(--rail-menu-width); padding: var(--space-1);
+  background: var(--bg-surface); border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-md);
+}
+.rail-menu-item {
+  display: flex; align-items: center; gap: var(--space-2); width: 100%;
+  padding: var(--space-2) var(--space-3); background: none; border: none;
+  border-radius: var(--radius-md); color: var(--fg-2); cursor: pointer;
+  font-family: var(--font-body); font-size: var(--text-sm); font-weight: 500; text-align: left;
+}
+.rail-menu-item:hover { background: var(--bg-hover); color: var(--fg-1); }
+
+/* ---- The search that grows out of its icon (InlineSearch) ---- */
+/* The wrapper is the last thing in the head row, so the box growing inside it pushes its own
+   left edge leftwards: it opens right-to-left over the label rather than off the rail's edge. */
+.rail-search { display: flex; align-items: center; justify-content: flex-end; min-width: 0; }
+.rail-search-input {
+  width: 0; min-width: 0; padding: 0; opacity: 0;
+  height: 28px; border-radius: var(--radius-md);
+  background: var(--bg-surface-2); color: var(--fg-1); border: 1px solid transparent;
+  font-family: var(--font-body); font-size: var(--text-xs);
+  transition: width var(--rail-dur) var(--rail-ease), opacity var(--rail-dur) var(--rail-ease);
+}
+.rail-search[data-open="true"] .rail-search-input {
+  width: var(--rail-search-width); opacity: 1;
+  padding: 0 var(--space-2); border-color: var(--border-default);
+}
+/* The engine's own clear glyph would sit beside our close control saying the same thing. */
+.rail-search-input::-webkit-search-cancel-button { display: none; }
+.rail-search-toggle { flex: none; width: 28px; height: 28px; }
 
 /* One thread row: KB's .wiki-sec-item with its trailing count chip replaced by a delete
    control, and the label stacked over the created timestamp. */
-.rail-item { display: flex; align-items: center; gap: var(--space-1); border-radius: var(--radius-md); transition: background var(--dur-fast) var(--ease-out); }
+.rail-item { position: relative; display: flex; align-items: center; gap: var(--space-1); border-radius: var(--radius-md); transition: background var(--dur-fast) var(--ease-out); }
+/* The floor: with no highlight positioned - no scripting, nothing measured yet - the row under
+   the pointer lights its own background, which is what the glide replaces when it is running. */
 .rail-item:hover { background: var(--bg-hover); }
+.sidebar-list.gliding .rail-item:not(.active):hover { background: transparent; }
 .rail-item.active { background: var(--bg-surface); box-shadow: var(--shadow-sm); }
+/* ONE highlight for the group, travelling to the row the pointer or the focus is on (GlideList).
+   It is a sibling row behind the others: first in the list, so the rows paint over it. */
+.rail-glide {
+  position: absolute; left: 0; right: 0; top: 0; opacity: 0; pointer-events: none;
+  background: var(--bg-hover); border-radius: var(--radius-md);
+  transition: transform var(--rail-glide-dur) var(--rail-ease), height var(--rail-glide-dur) var(--rail-ease), opacity var(--dur-fast) var(--ease-out);
+}
+.sidebar-list.gliding .rail-glide { opacity: 1; }
 .rail-item-open {
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
   padding: var(--space-2) var(--space-3); background: none; border: none;
@@ -479,6 +580,9 @@
   /* The grid freezes at its dim opacity. The elapsed time beside it keeps ticking: that is
      information the reader asked for, not motion for its own sake (issue #123). */
   .loader-cell { animation: none; }
+  /* The rail's moving parts (issue #114): the collapse, the copy fading with it, the search
+     growing out of its icon and the hover highlight all land where they belong at once. */
+  .sidebar, .rail-copy, .rail-search-input, .rail-glide { transition: none; }
 }
 .trace-text { margin: 0; padding: var(--space-3); background: var(--bg-surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-3); white-space: pre-wrap; overflow-x: auto; }
 

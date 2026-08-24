@@ -23,6 +23,41 @@ is why several patterns the issue expected us to want are already in place.
 | **Honour reduced motion** | The shimmer and the loader grid stop under `prefers-reduced-motion` | The reference does this properly; we had no such block at all |
 | **Their loader: a pixel grid with a wavefront** | New `Loader` brick (issue #123): a 3x3 grid whose chevron wavefront sweeps, the shimmering label above folded into it, and an elapsed time subtracted from a start timestamp. It replaced the spinning `progress_activity` glyph at every call site — trace header, thinking step, login button, Records and Notes loading states | A spinner says "something is happening" and nothing else, in five places that had each sized it differently. A wavefront with a running clock says *how long*, which on a demo is the question the room is actually asking while the model thinks — and one brick means the answer looks the same everywhere |
 
+### Adopted — the sidebar (issue #114)
+
+The pass above judged the reference's 20 components against the chat, Records and Notes screens
+and never looked at the conversation rail, which appears in neither table. The owner's ruling
+closed that gap: **port the patterns into our own CSS and tokens** — no Tailwind, no
+`@central-icons-react` (it ships under "SEE LICENSE IN LICENSE.md" rather than a standard OSS
+licence and this repo goes public), no new dependency of any kind. Our colours come from
+`styles/tokens.css` by construction (ADR 0006); what the reference supplies is behaviour and
+layout.
+
+| Pattern | What we did | Why |
+|---|---|---|
+| **Collapse to an icon rail, icons staying put** | The aside animates its own width and clips (`overflow: clip`); `.sidebar-inner` stays laid out at the expanded width in both states, so nothing is re-laid out. Two widths, the icon inset, the durations and the easing are custom properties in `app.css` | Copy at the *labels'* position leaving is the effect; an icon *moving* is a different, worse effect. Re-laying out each row to an icon-only variant is what makes icons jump, and it is two layouts to keep honest instead of one |
+| **The clipped column is not a scroll container** | `overflow: clip` rather than `hidden` | Found the hard way: with `hidden` the aside is still scrollable, so focusing a control the collapse had clipped made the browser scroll the whole column sideways to reveal it — icons included — and the rail rendered as an empty strip. Pinned by a test |
+| **Identity menu at the top** | New `IdentityMenu` brick: the `TenantPill` we already had plus a chevron, opening a `role="menu"` panel carrying Sign out; closes on outside pointerdown and on Escape, which returns focus to the trigger. The panel is `position: fixed` off the trigger's box, so it escapes the rail's clip | The rail is where a reader's attention already is, and the tenant chip is the honest thing to hang a session action off. Fixed rather than absolute because an absolutely positioned panel is cut off at the collapsed rail's edge |
+| **Inline search growing right-to-left** | New `InlineSearch` brick, filtering the titles already loaded, client-side, with a "No chats found." state; Escape closes, clears and returns focus to the icon | A rail search that hit the server would be a second, weaker retrieval path beside the agent's own; filtering titles on screen is what a reader actually wants from a long rail, and it cannot lie about the data |
+| **One gliding hover highlight** | New `GlideList` brick: a single highlight element positioned from the hovered row's offsets, with the per-row `:hover` background kept underneath as the floor and switched off only while the glide is running | One moving highlight says "these rows are one group"; a background per row says "this one". The floor is what makes the JS optional rather than load-bearing |
+| **Truncation with `title`** | Every thread row carries its full title as `title` | Generated thread labels are the one string in the rail that reliably outgrows 272px, and the truncation was silent |
+| **Honour reduced motion** | The collapse, the search's growth and the glide are added to the existing `prefers-reduced-motion` block in `app.css` — one block, extended | Adopted in the pass above and it applies to every moving part we add, not only the ones that came with it |
+
+**What we left, and why.** Its **workspace switcher** — there is one tenant per session and it is
+not a client's choice (ADR 0002 layer 1); a picker there would imply the UI selects a tenant and
+the server merely declines, which is the same lie `ParamProbe` exists to avoid. Its **"Invite
+users 3/10" row** and its **Upgrade footer** — SaaS furniture for a product with seats and a
+plan; this app has three hardcoded tenant users (ADR 0009) and nothing to upgrade. Its **icon
+package** — non-OSS licence, and our `Icon` brick is a self-hosted Material Symbols subset, so
+the rail ships without one new glyph. Its **Tailwind classes** — the whole point of the ruling:
+the tokens are the source of colour and type, and a utility framework would fork that.
+
+**Sign-out is in both places, deliberately.** The rail's identity menu is the new home for it, but
+the header keeps its button, because the rail is mounted on the **Chat** tab only
+(`App.tsx` passes it as the shell's `sidebar` when that tab is open): making the menu the single
+home would strand a reader on Records or Notes with no way out. Two doors to one action is the
+smaller wrong.
+
 ## Rejected
 
 | Pattern | Why not |
