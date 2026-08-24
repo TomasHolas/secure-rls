@@ -88,7 +88,7 @@ from app import (
     create_app,
     thinking_checker,
 )
-from auth import SECRET_ENV_VAR, AuthError
+from auth import ALL_TENANTS, SECRET_ENV_VAR, AuthError
 from browse import DEFAULT_SORT
 from conversations import ConversationRegistry
 from db import VERDICT_APPROVED, init_db
@@ -103,6 +103,7 @@ IDLE_POLL_S = 0.01
 
 ALICE = ("alice@acme", "demo-acme")
 BOB = ("bob@beta", "demo-beta")
+ADMIN = ("admin", "demo-admin")
 ACME = "acme"
 BETA = "beta"
 
@@ -385,9 +386,11 @@ class FakeNotes:
     offline: bool = False
     calls: list[dict] = field(default_factory=list)
 
-    def __call__(self, *, query: str, tenant_id: str, k: int) -> list[dict]:
-        """Record the retrieval, then answer as the agent's own path would for that tenant."""
-        self.calls.append({"query": query, "tenant_id": tenant_id, "k": k})
+    def __call__(self, *, query: str, tenant_id: str, all_tenants: bool, k: int) -> list[dict]:
+        """Record the retrieval, then answer as the agent's own path would in that scope."""
+        self.calls.append(
+            {"query": query, "tenant_id": tenant_id, "all_tenants": all_tenants, "k": k}
+        )
         if self.offline:
             raise RetrievalUnavailable("the note index has not been built on this server")
         return self.hits
@@ -1062,6 +1065,7 @@ def test_the_notes_search_runs_the_agents_retrieval_path_for_the_tokens_tenant(w
     assert wiring.notes.last == {
         "query": "compiler",
         "tenant_id": ACME,
+        "all_tenants": False,
         "k": runtime().rag.top_k,
     }
     assert response.json()["hits"] == [
@@ -1092,6 +1096,72 @@ def test_a_hit_naming_a_foreign_row_is_annotated_with_nothing(tmp_path, browse_d
         "/notes/search", params={"q": "secret"}, headers=_headers(client, ALICE)
     )
 
+    (hit,) = response.json()["hits"]
+    assert "tenant_id" not in hit
+    assert "department" not in hit
+    assert "performance_score" not in hit
+
+
+def test_the_notes_search_of_an_all_scope_token_takes_the_partition_less_path(wiring):
+    """The tab runs the retrieval that identity's own agent runs (ADR 0010 as amended).
+
+    Before this, an admin session searched a partition named after its distinguished tenant claim
+    - one no note carries - and the tab reported an empty corpus. The scope now travels with the
+    query, so the tab shows what that session can actually reach.
+    """
+    response = wiring.client.get(
+        "/notes/search", params={"q": "compiler"}, headers=_headers(wiring.client, ADMIN)
+    )
+
+    assert response.status_code == 200
+    assert wiring.notes.last == {
+        "query": "compiler",
+        "tenant_id": ALL_TENANTS,
+        "all_tenants": True,
+        "k": runtime().rag.top_k,
+    }
+
+
+def test_an_all_scope_hit_from_another_tenant_carries_that_tenants_own_row(tmp_path, browse_db):
+    """The annotation follows the retrieval: a foreign hit is described, not blanked out."""
+    foreign = [{"user_id": 4, "name": "Adalovelace Beta", "note": BETA_SECRET, "distance": 0.1}]
+    client = _client(tmp_path, note_search=FakeNotes(hits=foreign), db_path=browse_db)
+
+    response = client.get(
+        "/notes/search", params={"q": "secret"}, headers=_headers(client, ADMIN)
+    )
+
+    (hit,) = response.json()["hits"]
+    assert hit["tenant_id"] == BETA
+    assert hit["department"] == "Engineering"
+    assert hit["performance_score"] == 5.0
+    assert hit["distance"] == 0.1
+
+
+@pytest.mark.parametrize(
+    "widening",
+    [{"all_tenants": "true"}, {"scope": "all"}, {"tenant_id": BETA}, {"all_tenants": 1}],
+)
+def test_no_query_parameter_can_widen_a_tenant_tokens_notes_search(tmp_path, browse_db, widening):
+    """The other direction, and the one that matters: the scope is the token's, not the URL's.
+
+    A reader who has seen beta's payload in the corpus listing may well try to ask their own
+    search for it by hand. Every shape of that attempt is a parameter the handler does not read,
+    so the retrieval stays scoped and the annotation stays scoped with it - the hit comes back
+    described by nothing, exactly as it did before an all-tenant scope existed.
+    """
+    foreign = [{"user_id": 4, "name": "Adalovelace Beta", "note": BETA_SECRET, "distance": 0.1}]
+    notes = FakeNotes(hits=foreign)
+    client = _client(tmp_path, note_search=notes, db_path=browse_db)
+
+    response = client.get(
+        "/notes/search",
+        params={"q": "secret", **widening},
+        headers=_headers(client, ALICE),
+    )
+
+    assert notes.last["all_tenants"] is False
+    assert notes.last["tenant_id"] == ACME
     (hit,) = response.json()["hits"]
     assert "tenant_id" not in hit
     assert "department" not in hit
