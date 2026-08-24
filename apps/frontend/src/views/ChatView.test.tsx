@@ -9,6 +9,7 @@ import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChartSpec } from "../components/charts";
+import { MATERIAL_SYMBOLS } from "../components/Icon";
 import { replayTurns } from "../lib/trace";
 import type { TurnRecord } from "../lib/api";
 import { ChatView } from "./ChatView";
@@ -220,6 +221,12 @@ function heldFrames() {
 /** Everything the SqlRewrite brick marked as added by the scoping layer, as one string. */
 function marked(container: HTMLElement): string {
   return [...container.querySelectorAll(".sql-add")].map((mark) => mark.textContent).join(" ");
+}
+
+/** The Material ligature the pill carrying this label renders, or "" when it carries none. */
+function pillGlyph(label: string): string {
+  const pill = screen.getByText(label).closest(".pill");
+  return pill?.querySelector(".material-symbols-outlined")?.textContent ?? "";
 }
 
 function ask(question = QUESTION): void {
@@ -528,6 +535,16 @@ describe("the chat view", () => {
     expect(screen.getByText("In 250")).toBeTruthy();
     expect(screen.getByText("Out 28")).toBeTruthy();
     expect(screen.getByText("14.0 T/S")).toBeTruthy();
+  });
+
+  it("marks the direction of each token count with an arrow glyph", async () => {
+    await renderReady();
+    ask();
+    await screen.findByText("Engineering leads at 91000.");
+
+    expect(pillGlyph("In 250")).toBe(MATERIAL_SYMBOLS["arrow-down"]);
+    expect(pillGlyph("Out 28")).toBe(MATERIAL_SYMBOLS["arrow-up"]);
+    expect(pillGlyph("14.0 T/S")).toBe(MATERIAL_SYMBOLS.activity);
   });
 
   it("states no token counts for a turn that never generated any", async () => {

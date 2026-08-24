@@ -360,10 +360,10 @@ function TurnCost({ usage }: { usage: TurnUsage | null }) {
   if (!usage || usage.outputTokens <= 0) return null;
   return (
     <>
-      <Pill tone="neutral" title="Prompt tokens this turn sent to the model">
+      <Pill tone="neutral" icon="arrow-down" title="Prompt tokens this turn sent to the model">
         In {usage.inputTokens}
       </Pill>
-      <Pill tone="neutral" title="Tokens the model generated this turn">
+      <Pill tone="neutral" icon="arrow-up" title="Tokens the model generated this turn">
         Out {usage.outputTokens}
       </Pill>
       {rate === null ? null : (
