@@ -1,4 +1,4 @@
-# ADR 0014 — Records and Notes: browsing the whole dataset as the control group
+# ADR 0014 — Records, Notes and Audit: browsing the whole dataset as the control group
 
 Status: accepted (rewritten 2026-08-24 per issue #117, an owner correction. The original decision
 — that these tabs list "the tenant's own data" — is reversed, not amended: the listings show every
@@ -7,7 +7,10 @@ recorded in Context below, because why it happened is part of the decision. Amen
 per issue #139, an owner review of how these two tabs read: the note card, the presentation of the
 executed statement, the tenant filter, and the deletion of the reader-facing parameter probe. What
 the endpoints do is untouched by that amendment — including the ignored-parameter report, which is
-still in every listing response.)
+still in every listing response. Amended the same day once more, on the owner's question "do we
+have a logs tab? we were saving the logs right?": the audit log of ADR 0002 was persisted from the
+first RLS commit and nothing served it, so it gains a fourth tab and a listing of its own — see
+section 12. Nothing above changes.)
 
 ## Context
 
@@ -231,7 +234,8 @@ message.
 ### 9. Endpoints
 
 All JWT-required, all thin handlers over `browse.py`: `GET /records`, `GET /records/departments`,
-`GET /records/tenants`, `GET /notes`, `GET /notes/search`, `GET /notes/flagged`. A refusal is an
+`GET /records/tenants`, `GET /notes`, `GET /notes/search`, `GET /notes/flagged`, `GET /audit`
+(section 12). A refusal is an
 honest status: 400 carrying the allowlist's own reason, 503 when no note index exists, and a bare
 logged 403 if an RLS layer ever trips — which on this path would mean one of our own templates is
 broken.
@@ -309,6 +313,49 @@ is an embedding of the reader's query, not a filter narrowing rows, and a reques
 typed question would spend the model on drafts nobody asked about. Without the filter, reaching another tenant's planted note means paging 40 pages, and the demonstration the tab
 exists for would depend on patience.
 
+### 12. The Audit tab: the trail the server was already keeping
+
+The owner asked *"do we have a logs tab? we were saving the logs right?"* — and both halves were
+true at once. Every call through `db.py` has written an audit row since the first RLS commit (the
+generated SQL, the verdict, the executed statement, the row count, the error kind, ADR 0002), the
+row is written in a `finally` so no path can skip it, and the eval leak checks read it. Nothing in
+the app served it. So the one claim the surface could not make checkable was the load-bearing one:
+that every read was scoped, refused or recorded.
+
+The Audit tab is that trail, and it belongs to this ADR because it is the same decision as Records
+and Notes: **the tabs are the auditor surface**, and a trail is what an auditor reads.
+
+- **All tenants' entries, newest first, no filters.** The same reason Records lists 1000 rows: a
+  trail narrowed to the caller could not show another tenant's query being scoped to that other
+  tenant, which is exactly the comparison the page is for. A log is read from its head, so it has
+  a pager and a reload and no filter grid at all. A tenant chip row is the obvious next thing and
+  is the owner's to ask for; adding it before it is asked for would make the log a workbench.
+- **Serving it exposes nothing new.** An audit row holds *statements and metadata* — never a
+  result row. There is no tenant data in that store that Records does not already show outright, a
+  token is required exactly as on every other listing, and the endpoint is not a tool, so no model
+  can reach it (ADR 0002, layer 1; the tool-closure sweep of section 3 is unchanged and untouched
+  by this addition).
+- **`db.py` stays the only reader of `audit.db`.** `audit_entries` hands the whole log to the
+  evals; `audit_window` hands one newest-first window to this listing, with `LIMIT`/`OFFSET` bound
+  and the total counted in the store rather than loading the log to slice it in Python.
+  `browse.browse_audit` applies the same paging rules the row listings use — the same default page,
+  the same ceiling, the executor's row cap (ADR 0007) — and the handler stays one call.
+- **Reading the log writes no audit row.** Reading the trail is not a read of the dataset, and a
+  trail that recorded every look at itself would bury the rows it exists to show. So this is the
+  one listing without a `reader_tenant`: there is no data access to attribute.
+- **On screen it is the store's own shape**, under the store's own column names: `ts`, `tenant`,
+  `generated_sql`, `verdict`, `error_kind`, `executed_sql`, `rowcount`. The verdict is a `Pill` —
+  neutral for a statement that ran, `danger` for one a layer refused, `warn` for one that broke —
+  and each statement is one ellipsised line with the full text on the cell a reader hovers, because
+  a log is scanned down its verdict column and two columns of wrapped SQL per row would bury that.
+  A refused row carries no executed statement at all, which is the log saying nothing ran rather
+  than saying nothing. The timestamps stay UTC ISO as the server wrote them (the conversation rail
+  localizes its own, because a thread is something the reader did and a log row is something the
+  server recorded).
+- **One brick change, additive.** `DataTable` gained an optional `render` map keyed by column name,
+  which is what lets a `Pill` and a truncated statement sit in cells without a second table brick
+  existing. A column not listed renders exactly as before, so no other caller is touched.
+
 ## Consequences
 
 - The isolation claim becomes checkable in the sharpest available form: a reviewer reads the whole
@@ -330,6 +377,10 @@ exists for would depend on patience.
   it by the statement it recorded.
 - A demo that shows a planted payload before the agent reads it, in another tenant's rows, needs
   no narration to explain what second-order injection means.
+- The audit trail is now on screen as well as in the store, which cuts both ways and is worth
+  stating: the browse rows a reader generates are in it too, so the log a demo shows is partly the
+  demo's own footprints. That is the trail being honest about who read what, and the executed
+  statement in each row is what tells the two apart.
 
 ## Alternatives
 

@@ -52,4 +52,4 @@ docs in the same change.
 - [0011 — Agent design: explicit graph, retry policy, memory, tool contracts](decisions/0011-agent-design.md)
 - [0012 — API transport and chat UX: SSE streaming, scoped conversations, transparent refusals](decisions/0012-api-and-chat-ux.md)
 - [0013 — Deployment: CI+CD to GHCR, compose as the deployment unit](decisions/0013-deployment-cicd.md)
-- [0014 — Records and Notes: browsing the whole dataset as the control group](decisions/0014-records-and-notes-browsing.md)
+- [0014 — Records, Notes and Audit: browsing the whole dataset as the control group](decisions/0014-records-and-notes-browsing.md)

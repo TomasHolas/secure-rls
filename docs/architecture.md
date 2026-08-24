@@ -14,7 +14,7 @@ product: no path exists from the LLM to another tenant's rows.
                          v                                  v
 React SPA (:3002)   POST /login                       POST /chat   (Bearer JWT)
    Chat / Records /      │                                  │
-   Notes tabs            v                                  v
+   Notes / Audit tabs    v                                  v
 FastAPI (:8002)     auth.py                            app.py  (thin handler)
                     PBKDF2 check                             │  tenant from JWT
                     JWT {sub, tenant_id}                     v
@@ -139,12 +139,12 @@ belongs to.
 | Data access | `apps/backend/db.py` | CSV load, schema, the scoped executor (layers 2.5-4), the audit log. The only module that opens a SQLite connection, and the owner of the one unscoped browse read. |
 | Data access | `apps/backend/analytics.py` | Aggregates, Tukey IQR anomalies and chart data: allowlisted arguments into fixed query templates through `db.py`, never generated SQL. |
 | Data access | `apps/backend/rag.py` | Note embedding (Ollama `/api/embed`) and tenant-partitioned vector search (ADR 0010); storage and queries go through `db.py`. |
-| Data access | `apps/backend/browse.py` | The Records and Notes templates (ADR 0014): allowlisted filters bound as parameters, allowlisted sorts, paging on the ADR 0007 row cap. The listings take the unscoped read; the notes search stays scoped and delegates to `rag.py`. |
+| Data access | `apps/backend/browse.py` | The Records, Notes and Audit listings (ADR 0014): allowlisted filters bound as parameters, allowlisted sorts, paging on the ADR 0007 row cap. The listings take the unscoped read; the notes search stays scoped and delegates to `rag.py`; the audit listing pages `db.audit_window` and touches no dataset row. |
 | State | `apps/backend/conversations.py` | The thread registry and its per-turn history in its own app-state store `state.db`, every access verified against the JWT identity (ADR 0012 as amended). |
 | State | `apps/backend/turns.py` | What one turn's trace events become in that store, and the caps on it: the same events the stream carries, reduced rather than described a second time. |
 | State | `apps/backend/paths.py` | Where every state file lives: the data directory (`SECURE_RLS_DATA_DIR`, defaulting to the backend package so dev needs no variable) and the paths inside it. In the deployment that directory is a named volume, so a rebuild keeps the conversations, the memory, the audit trail and the embeddings (ADR 0013 as amended). |
 | State | `apps/backend/runtime.py` | The typed view of [`runtime.json`](../apps/backend/runtime.json), where every tunable lives so none is a literal in code. |
-| Presentation | `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, streaming chat with the live reasoning/SQL trace (generated and executed statement side by side, tenant scoping highlighted inside the one that ran), conversation rail, tenant badge, charts, transparent refusal and truncation states (ADR 0012), and the Chat / Records / Notes tabs (ADR 0014). |
+| Presentation | `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, streaming chat with the live reasoning/SQL trace (generated and executed statement side by side, tenant scoping highlighted inside the one that ran), conversation rail, tenant badge, charts, transparent refusal and truncation states (ADR 0012), and the Chat / Records / Notes / Audit tabs (ADR 0014). |
 | Verification | `apps/backend/evals/` | Correctness + adversarial suites over the same bricks, run per tenant, plus the model gate; `harness.py` owns the plumbing they share and the reports are the committed scorecards (ADR 0004). |
 
 ## Data model
@@ -214,6 +214,16 @@ reach it, so the claim being defended — the *agent* cannot leave its tenant �
 untouched. Every listing response also names the query parameters it did **not**
 read, so a stray parameter is reported rather than silently discarded
 (`browse.ignored_params`).
+
+The third tab of that surface is **Audit**: the audit log those reads (and every
+agent tool call) already write, served newest first by `GET /audit`, all tenants'
+entries, no filters — the generated SQL, the verdict, the executed statement, the
+error kind and the row count. It is what makes "every read was scoped, refused or
+recorded" checkable instead of asserted, and it exposes nothing new: that store
+holds statements and metadata, never a result row, the route needs a token like
+every other listing, and it is not a tool, so no model can reach it. `db.py`
+remains the only reader of `audit.db` (`audit_window`, one bound `LIMIT`/`OFFSET`
+window plus the total).
 
 ## Assignment compliance map
 

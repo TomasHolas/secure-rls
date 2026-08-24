@@ -131,7 +131,10 @@ prompt and every bound tool description together.
   tunables.
 - **Audit log**: every generated SQL, validation verdict, rewritten SQL, and
   tenant context is persisted (Microsoft secure multitenant RAG guidance) —
-  also the data source for the UI trace and the eval leakage checks.
+  also the data source for the UI trace and the eval leakage checks. Since the
+  Audit tab (ADR 0014 as amended) the trail is **reader-visible**: `GET /audit`
+  serves it newest first, every tenant's entries, which is honest because an
+  audit row holds statements and metadata and never a result row.
 - **query_only caveat, documented**: `PRAGMA query_only` is reversible by SQL
   ("not truly read-only" — sqlite.org), so the load-bearing read-only control is
   `mode=ro` at file open; layer 2's PRAGMA block is what makes `query_only`
