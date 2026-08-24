@@ -71,6 +71,21 @@ groundedness too; a turn whose frame was not kept still claims nothing about it.
 The mechanism behind the flag - one grounding nudge per turn - is ADR 0011's,
 and it is answer quality, never a security layer.
 
+**`done` says whether the turn's memory was sent whole (added with issue #131).**
+The frame carries `history_trimmed`: whether a thread too long for the context
+window had its oldest turns left out of what this turn's model calls were sent
+(the mechanism and its knobs are ADR 0011's). It rides the terminal frame for
+the same reason `grounded` does — it is a property of the finished turn, not a
+moment the reader watches — and it is a boolean, because what a reader needs is
+whether this answer had the whole conversation behind it; how many turns were
+left out goes to the server log. Two things it does not mean: nothing was
+trimmed from storage (the checkpointer keeps every message and replay still
+serves the whole thread), and the turn is not `cut_short` — no bound ended it,
+the answer is complete, it simply had a shorter memory. The SPA treatment
+follows the same honesty pattern as the truncation chip and the not-grounded
+pill; a client that does not read the field is unaffected, since every trace
+event is JSON parsed by name and never by shape.
+
 **Two termination invariants (amended after issue #66).** The live pass showed
 what their absence costs: one tool raising an unexpected exception killed the
 response mid-flight, leaving every announced step at "running" forever and the
@@ -150,8 +165,9 @@ previous amendment is replaced: **the whole turn is persisted and replayed.**
   outcome that settled each of them (`tool_result` with its server-produced
   payload, `retry` with its reason and attempt number, or `security_event` with
   the layer and kind that fired), and the terminal `done` frame with the turn's
-  status, its token and duration telemetry, its groundedness and the
-  prompt-guardrail position that produced it (ADR 0011 as amended). The
+  status, its token and duration telemetry, its groundedness, whether its memory
+  had to be trimmed to be sent, and the prompt-guardrail position that produced
+  it (ADR 0011 as amended). The
   `reason`-node `node_start` events are kept because they are what groups the
   reasoning into rounds; the other nodes render nothing, so they are transport
   only, as the amendment after issue #87 already said.
