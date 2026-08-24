@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChartSpec } from "../components/charts";
 import { replayTurns } from "../lib/trace";
+import type { TurnRecord } from "../lib/api";
 import { ChatView } from "./ChatView";
 
 type ChatViewProps = ComponentProps<typeof ChatView>;
@@ -149,16 +150,43 @@ function replayed() {
     [
       {
         turn: 1,
-        tool: "query_db",
-        data: {
-          generated_sql: GENERATED,
-          executed_sql: EXECUTED,
-          columns: ["department", "avg"],
-          rows: [["Engineering", 91000]],
-        },
+        cut: 0,
+        events: [
+          { type: "node_start", node: "reason" },
+          { type: "reasoning", text: THOUGHT, truncated: false },
+          { type: "tool_call", id: "c1", tool: "query_db", args: { sql: GENERATED } },
+          {
+            type: "tool_result",
+            id: "c1",
+            tool: "query_db",
+            content: "",
+            data: {
+              generated_sql: GENERATED,
+              executed_sql: EXECUTED,
+              columns: ["department", "avg"],
+              rows: [["Engineering", 91000]],
+            },
+          },
+          { type: "tool_call", id: "c2", tool: "plot", args: { kind: "bar" } },
+          {
+            type: "tool_result",
+            id: "c2",
+            tool: "plot",
+            content: "",
+            data: { chart_spec: REPLAY_CHART },
+          },
+          {
+            type: "done",
+            status: "ok",
+            answer: "Engineering averages 91000.",
+            grounded: true,
+            model: MODEL,
+            prompt_guardrails: false,
+            ...COST,
+          },
+        ],
       },
-      { turn: 1, tool: "plot", data: { chart_spec: REPLAY_CHART } },
-    ],
+    ] as TurnRecord[],
   );
 }
 
@@ -320,7 +348,7 @@ describe("the chat view", () => {
 
     expect(screen.getByText(REPLAY_QUESTION)).toBeTruthy();
     expect(screen.getByText("Engineering averages 91000.")).toBeTruthy();
-    expect(screen.getByText(/only turns asked in this session/)).toBeTruthy();
+    expect(screen.getByText(/Replayed from the conversation the server remembers/)).toBeTruthy();
     expect(screen.queryByText(/Ask a question to start/)).toBeNull();
     expect(view.container.querySelector(".trace")).not.toBeNull();
   });
@@ -337,15 +365,39 @@ describe("the chat view", () => {
     expect(view.container.querySelectorAll("rect.chart-bar")).toHaveLength(1);
   });
 
-  it("shows none of what a replayed turn cannot know: reasoning, retries, cost", async () => {
+  it("shows what the replayed turn knows: its thinking, its cost, its guardrail position", async () => {
     const { view } = await renderReady({ threadId: "t7", replay: replayed() });
 
-    expect(screen.queryByText(THOUGHT)).toBeNull();
-    expect(view.container.querySelector(".trace-reasoning")).toBeNull();
-    expect(screen.queryByText(/attempt/)).toBeNull();
-    expect(screen.queryByText(/T\/S/)).toBeNull();
-    expect(screen.queryByText(/^In /)).toBeNull();
-    expect(view.container.querySelector(".msg-footer")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Thought/ }));
+    expect(screen.getByText(THOUGHT)).toBeTruthy();
+    expect(screen.getByText(`In ${COST.input_tokens}`)).toBeTruthy();
+    expect(screen.getByText(/T\/S/)).toBeTruthy();
+    expect(screen.getByText("prompt guardrails off")).toBeTruthy();
+    expect(view.container.querySelector(".msg-footer")).not.toBeNull();
+  });
+
+  it("claims no duration for a thought it did not watch arrive", async () => {
+    await renderReady({ threadId: "t7", replay: replayed() });
+
+    expect(screen.getByRole("button", { name: /Thought/ }).textContent).not.toMatch(/for/);
+  });
+
+  it("shows the arguments the model wrote for a replayed call, as text", async () => {
+    const { view } = await renderReady({ threadId: "t7", replay: replayed() });
+
+    const args = [...view.container.querySelectorAll(".trace-arg")].map(
+      (arg) => arg.textContent ?? "",
+    );
+    expect(args).toContain("kindbar");
+    expect(view.container.querySelector("script")).toBeNull();
+  });
+
+  it("says on a replayed turn that the server's caps trimmed its history", async () => {
+    const trimmed = replayed().map((turn) => ({ ...turn, cut: 3 }));
+
+    await renderReady({ threadId: "t7", replay: trimmed });
+
+    expect(screen.getByText("3 steps not stored")).toBeTruthy();
   });
 
   it("drops the live turns when the open thread changes", async () => {

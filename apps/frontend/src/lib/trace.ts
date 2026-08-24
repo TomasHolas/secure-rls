@@ -18,17 +18,18 @@
  * chunks stream inside one model call become one step and the round after the tool results becomes
  * its own, and what the turn cost, which arrives with the terminal frame (ADR 0012 as amended).
  *
- * `replayTurns` folds the other source of the same shape: what `GET /conversations/{id}` still
- * remembers of a reopened thread. It produces the very same `Turn` objects a stream produces,
- * so a past turn renders through the bricks a live one does instead of through a second
- * renderer. Only what the server stores can be in them - the questions, the answers and the
- * tool evidence; the reasoning, the retries and the graph steps were the transport of that turn
- * and are gone (ADR 0012 as amended).
+ * `replayTurns` folds the other source of the same shape: the turn history
+ * `GET /conversations/{id}` serves for a reopened thread. It is not a second implementation - the
+ * server stores the same trace events it streamed, so each past turn is folded by running
+ * `applyEvent` over them, and a replayed turn is the same `Turn` object a live one is (ADR 0012
+ * as amended, issue #90). What differs is only what cannot be stored: the token-by-token arrival
+ * of the answer, and the client's own measurement of how long a thought took.
  */
 
-import type { Message, ToolResultRecord } from "./api";
+import type { Message, TurnRecord } from "./api";
 import type {
   DoneEvent,
+  ReasoningEvent,
   RetryEvent,
   SecurityEvent,
   ToolCallEvent,
@@ -56,13 +57,19 @@ const ANSWER_SEPARATOR = "\n\n";
  *
  * `startedAt` and `endedAt` are this client's clock, not the server's: the stream carries no
  * timestamps, so what is measured is the span over which the round's thinking arrived here.
- * `endedAt` is null while it is still arriving, which is what makes the step render as live.
+ * `endedAt` is null while it is still arriving, which is what makes the step render as live, and
+ * `startedAt` is null for a replayed round, which never arrived here at all - the step is settled
+ * and claims no duration rather than inventing one.
+ *
+ * `truncated` is the server saying it kept this round's thinking up to its character cap and no
+ * further, so a shortened thought is stated as shortened.
  */
 export interface ReasoningItem {
   kind: "reasoning";
   round: number;
   text: string;
-  startedAt: number;
+  truncated: boolean;
+  startedAt: number | null;
   endedAt: number | null;
 }
 
@@ -86,9 +93,10 @@ export type TraceItem = ReasoningItem | CallItem | OrphanItem;
  * `streaming` until a `done` event lands. `cut_short` is a turn a per-turn bound stopped, which
  * may still carry the words the model got out before it. `failed` is a turn that never reached an
  * answer - the backend saying so in its terminal frame, or a stream this client could not read.
- * `replayed` is a turn read back from the server: how it ended is not stored, so it claims
- * nothing about it - which is also why a replayed turn's `grounded` and `guardrails` stay null
- * rather than false.
+ * `replayed` is a turn read back from the server whose terminal frame is not among what was kept -
+ * an old turn, or one whose history the retention ceiling dropped: it claims nothing about how it
+ * ended, which is also why its `grounded` and `guardrails` stay null rather than false. A replayed
+ * turn that does carry its frame ends in the status that frame reported, like the live turn it was.
  */
 export type TurnPhase =
   | "streaming"
@@ -115,8 +123,10 @@ export interface Turn {
   model: string | null;
   usage: TurnUsage | null;
   grounded: boolean | null;
-  /** The prompt-guardrail position the terminal frame reported; null until it lands, and for a replayed turn. */
+  /** The prompt-guardrail position the terminal frame reported; null until it lands, and for a turn whose frame was not kept. */
   guardrails: boolean | null;
+  /** Pieces of this turn's history the server's caps refused; always 0 for a turn watched live. */
+  cut: number;
   error: string | null;
 }
 
@@ -131,6 +141,7 @@ export function startTurn(question: string): Turn {
     usage: null,
     grounded: null,
     guardrails: null,
+    cut: 0,
     error: null,
   };
 }
@@ -138,8 +149,13 @@ export function startTurn(question: string): Turn {
 /**
  * The turn after one trace event; the input turn is never mutated. `now` is the clock the
  * reasoning spans are measured against and is injectable so a scripted sequence can assert them.
+ * A replay passes null: those events did not arrive here, so no span is measured for them.
  */
-export function applyEvent(turn: Turn, event: TraceEvent, now: number = Date.now()): Turn {
+export function applyEvent(
+  turn: Turn,
+  event: TraceEvent,
+  now: number | null = Date.now(),
+): Turn {
   switch (event.type) {
     case "node_start":
       return event.node === REASON_NODE ? { ...turn, round: turn.round + 1 } : turn;
@@ -147,7 +163,7 @@ export function applyEvent(turn: Turn, event: TraceEvent, now: number = Date.now
       return { ...turn, answer: turn.answer + event.text };
     case "reasoning": {
       const round = Math.max(turn.round, FIRST_ROUND);
-      return { ...turn, round, items: appendReasoning(turn.items, event.text, round, now) };
+      return { ...turn, round, items: appendReasoning(turn.items, event, round, now) };
     }
     case "tool_call":
       return { ...turn, items: [...settle(turn.items, now), callItem(event)] };
@@ -167,15 +183,16 @@ export function failTurn(turn: Turn, error: string, now: number = Date.now()): T
 
 /**
  * A reopened thread as turns: each question opens one, the assistant text that follows is its
- * answer, and the tool results the server stored for that turn become its trace items.
+ * answer, and the trace the server stored for that turn is folded onto it by the same
+ * `applyEvent` a live stream is folded by - one renderer, and one fold in front of it.
  *
- * The turn a stored result belongs to is the ordinal of the question that asked for it, which is
- * why the questions are counted here rather than the array indexed - a transcript that somehow
- * starts mid-turn then attaches its evidence to nothing instead of to the wrong answer. A stored
- * result carries no arguments and no model-facing text, only the payload the server produced, so
- * the step shows the SQL pair, the table or the chart and nothing it would have to invent.
+ * The turn a stored record belongs to is the ordinal of the question that opened it, which is why
+ * the questions are counted here rather than the array indexed: a transcript that somehow starts
+ * mid-turn then attaches its history to nothing instead of to the wrong answer. The answer comes
+ * from the transcript and the terminal frame does not overwrite it - it is the same text, and the
+ * transcript is the copy the server composed the thread's memory from.
  */
-export function replayTurns(messages: Message[], results: ToolResultRecord[]): Turn[] {
+export function replayTurns(messages: Message[], history: TurnRecord[]): Turn[] {
   const turns: Turn[] = [];
   const numbers: number[] = [];
   let asked = 0;
@@ -191,7 +208,16 @@ export function replayTurns(messages: Message[], results: ToolResultRecord[]): T
       turns[last] = { ...turns[last], answer: joinAnswer(turns[last].answer, message.content) };
     }
   }
-  return turns.map((turn, index) => ({ ...turn, items: replayItems(results, numbers[index]) }));
+  return turns.map((turn, index) =>
+    replayTurn(turn, history.find((record) => record.turn === numbers[index])),
+  );
+}
+
+/** One past turn: its stored events folded onto it, and what the caps cut out of them. */
+function replayTurn(turn: Turn, record: TurnRecord | undefined): Turn {
+  if (!record) return turn;
+  const folded = record.events.reduce((state, event) => applyEvent(state, event, null), turn);
+  return { ...folded, cut: record.cut };
 }
 
 /**
@@ -202,7 +228,7 @@ export function replayTurns(messages: Message[], results: ToolResultRecord[]): T
  * A frame that does not state the prompt-guardrail position leaves it null: the frames arrive as
  * unvalidated JSON, and a missing field must read as "unknown" rather than as either mode.
  */
-function done(turn: Turn, event: DoneEvent, now: number): Turn {
+function done(turn: Turn, event: DoneEvent, now: number | null): Turn {
   const failed = event.status === "failed";
   return {
     ...turn,
@@ -230,22 +256,6 @@ export function tokensPerSecond(usage: TurnUsage | null): number | null {
   return usage.outputTokens / usage.durationS;
 }
 
-/** The stored results of one turn as call items, in the order the server replayed them. */
-function replayItems(results: ToolResultRecord[], turn: number): TraceItem[] {
-  return results
-    .filter((result) => result.turn === turn)
-    .map((result, index) => {
-      const id = `replay-${turn}-${index}`;
-      return {
-        kind: "call",
-        id,
-        tool: result.tool,
-        args: {},
-        outcome: { type: "tool_result", id, tool: result.tool, content: "", data: result.data },
-      };
-    });
-}
-
 /** Two things the assistant said in one turn read as two paragraphs, as they did while streaming. */
 function joinAnswer(answer: string, text: string): string {
   return answer ? `${answer}${ANSWER_SEPARATOR}${text}` : text;
@@ -264,28 +274,41 @@ function callItem(event: ToolCallEvent): CallItem {
  */
 function appendReasoning(
   items: TraceItem[],
-  text: string,
+  event: ReasoningEvent,
   round: number,
-  now: number,
+  now: number | null,
 ): TraceItem[] {
+  const truncated = event.truncated === true;
   const last = items[items.length - 1];
   if (!last || last.kind !== "reasoning" || last.round !== round) {
-    const started = { kind: "reasoning", round, text, startedAt: now, endedAt: null } as const;
+    const started: ReasoningItem = {
+      kind: "reasoning",
+      round,
+      text: event.text,
+      truncated,
+      startedAt: now,
+      endedAt: null,
+    };
     return [...settle(items, now), started];
   }
   const next = [...items];
-  next[next.length - 1] = { ...last, text: last.text + text };
+  next[next.length - 1] = {
+    ...last,
+    text: last.text + event.text,
+    truncated: last.truncated || truncated,
+  };
   return next;
 }
 
 /**
  * Whatever thinking was still arriving stops arriving here: the next thing the turn did, or its
  * end, is the moment that round's thinking finished. Only the newest step can still be open, so
- * this closes the last item and leaves every earlier one alone.
+ * this closes the last item and leaves every earlier one alone. A replay measures nothing, so
+ * there is nothing to close: its steps were settled before they were stored.
  */
-function settle(items: TraceItem[], now: number): TraceItem[] {
+function settle(items: TraceItem[], now: number | null): TraceItem[] {
   const last = items[items.length - 1];
-  if (!last || last.kind !== "reasoning" || last.endedAt !== null) return items;
+  if (now === null || !last || last.kind !== "reasoning" || last.endedAt !== null) return items;
   const next = [...items];
   next[next.length - 1] = { ...last, endedAt: now };
   return next;

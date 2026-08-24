@@ -13,7 +13,7 @@
 
 import { clearSession, getSession, startSession } from "../auth";
 import { API_BASE_URL } from "../config";
-import type { ToolResultData } from "./sse";
+import type { TraceEvent } from "./sse";
 
 /** The header a sliding-session refresh arrives on (ADR 0009 as amended). */
 const REFRESHED_TOKEN_HEADER = "X-Refreshed-Token";
@@ -65,25 +65,28 @@ export interface Message {
 }
 
 /**
- * One stored tool result of a past turn: the tool that ran and the payload the server produced
- * (ADR 0012 as amended). `turn` is the ordinal of the question that asked for it, counted from
- * one, which is how the fold in `lib/trace.ts` puts it back above the answer it produced.
+ * One past turn as the server kept it (ADR 0012 as amended, issue #90): the trace events it
+ * produced, keyed exactly as the live stream keys them, so `lib/trace.ts` folds a replayed turn
+ * through the very same code a streaming one goes through.
+ *
+ * `turn` is the ordinal of the question that opened it, counted from one, which is how the fold
+ * puts each turn's history back above the answer it produced. `cut` is how many pieces of it the
+ * server's caps refused, so a partial turn says so instead of reading as whole.
  */
-export interface ToolResultRecord {
+export interface TurnRecord {
   turn: number;
-  tool: string;
-  data: ToolResultData;
+  events: TraceEvent[];
+  cut: number;
 }
 
 /**
- * A thread as `GET /conversations/{id}` serves it: the registry row, the replayed exchanges,
- * and the tool evidence those turns produced - their SQL pairs, tables and charts. What is not
- * served is the thinking around them: the model's reasoning, the retries and the graph steps
- * are the transport of the turn that streamed them and are session-only (ADR 0012 as amended).
+ * A thread as `GET /conversations/{id}` serves it: the registry row, the replayed exchanges, and
+ * the trace each of those turns produced - its reasoning, its calls with the arguments the model
+ * wrote, their outcomes, and the terminal frame with the turn's status and cost.
  */
 export interface Conversation extends Thread {
   messages: Message[];
-  tool_results: ToolResultRecord[];
+  turns: TurnRecord[];
 }
 
 /** One `POST /chat` turn. No tenant field exists to send: the server takes it from the JWT. */
@@ -321,7 +324,7 @@ export async function listConversations(): Promise<Thread[]> {
   return Array.isArray(body) ? (body as Thread[]) : [];
 }
 
-/** GET /conversations/{id}: the thread row, its replayed exchanges and their tool evidence. */
+/** GET /conversations/{id}: the thread row, its replayed exchanges and each turn's history. */
 export async function getConversation(threadId: string): Promise<Conversation> {
   const response = await apiFetch(`/conversations/${encodeURIComponent(threadId)}`);
   if (!response.ok) throw new ApiError(response.status, conversationFailure(response.status));
@@ -329,7 +332,7 @@ export async function getConversation(threadId: string): Promise<Conversation> {
   return {
     ...body,
     messages: Array.isArray(body.messages) ? body.messages : [],
-    tool_results: Array.isArray(body.tool_results) ? body.tool_results : [],
+    turns: Array.isArray(body.turns) ? body.turns : [],
   };
 }
 

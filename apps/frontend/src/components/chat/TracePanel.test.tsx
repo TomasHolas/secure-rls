@@ -1,6 +1,7 @@
 /**
  * What the trace panel actually renders for one turn: the reader-meaningful entries only, folded
- * from a scripted event sequence, and the same panel for the replayed turn of issue #70.
+ * from a scripted event sequence, and the same panel for a turn replayed out of the history the
+ * server stored for it (issues #70, #90) - which must come out of these same bricks.
  */
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -10,12 +11,14 @@ import { TracePanel } from "./TracePanel";
 import { applyEvent, replayTurns, startTurn } from "../../lib/trace";
 import type { Turn } from "../../lib/trace";
 import type { TraceEvent } from "../../lib/sse";
+import type { TurnRecord } from "../../lib/api";
 
 afterEach(cleanup);
 
 const GENERATED = "SELECT department, AVG(salary) FROM employees GROUP BY department";
 const EXECUTED =
   "SELECT department, AVG(salary) FROM (SELECT * FROM employees WHERE tenant_id = ?) GROUP BY department";
+const FOREIGN = "SELECT * FROM employees WHERE tenant_id = 'beta'";
 const RESULT_DATA = {
   generated_sql: GENERATED,
   executed_sql: EXECUTED,
@@ -232,26 +235,109 @@ describe("a tool card's own state", () => {
 });
 
 describe("a replayed turn", () => {
-  const LIVE: TraceEvent[] = [
+  const TRANSCRIPT = [
+    { role: "user", content: "average salary per department?" },
+    { role: "assistant", content: "Engineering averages 91000." },
+  ];
+  /** A turn with one settled call, one retried call and one refused: no thinking, so no measured span. */
+  const SETTLED: TraceEvent[] = [
     { type: "tool_call", id: "c1", tool: "query_db", args: { sql: GENERATED } },
     { type: "tool_result", id: "c1", tool: "query_db", content: "d | a", data: RESULT_DATA },
+    { type: "tool_call", id: "c2", tool: "get_stats", args: { metric: "avg", column: "salary" } },
+    {
+      type: "retry",
+      id: "c2",
+      tool: "get_stats",
+      layer: "tool arguments",
+      kind: "malformed_arguments",
+      attempt: 1,
+      max_attempts: 3,
+      reason: "metric must be one of count, sum, avg",
+    },
+    { type: "tool_call", id: "c3", tool: "query_db", args: { sql: FOREIGN } },
+    {
+      type: "security_event",
+      id: "c3",
+      tool: "query_db",
+      layer: "query validation",
+      kind: "policy_violation",
+      reason: "the statement filters another tenant",
+    },
   ];
 
-  it("renders its evidence exactly as the live turn rendered it", () => {
-    const live = render(<TracePanel items={fold(LIVE).items} streaming={false} open />);
+  /** The same events, as the server stores them for replay: the model-facing text is not kept. */
+  function stored(events: TraceEvent[]) {
+    return [
+      {
+        turn: 1,
+        cut: 0,
+        events: events.map((event) =>
+          event.type === "tool_result" ? { ...event, content: "" } : event,
+        ),
+      },
+    ] as TurnRecord[];
+  }
+
+  function replayedItems(events: TraceEvent[]) {
+    return replayTurns(TRANSCRIPT, stored(events))[0].items;
+  }
+
+  it("renders its whole trace exactly as the live turn rendered it", () => {
+    const live = render(<TracePanel items={fold(SETTLED).items} streaming={false} open />);
     const liveHtml = live.container.innerHTML;
     cleanup();
 
-    const [replayed] = replayTurns(
-      [
-        { role: "user", content: "average salary per department?" },
-        { role: "assistant", content: "Engineering averages 91000." },
-      ],
-      [{ turn: 1, tool: "query_db", data: RESULT_DATA }],
-    );
-    const replay = render(<TracePanel items={replayed.items} streaming={false} open />);
+    const replay = render(<TracePanel items={replayedItems(SETTLED)} streaming={false} open />);
 
-    expect(titles(replay.container)).toEqual(["query_db"]);
+    expect(titles(replay.container)).toEqual(["query_db", "get_stats", "query_db"]);
     expect(replay.container.innerHTML).toBe(liveHtml);
+  });
+
+  it("renders a replayed thought through the same step, minus the span this browser measured", () => {
+    const thinking: TraceEvent[] = [
+      { type: "node_start", node: "reason" },
+      { type: "reasoning", text: "an average per department" },
+      ...SETTLED,
+    ];
+    const live = render(<TracePanel items={fold(thinking).items} streaming={false} open />);
+    const liveHtml = live.container.innerHTML.replace(/Thought for [\d.]+s/, "Thought");
+    cleanup();
+
+    const replay = render(<TracePanel items={replayedItems(thinking)} streaming={false} open />);
+
+    expect(titles(replay.container)[0]).toBe("Thought");
+    expect(replay.container.innerHTML).toBe(liveHtml);
+  });
+
+  it("marks a thought the server's history cap cut short", () => {
+    const capped = [
+      {
+        turn: 1,
+        cut: 0,
+        events: [{ type: "reasoning", text: "as far as the cap", truncated: true }],
+      },
+    ] as TurnRecord[];
+
+    const { container } = render(
+      <TracePanel items={replayTurns(TRANSCRIPT, capped)[0].items} streaming={false} open />,
+    );
+
+    expect(screen.getByText("thinking capped")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Thought/ }));
+    expect(container.querySelector(".trace-reasoning")?.textContent).toBe("as far as the cap");
+  });
+
+  it("renders a stored argument as text, never as markup", () => {
+    const injected = "SELECT * FROM employees<script>alert(1)</script>";
+    const events: TraceEvent[] = [
+      { type: "tool_call", id: "c1", tool: "query_db", args: { sql: injected } },
+    ];
+
+    const { container } = render(
+      <TracePanel items={replayedItems(events)} streaming={false} open />,
+    );
+
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.textContent).toContain(injected);
   });
 });

@@ -9,6 +9,7 @@ import { applyEvent, failTurn, replayTurns, startTurn, tokensPerSecond } from ".
 import type { CallItem, ReasoningItem, Turn } from "./trace";
 import type { ChartSpec } from "../components/charts";
 import type { DoneEvent, TraceEvent, TurnStatus } from "./sse";
+import type { TurnRecord } from "./api";
 
 const GENERATED = "SELECT department, AVG(salary) FROM employees GROUP BY department";
 const EXECUTED =
@@ -474,19 +475,41 @@ describe("a reopened thread", () => {
     { role: "user", content: "plot headcount by department" },
     { role: "assistant", content: "Engineering leads on headcount." },
   ];
-  const RESULTS = [
+  const THINKING = "an average, so aggregate in SQL";
+  /** One past turn as the server serves it: the events it produced, and what its caps refused. */
+  const HISTORY = [
     {
       turn: 1,
-      tool: "query_db",
-      data: {
-        generated_sql: GENERATED,
-        executed_sql: EXECUTED,
-        columns: ["department", "avg"],
-        rows: [["Engineering", 91000]],
-      },
+      cut: 0,
+      events: [
+        { type: "node_start", node: "reason" },
+        { type: "reasoning", text: THINKING, truncated: false },
+        { type: "tool_call", id: "c1", tool: "query_db", args: { sql: GENERATED } },
+        {
+          type: "tool_result",
+          id: "c1",
+          tool: "query_db",
+          content: "",
+          data: {
+            generated_sql: GENERATED,
+            executed_sql: EXECUTED,
+            columns: ["department", "avg"],
+            rows: [["Engineering", 91000]],
+          },
+        },
+        done("ok", "Engineering averages 91000.", "qwen3:8b"),
+      ],
     },
-    { turn: 2, tool: "plot", data: { chart_spec: CHART } },
-  ];
+    {
+      turn: 2,
+      cut: 0,
+      events: [
+        { type: "tool_call", id: "c2", tool: "plot", args: { kind: "bar" } },
+        { type: "tool_result", id: "c2", tool: "plot", content: "", data: { chart_spec: CHART } },
+        done("ok", "Engineering leads on headcount."),
+      ],
+    },
+  ] as TurnRecord[];
 
   it("folds the transcript into one turn per question", () => {
     const turns = replayTurns(MESSAGES, []);
@@ -498,10 +521,11 @@ describe("a reopened thread", () => {
     expect(turns.every((turn) => turn.phase === "replayed")).toBe(true);
     expect(turns.every((turn) => turn.grounded === null)).toBe(true);
     expect(turns.every((turn) => turn.guardrails === null)).toBe(true);
+    expect(turns.every((turn) => turn.cut === 0)).toBe(true);
   });
 
-  it("puts each stored payload back on the turn that asked for it", () => {
-    const turns = replayTurns(MESSAGES, RESULTS);
+  it("puts each turn's stored history back on the turn that produced it", () => {
+    const turns = replayTurns(MESSAGES, HISTORY);
 
     const first = calls(turns[0]);
     const second = calls(turns[1]);
@@ -514,14 +538,93 @@ describe("a reopened thread", () => {
     expect(second[0].outcome).toMatchObject({ data: { chart_spec: CHART } });
   });
 
-  it("claims nothing a replayed turn cannot know: no thinking, no model, no cost", () => {
-    const turns = replayTurns(MESSAGES, RESULTS);
+  it("replays the call as the model wrote it, arguments and all", () => {
+    const turns = replayTurns(MESSAGES, HISTORY);
 
-    expect(thoughts(turns[0])).toEqual([]);
-    expect(turns[0].model).toBeNull();
-    expect(turns[0].usage).toBeNull();
-    expect(turns[0].error).toBeNull();
-    expect(calls(turns[0])[0].args).toEqual({});
+    expect(calls(turns[0])[0].args).toEqual({ sql: GENERATED });
+  });
+
+  it("replays the thinking of each model round without claiming how long it took", () => {
+    const turns = replayTurns(MESSAGES, HISTORY);
+
+    const thinking = turns[0].items[0] as ReasoningItem;
+    expect(thoughts(turns[0]).map((item) => item.text)).toEqual([THINKING]);
+    expect(thinking.startedAt).toBeNull();
+    expect(thinking.endedAt).toBeNull();
+    expect(thinking.truncated).toBe(false);
+  });
+
+  it("says when the history cap kept only part of a round's thinking", () => {
+    const capped = [
+      {
+        turn: 1,
+        cut: 0,
+        events: [{ type: "reasoning", text: "as far as the cap", truncated: true }],
+      },
+    ] as TurnRecord[];
+
+    const turns = replayTurns(MESSAGES.slice(0, 2), capped);
+
+    expect((turns[0].items[0] as ReasoningItem).truncated).toBe(true);
+  });
+
+  it("ends a replayed turn in the status its own terminal frame reported", () => {
+    const turns = replayTurns(MESSAGES, HISTORY);
+
+    expect(turns[0].phase).toBe("ok");
+    expect(turns[0].model).toBe("qwen3:8b");
+    expect(turns[0].usage).toEqual({ inputTokens: 250, outputTokens: 28, durationS: 2 });
+    expect(turns[0].grounded).toBe(true);
+    expect(turns[0].guardrails).toBe(true);
+    expect(turns[0].answer).toBe("Engineering averages 91000.");
+  });
+
+  it("replays a refusal with the layer that fired and the retry that preceded it", () => {
+    const refused = [
+      {
+        turn: 1,
+        cut: 0,
+        events: [
+          { type: "tool_call", id: "c1", tool: "query_db", args: { sql: GENERATED } },
+          {
+            type: "retry",
+            id: "c1",
+            tool: "query_db",
+            layer: "query validation",
+            kind: "malformed_sql",
+            attempt: 1,
+            max_attempts: 3,
+            reason: "the statement did not parse",
+          },
+          { type: "tool_call", id: "c2", tool: "query_db", args: { sql: GENERATED } },
+          {
+            type: "security_event",
+            id: "c2",
+            tool: "query_db",
+            layer: "scoped execution",
+            kind: "policy_violation",
+            reason: "the query reaches outside the tenant's rows",
+          },
+          done("blocked", "I cannot answer that.", "qwen3:8b", false),
+        ],
+      },
+    ] as TurnRecord[];
+
+    const turns = replayTurns(MESSAGES.slice(0, 2), refused);
+
+    expect(calls(turns[0]).map((item) => item.outcome?.type)).toEqual([
+      "retry",
+      "security_event",
+    ]);
+    expect(turns[0].phase).toBe("blocked");
+  });
+
+  it("states how many pieces of a turn the server's caps refused", () => {
+    const trimmed = [{ turn: 1, cut: 4, events: [done("ok", "partly stored")] }] as TurnRecord[];
+
+    const turns = replayTurns(MESSAGES.slice(0, 2), trimmed);
+
+    expect(turns[0].cut).toBe(4);
   });
 
   it("keeps both halves of a turn that spoke twice, as two paragraphs", () => {
@@ -538,18 +641,19 @@ describe("a reopened thread", () => {
     expect(turns[0].answer).toBe("Let me check the fences.\n\nThree rows lie beyond them.");
   });
 
-  it("attaches no evidence at all to a transcript that starts without a question", () => {
-    const turns = replayTurns([{ role: "assistant", content: "orphaned answer" }], RESULTS);
+  it("attaches no history at all to a transcript that starts without a question", () => {
+    const turns = replayTurns([{ role: "assistant", content: "orphaned answer" }], HISTORY);
 
     expect(turns).toHaveLength(1);
     expect(turns[0].question).toBe("");
     expect(turns[0].items).toEqual([]);
   });
 
-  it("replays a thread that never ran a tool as turns with no trace items", () => {
+  it("replays a turn the server kept no history for as text alone", () => {
     const turns = replayTurns(MESSAGES.slice(0, 2), []);
 
     expect(turns).toHaveLength(1);
     expect(turns[0].items).toEqual([]);
+    expect(turns[0].phase).toBe("replayed");
   });
 });

@@ -32,10 +32,15 @@ export interface TokenEvent {
 /**
  * One chunk of the model's own thinking, streamed as it arrives. It belongs to the trace and
  * never to the answer: the backend splits it out of the text before a token is ever emitted.
+ *
+ * `truncated` never appears on a live chunk. It appears on the one event a replayed round arrives
+ * as - the round's chunks concatenated server-side - when the history cap kept the thinking up to
+ * its character limit and no further (ADR 0012 as amended, issue #90).
  */
 export interface ReasoningEvent {
   type: "reasoning";
   text: string;
+  truncated?: boolean;
 }
 
 export interface ToolCallEvent {
