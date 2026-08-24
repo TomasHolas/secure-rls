@@ -1,6 +1,7 @@
 # ADR 0011 — Agent design: explicit graph, retry policy, memory, tool contracts
 
-Status: accepted (amended 2026-08-24: the prompt guardrails are a switchable knob)
+Status: accepted (amended 2026-08-24: the prompt guardrails are a switchable knob; a turn's
+sent history is bounded too)
 
 ## Context
 
@@ -90,6 +91,57 @@ Three properties make these defensible rather than arbitrary:
 Precedence when more than one thing ends a turn: a security refusal, then a
 spent retry budget, then a bound. A refusal and a give-up say more about the
 turn than "it ran out of room" does.
+
+### Bounded history: what a turn sends (added after issue #131)
+
+The four bounds above cap what a turn may **generate** and how long it may take. None of them
+caps what it **sends**, and the first live off-position eval run showed the cost of that: 8 of
+75 attacks scored non-held, all of them the same event, a multi-turn thread whose accumulated
+history had grown past the context window until the endpoint refused the request outright —
+`request (16921 tokens) exceeds the available context size (16384 tokens)`, with two more at
+16518 and 16421. Nothing leaked; the turn failed closed, which is the right failure. It is still
+a failure: a real user holding a long conversation hits a dead turn with a transport error, and
+`context_window` — a mitigation this ADR added on purpose — is what refuses it.
+
+So one more bound, on the other direction of the same call: **before every model call the
+assembled prompt is estimated, and while the estimate exceeds what one call may send, the oldest
+turn is dropped from what is sent.** Three knobs, all under `agent`:
+
+| Knob | Value | What it decides | Why this value |
+|---|---|---|---|
+| `history_headroom_tokens` | 1024 | The send budget is `context_window - max_output_tokens - history_headroom_tokens`, here 16384 - 4096 - 1024 = 11264 | The window has to hold the prompt *and* the generation, so the answer's cap is subtracted first — the failures were the prompt alone overflowing. The rest is the margin the estimate's own error is paid out of: about 6% of the window, roughly one long tool result's worth of being wrong. |
+| `history_chars_per_token` | 3.0 | The divisor of the estimate: characters over this is tokens | Below the ~4 chars/token English prose averages, because a turn's history is mostly what tokenizes denser than prose — pipe-separated tables of digits, SQL, note text. A low divisor overestimates, which costs memory; a high one underestimates, which costs the turn. |
+| `min_history_turns` | 2 | The floor: trimming never leaves fewer than this many newest turns | One would be enough to keep the question. Two keeps the exchange it follows on from, which is what a follow-up ("and how does that compare with Sales?") is answered out of — the shape the multi-turn evals are made of. |
+
+Five properties make this defensible rather than a heuristic bolted on:
+
+- **The unit dropped is a whole turn**, a question and everything that question produced. Dropping
+  messages one at a time would sooner or later leave a `ToolMessage` without the assistant message
+  that asked for it, which is a transcript no model can read and some endpoints reject. So the
+  history is cut into turns at each user question and turns are dropped oldest first.
+- **The system prompt and the current question cannot be trimmed**, and not because a check
+  forbids it: the system prompt is passed separately and is never part of the list being trimmed,
+  and the current question lives in the newest turn, which the floor keeps. It is counted against
+  the budget without being a candidate for removal.
+- **The estimate is honestly an estimate.** It is `len(text) / history_chars_per_token`, rounded
+  up, over each message's text plus the JSON of the tool calls it carries — deterministic, no
+  tokenizer dependency, no model call, because a bound that needed a model call to measure would
+  put an unbounded call inside a bound. It is therefore wrong by some amount on every turn, which
+  is exactly what `history_headroom_tokens` is for, and it is called an estimate in the code, in
+  the trace and here rather than being dressed up as a count.
+- **A thread that still does not fit at the floor is sent as it is.** One enormous turn — a
+  pasted document, a single question longer than the window — meets the endpoint's own refusal
+  exactly as it does today. That is deliberate: the alternative is trimming away the question the
+  turn exists to answer, or looping to satisfy an arithmetic check that a shorter history cannot
+  satisfy. The failure is not removed, it is confined to genuinely oversized single turns.
+- **Trimming is what a turn sends, never what it stores.** The checkpointer keeps every message,
+  so ADR 0012's replay still shows the whole thread and a later turn whose history happens to fit
+  sees all of it again. And a turn that trimmed says so: `done` carries `history_trimmed`, in the
+  same honesty style as `grounded` and the truncation signal of ADR 0007 — a shortened memory is
+  stated rather than left for the reader to infer from an answer that forgot something. A boolean
+  and not a count, because the reader's question is whether this answer had the whole
+  conversation behind it; how many turns were left out is only meaningful next to the thread, and
+  it goes to the server log where the operator can see it.
 
 ### Grounded answers (added after issue #94)
 
@@ -303,6 +355,11 @@ numbers.
 - The bounds are cheap in the normal case and only visible in the abnormal one,
   but they are real limits: a genuinely long analytical answer can be cut, and
   the fix for that is to raise the knob, not to remove the bound.
+- A long thread degrades to a shorter memory instead of a refused request, and
+  the turn that first did so says which one it was. The cost is real and stated:
+  past a point the agent stops remembering the start of a conversation it can
+  still replay in full, and a question that mentions "the number you gave me
+  first" is then answered from a history that no longer holds it.
 - Structured tools (`get_stats`, `plot`, `detect_anomalies`) answer most demo
   questions with no generated SQL at all; `query_db` remains for free-form
   analytics — a defensible two-lane design.
@@ -328,6 +385,36 @@ numbers.
   it raises rather than terminating cleanly, it counts super-steps rather than
   tool rounds (so its meaning shifts whenever the graph gains a node), and it is
   not a `runtime.json` knob.
+- **Raising `context_window` instead of trimming** — rejected as a fix that only
+  moves the wall: the endpoint's window is finite whatever we set, a bigger one
+  costs memory on the host for every turn including the short ones, and the same
+  thread two questions later fails the same way. It is also the wrong direction
+  for LLM10 — the bound exists to be enforced, not to be raised until it stops
+  firing.
+- **Summarizing the dropped turns instead of dropping them** — rejected: the
+  summary is a model call, so a bound whose purpose is to keep one call inside
+  the endpoint's limits would begin with a second, unbounded call, and its output
+  would be model prose entering the next prompt as if it were history. Dropping
+  is deterministic, costs nothing, and is honest about what was lost.
+- **`langchain_core.messages.trim_messages`** — the library function for exactly
+  this, and it is not used, for one reason checked empirically against the
+  installed langchain-core 1.6.0: with `strategy="last"`, `start_on="human"` and
+  `include_system=True`, a budget smaller than the newest turn returns the system
+  message alone — the current question trimmed away, a prompt with nothing to
+  answer. That is worse than the oversized request this bound is meant to
+  replace, and the floor that prevents it is not expressible in its arguments.
+  It also reports nothing about what it removed, which the `history_trimmed`
+  signal needs. The pattern it implements is the published one and is what this
+  follows; the fifteen lines here are the same pattern with a floor and a count.
+- **Counting tokens with a real tokenizer** — rejected: it is a dependency and a
+  per-model asset for a number that only decides when to drop an old turn, and
+  the endpoint is the only authority on its own tokenizer anyway. An estimate
+  with a stated margin is enough for a bound whose failure mode is remembering
+  slightly less than it could have.
+- **A trace event of its own for the trim** — rejected: it is a property of the
+  finished turn rather than something that happens at a point the reader watches,
+  and ADR 0012 already has one frame for those. It rides `done` beside
+  `grounded`, which is the field it is most like.
 - **The prompt rule alone, no mechanism** (issue #94's minimum) — rejected: the
   prompt already told the model to use its tools and it answered from context
   anyway, twice, on two different suites. A rule with nothing behind it is how
@@ -381,6 +468,17 @@ numbers.
 - OWASP LLM10, Unbounded Consumption (per-request resource limits, timeouts and
   throttling as the mitigation) —
   https://genai.owasp.org/llmrisk/llm102025-unbounded-consumption/
+- LangChain short-term memory guidance — the published statement of the problem
+  the sent-history bound solves and of trimming as the answer to it: "Long
+  conversations pose a challenge to today's LLMs; a full history may not fit
+  inside an LLM's context window, resulting in a context loss or errors", with
+  trimming and summarization named as the two strategies —
+  https://docs.langchain.com/oss/python/langchain/short-term-memory
+- `langchain_core.messages.trim_messages` — the library implementation of that
+  pattern, listed here because it is the alternative this ADR rejects on a
+  property verified empirically against the installed langchain-core 1.6.0 (a
+  budget under the newest turn returns the system message alone) —
+  https://reference.langchain.com/python/langchain_core/messages/
 - Ollama API options `num_predict` and `num_ctx` (the two generation bounds, and
   their defaults when unset) —
   https://github.com/ollama/ollama/blob/main/docs/modelfile.md#parameter
