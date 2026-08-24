@@ -369,14 +369,16 @@ against these screens (the adopt/reject table is
 [docs/ui-pattern-review.md](../ui-pattern-review.md)). Two of its patterns
 changed decisions taken above; everything else was rejected there with a reason.
 
-- **The generated/executed pair is one statement with the rewrite marked inside
-  it**, not two cards side by side. The executed statement *is* the generated one
-  plus what layer 3 wrapped around every `employees` reference, and saying that
-  by putting them in adjacent columns asked the reader to diff two
-  130-character statements by eye — which at demo distance does not happen.
-  `lib/sqldiff.ts` aligns the two token streams and `SqlRewrite` paints the
-  result: the tenant predicate and its bound parameter are marked, the model's
-  own words are not. Three properties earn their code:
+- **The generated/executed pair carries the rewrite marked inside the executed
+  card** (as amended again after issue #121 — the original text of this bullet
+  put the pair one click behind a `show both` toggle and showed the marked
+  statement alone; see the amendment at the end of this ADR). The executed
+  statement *is* the generated one plus what layer 3 wrapped around every
+  `employees` reference, and a bare pair of adjacent columns asked the reader to
+  diff two 130-character statements by eye — which at demo distance does not
+  happen. `lib/sqldiff.ts` aligns the two token streams and `SqlRewrite` paints
+  the result: the tenant predicate and its bound parameter are marked, the
+  model's own words are not. Four properties earn their code:
   - The diff is **token-level and case-insensitive**, because sqlglot renders the
     scoped tree onto one flat line with uppercased keywords. A line diff reports
     the whole statement as changed and communicates nothing.
@@ -384,11 +386,13 @@ changed decisions taken above; everything else was rejected there with a reason.
     (an affine gap cost — Gotoh 1982). The injected subquery repeats the words
     around it, so the alignment with the most matched tokens strands the model's
     own words inside the insertion and renders the rewrite as confetti.
-  - Nothing is hidden: anything the rewrite replaced renders as a struck-through
-    deletion beside its replacement, a legend states what the highlight means
-    (colour is never the only signal, WCAG 1.4.1), the copy control still writes
-    plain SQL rather than the markup, and the two cards remain one click behind
-    `show both` — which is also the fallback for a statement too long to align.
+  - **An alias belongs to the `AS` that introduced it.** The rewrite spells its
+    alias like the table the model wrote, so the cheapest alignment accounts for
+    the alias with that token and ends the highlight on a dangling `AS`. One
+    pass after the alignment hands the alias back to the insertion.
+  - Nothing is hidden: a legend states what the highlight means (colour is never
+    the only signal, WCAG 1.4.1) and the copy control writes plain SQL rather
+    than the markup. A statement too long to align renders as the plain pair.
 - **A thinking step is open while its thinking arrives and folds itself away when
   it settles**, leaving `Thought for 2.8s` where the label was. The disclosure
   decision above ("reasoning starts collapsed") was right about the settled state
@@ -400,6 +404,39 @@ changed decisions taken above; everything else was rejected there with a reason.
   wins from then on, so `TraceStep`'s `open` became the state a step is in rather
   than the one it mounted in. A replayed turn stores no reasoning and is
   unaffected.
+
+### Both SQL cards always, no toggle (amended after issue #121)
+
+The amendment above put the marked statement on screen and the generated/executed
+pair one click behind `show both`. Live use said that is one reading too few. The
+pair is the **before and after of the security boundary** — what the model asked
+for, what the database was given — and the highlight is **where inside the
+statement the boundary landed**. A demo needs both sentences at once, and a
+toggle nobody clicks mid-demo meant the screen never showed what the model had
+actually written. Reversed: **both cards render unconditionally, with the scoping
+highlighted inside the executed one, and there is no toggle**. Everything else
+about the marking is unchanged; three things follow.
+
+- **The executed card shows the executed statement and nothing else.**
+  `lib/sqldiff.ts` no longer emits the struck-through `del` segments the
+  single-statement mode needed so as not to hide a replaced stretch: the
+  generated card is now beside it, verbatim, which says strictly more. Its
+  segments therefore concatenate back to the executed statement exactly, which
+  is asserted in `lib/sqldiff.test.ts`.
+- **The pair stacks below 700px of its OWN width**, executed card second so
+  "what ran" is the one touching the result table. 700px is two legible columns:
+  45 monospace characters at `--text-xs` is 325px of code, plus each card's
+  padding and border, twice, plus the gap. It is a **container** query, not a
+  media query, because collapsing the conversation rail hands the pair ~200px at
+  an unchanged viewport — measured, at a 960px viewport the pair stacks with the
+  rail open (540px available) and sits side by side with it collapsed (751px), so
+  a viewport breakpoint would be wrong in both directions. Container queries are
+  Baseline 2023 and older than the `color-mix()` the tokens already require.
+- **The highlight does not rely on colour** (WCAG 1.4.1): an accent tint, a
+  heavier weight, and a solid rule under every wrapped fragment
+  (`box-decoration-break: clone`, because the marked run wraps), plus the legend
+  naming it. Verified by screenshot with the whole page under
+  `filter: grayscale(1)`.
 
 ## Consequences
 
@@ -455,9 +492,20 @@ changed decisions taken above; everything else was rejected there with a reason.
 - O. Gotoh, "An improved algorithm for matching biological sequences", Journal of
   Molecular Biology 162(3):705-708, 1982 — the affine gap cost that makes the SQL
   alignment prefer whole runs — https://doi.org/10.1016/0022-2836(82)90398-9
-- WHATWG HTML, the `mark` and `del` elements — the semantics the diff renders
-  with, so the marking is not colour-only in the DOM either —
+- WHATWG HTML, the `mark` element — the semantics the highlight renders with, so
+  the marking is not colour-only in the DOM either —
   https://html.spec.whatwg.org/multipage/text-level-semantics.html#the-mark-element
+- CSS Containment Module Level 3, `container-type` and `@container` — the pair's
+  breakpoint measured against its own inline size rather than the viewport's —
+  https://drafts.csswg.org/css-contain-3/
+- CSS Fragmentation, `box-decoration-break: clone` — why every wrapped fragment
+  of the marked run keeps its own rule —
+  https://drafts.csswg.org/css-break/#break-decoration
+- The 700px stacking threshold is an engineering judgment, not a cited number:
+  no standard gives a minimum measure for code. It is derived from a 45-character
+  floor per column (the low end of the 45-75 character measure that typographic
+  practice recommends for continuous text) at the measured 7.22px advance of
+  Geist Mono at `--text-xs`.
 - WCAG 2.2, Understanding SC 1.4.1 Use of Color — why the highlight carries a
   legend — https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html
 - Media Queries Level 5, `prefers-reduced-motion` — the guard on the shimmering

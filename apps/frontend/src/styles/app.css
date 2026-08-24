@@ -432,26 +432,42 @@
 }
 .trace-text { margin: 0; padding: var(--space-3); background: var(--bg-surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-3); white-space: pre-wrap; overflow-x: auto; }
 
-/* The demo's money shot: the tenant scoping marked inside the statement that ran, so the RLS
-   rewrite is one glance rather than a comparison across a gap (SqlRewrite). The model's words
-   keep the plain code register; what the scoped executor added takes the accent one, and
-   anything it replaced the critical one, struck through as a diff does. */
-.sql-rewrite { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
-.sql-add { background: color-mix(in srgb, var(--accent-500) 22%, transparent); color: var(--accent-300); border-radius: var(--radius-xs); }
-.sql-del { background: var(--critical-bg); color: var(--critical-500); border-radius: var(--radius-xs); text-decoration-color: color-mix(in srgb, var(--critical-500) 55%, transparent); }
+/* The demo's money shot: what the model wrote beside what actually ran, with the tenant scoping
+   highlighted inside the statement that ran (SqlRewrite). The model's words keep the plain code
+   register; what the scoped executor added takes the accent one. The wrapper is a query
+   container, which is what the pair's own breakpoint is measured against. */
+.sql-rewrite { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; container-type: inline-size; }
+/* Colour is one of four channels on the highlight - the tint, a heavier weight, a solid rule
+   under it and the legend below - so it reads on a projector and to a colourblind viewer
+   (WCAG 1.4.1). Cloned decoration because the marked run wraps and every fragment needs the rule. */
+.sql-add {
+  background: color-mix(in srgb, var(--accent-500) 30%, transparent);
+  color: var(--accent-300); font-weight: 500;
+  border-radius: var(--radius-xs); padding: 0 1px;
+  box-shadow: inset 0 -2px 0 var(--accent-500);
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
 .sql-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; font-size: var(--text-2xs); }
-.sql-legend .sql-add, .sql-legend .sql-del { padding: 1px var(--space-2); }
+.sql-legend .sql-add { padding: 1px var(--space-2); }
 
-/* The pair the diff falls back to, and the reader can always switch back to: what the model
-   wrote next to what the scoped executor ran (KB's two-column .usage-grid, collapsing on a
-   narrow viewport). */
-/* Stretched cells plus a shared floor under the code: the two statements differ in length by
-   the scoping rewrite, and a pair of unequal cards reads as two findings instead of one
-   comparison. */
-.sql-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); align-items: stretch; }
-.sql-pair > .code-block { display: flex; flex-direction: column; }
-.sql-pair .code-block-body { flex: 1; min-height: calc(4 * var(--leading-normal) * var(--text-xs)); }
-@media (max-width: 920px) { .sql-pair { grid-template-columns: 1fr; } }
+/* Both statements, always: what the model wrote next to what the scoped executor ran (KB's
+   two-column .usage-grid). One column is the floor and two are the enhancement, so a browser
+   without container queries still reads, and the executed card is second in source order - which
+   is what puts "what ran" nearest the result table once they stack. */
+.sql-pair { display: grid; grid-template-columns: 1fr; gap: var(--space-3); }
+/* 700px is where two columns are still legible: 45 monospace characters at --text-xs is 325px of
+   code (7.22px advance, measured), plus the body's padding and the card's border, twice, plus the
+   gap. Measured against the pair's OWN width, not the viewport's, because collapsing the
+   conversation rail hands it ~200px at an unchanged viewport and a media query would be wrong in
+   both directions. */
+@container (min-width: 700px) {
+  /* Stretched cells plus a shared floor under the code: the two statements differ in length by
+     the scoping rewrite, and a pair of unequal cards reads as two findings instead of one
+     comparison. */
+  .sql-pair { grid-template-columns: 1fr 1fr; align-items: stretch; }
+  .sql-pair > .code-block { display: flex; flex-direction: column; }
+  .sql-pair .code-block-body { flex: 1; min-height: calc(4 * var(--leading-normal) * var(--text-xs)); }
+}
 
 /* ---------------- Modal + confirm dialog ---------------- */
 /* KB's modal block. Its .modal-backdrop mixes an undefined --bg-base, which voids the whole

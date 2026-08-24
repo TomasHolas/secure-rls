@@ -16,7 +16,7 @@ is why several patterns the issue expected us to want are already in place.
 
 | Pattern | What we did | Why |
 |---|---|---|
-| **Mark the edit in place** (their diff surfaces) | New `SqlRewrite` brick + `lib/sqldiff.ts`: the executed statement rendered once, with the tenant scoping marked inside it; the two cards stay one click away | The executed statement *is* the generated one plus the scoping. See the verdict below. |
+| **Mark the edit in place** (their diff surfaces) | New `SqlRewrite` brick + `lib/sqldiff.ts`: both statements are on screen, and the tenant scoping is highlighted inside the executed one | The executed statement *is* the generated one plus the scoping, and the highlight says where. The marking is what we took; the "show the executed statement *only*" default this review shipped with it was reversed in #121 — see the verdict below. |
 | **Thinking display: live verb → past-tense summary carrying the cost** | A thinking step is open and shimmering while its round's thinking arrives, then folds itself away leaving `Thought for 2.8s` on the row | The old step was closed for the whole turn, so during a live demo the model's reasoning was invisible while it happened and silent about how long it took |
 | **Auto state + user override** | `TraceStep`'s `open` is now the state a step is *in* until the reader clicks, not merely the one it mounted in (`choice ?? open`) | The mechanism the fold-when-settled behaviour needs, and it deleted state rather than adding it |
 | **Counts always singularized** | `formatCount` in `lib/format.ts`, used by the trace chips and the Records/Notes totals and pagers; `1 row`, not `1 rows` | One formatter, and "1 rows" is visible at demo distance the moment a filter matches a single row |
@@ -56,7 +56,7 @@ generated  SELECT name, department, salary FROM employees ORDER BY salary DESC L
 executed   SELECT name, department, salary FROM (SELECT * FROM employees WHERE employees.tenant_id = ?) AS employees ORDER BY salary DESC LIMIT 5
 ```
 
-Three consequences:
+Four consequences:
 
 1. **A line diff is worthless here.** sqlglot emits one flat line and uppercases
    keywords, so a model that wrote four indented lines produces a diff in which
@@ -70,22 +70,59 @@ Three consequences:
    rewrite as confetti — two or three highlighted fragments with unmarked words
    between them. `lib/sqldiff.ts` therefore minimises the number of edit *runs*
    (an affine gap cost, Gotoh 1982), which keeps the whole subquery as one block.
-   This was verified live: on real model output, the marked region is exactly
-   `(SELECT * FROM employees WHERE employees.tenant_id = ?) AS`, once per scoped
-   reference, with no deletions.
+4. **An alias belongs to the `AS` that introduced it**, which no cost function
+   sees, because the rewrite spells its alias like the table the model wrote:
+   the cheapest alignment explains the alias with that word and ends the
+   highlight on a dangling `AS`. One pass after the alignment hands the alias
+   back to the insertion. Verified live: on real model output the marked region
+   is exactly `(SELECT * FROM employees WHERE employees.tenant_id = ?) AS
+   employees`, once per scoped reference.
 
-Against the two cards it replaces: the cards made the reader diff two 130-character
-statements by eye, across a gap, and at demo distance on a shared screen that
-comparison does not happen at all — the audience sees "some SQL, and some more
-SQL". One statement with the tenant predicate and its bound parameter glowing
-inside it is a single glance. The cards are kept, one click behind `show both`,
-because they are still the better read for lifting either statement out whole,
-and they are what a statement too long to align falls back to.
+### What this review got wrong: the marking replaced the pair (reversed, #121)
 
-Two things the diff deliberately does not do: it does not hide a difference it
-cannot explain (anything the rewrite replaced renders as a struck-through
-deletion beside its replacement), and it does not let colour carry the meaning
-alone — a legend states what the highlight is, per WCAG 1.4.1.
+The three findings above are unchanged; the packaging around them was wrong, and
+this is the honest record of it.
+
+**What this review decided.** The two cards made the reader diff two
+130-character statements by eye, across a gap, and at demo distance on a shared
+screen that comparison does not happen at all — the audience sees "some SQL, and
+some more SQL". So `SqlRewrite` showed the executed statement *alone* with the
+scoping marked inside it, and kept the pair one click behind a `show both`
+toggle, on the argument that the pair was still the better read for lifting
+either statement out whole.
+
+**What live use showed.** The two readings are not alternatives. The pair is the
+*before and after of the security boundary* — this is what the model asked for,
+this is what the database was given — and the highlight is *where inside the
+statement the boundary was applied*. A demo needs both sentences, and the old
+default made the reader pick one and buy the other with a click nobody performs
+mid-demo. Worse, the click was the only path to the generated statement at all,
+so the screen never once showed what the model had actually written.
+
+**What we do now.** Both cards, always, with the scoping highlighted inside the
+executed one and no toggle anywhere. The diagnosis about the bare pair still
+stands, and the highlight is the answer to it: it is what stops the pair being
+two undifferentiated blocks of SQL. Two consequences of dropping the toggle:
+
+- The executed card now renders the executed statement and nothing else, so
+  `lib/sqldiff.ts` stopped emitting the struck-through `del` segments that the
+  single-statement mode needed in order not to hide a replaced stretch. It does
+  not hide it — the generated card is on screen beside it, verbatim, which is
+  strictly more information than a struck-through fragment was.
+- Two code cards do not fit side by side at every width, so the pair stacks
+  below **700px of its own width** — 45 monospace characters per column at
+  `--text-xs` plus each card's padding and border, twice, plus the gap. The
+  threshold is a **container** query, not a media query, because collapsing the
+  conversation rail hands the pair ~200px at an unchanged viewport width: at a
+  960px viewport the pair stacks with the rail open (540px available) and sits
+  side by side with it collapsed (751px). Stacked, the executed card is second,
+  so "what ran" is the card touching the result table.
+
+The highlight does not let colour carry the meaning alone (WCAG 1.4.1): it is a
+tint *plus* a heavier weight *plus* a solid rule under every wrapped fragment,
+with a legend naming it. Verified by screenshot with `filter: grayscale(1)` over
+the whole page — with hue removed entirely the marked region is still the
+obvious one.
 
 ## Attribution
 

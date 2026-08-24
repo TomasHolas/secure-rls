@@ -140,7 +140,8 @@ The SPA has three tabs, and two of them exist so a human can check the agent
 rather than trust it ([ADR 0014](docs/decisions/0014-records-and-notes-browsing.md)):
 
 - **Chat** — the streaming turn: reasoning as it arrives, each tool call with
-  its arguments, the tenant rewrite marked inside the executed statement, result
+  its arguments, the generated and the executed statement side by side with the
+  tenant rewrite highlighted inside the one that ran, result
   tables, charts, retries, refusals, and what the turn cost in tokens.
 - **Records** — the caller's own rows, paged and filterable. Signed in as
   `alice@acme` it reads 450; as `bob@beta`, 350. That difference *is* the
