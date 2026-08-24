@@ -47,6 +47,11 @@
  * backend cannot say - a stream that stopped without any terminal frame, and a request the API
  * refused before the turn began.
  *
+ * A thread with no turn yet is the one place this view renders something other than turns: the
+ * hint that says what to ask, and the `PipelineCanvas` brick under it - the fixed path every SQL
+ * the model writes takes before a row comes back. It is on screen only while the thread is empty;
+ * the first turn replaces it, and a thread with any turn renders exactly as it always has.
+ *
  * `.chat-log` is the view's only scroll container and this view follows its bottom only
  * while the reader is already there: a token arrives many times a second and each one can
  * relayout the transcript, so yanking a reader who scrolled up would make the answer
@@ -56,8 +61,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ChatMessage, Composer, TracePanel } from "../components/chat";
-import { EmptyState, Page, PageHeader } from "../components/layout";
+import { Page, PageHeader } from "../components/layout";
 import { Loader } from "../components/Loader";
+import { PipelineCanvas } from "../components/PipelineCanvas";
 import { Pill } from "../components/Pill";
 import { ApiError, getHealth, listModels, openChatStream } from "../lib/api";
 import { readTraceEvents } from "../lib/sse";
@@ -200,7 +206,10 @@ export function ChatView({
     setStreaming(false);
   }, [chatKey]);
 
-  useEffect(follow, [turns, replay, follow]);
+  // A transcript with no turn in it is read from the top: there is nothing yet to follow.
+  useEffect(() => {
+    if (turns.length > 0 || replay.length > 0) follow();
+  }, [turns, replay, follow]);
 
   async function send(message: string): Promise<void> {
     const key = chatKey;
@@ -264,10 +273,13 @@ export function ChatView({
         }}
       >
         {turns.length === 0 && replay.length === 0 ? (
-          <EmptyState icon="message-circle">
-            Ask a question to start. Try an aggregate ("average salary per department"), a
-            chart ("plot headcount by department"), or a note search.
-          </EmptyState>
+          <div className="chat-empty">
+            <p className="chat-empty-hint">
+              Ask a question to start. Try an aggregate ("average salary per department"), a
+              chart ("plot headcount by department"), or a note search.
+            </p>
+            <PipelineCanvas />
+          </div>
         ) : null}
         {replay.length > 0 ? (
           <p className="chat-replay-note">
