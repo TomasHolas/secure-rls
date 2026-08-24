@@ -12,7 +12,6 @@ product; everything else is the demonstration surface for it.
 
 Built as a take-home case study for an AI Engineer position, design-first and
 entirely with agentic tooling — see [Agentic development](#agentic-development).
-The demo-call script lives in [docs/demo-runbook.md](docs/demo-runbook.md).
 
 - **Backend**: Python 3.12, FastAPI, SQLite, LangGraph over Ollama (`apps/backend`)
 - **Frontend**: React SPA, Vite, TypeScript (`apps/frontend`)
@@ -464,7 +463,7 @@ Requirement-to-implementation mapping:
 | Tools: query DB / stats / plot / bonus anomalies | [Tools](#tools) — plus `search_notes` for the RAG path |
 | RAG where applicable | [ADR 0010](docs/decisions/0010-tenant-filtered-rag.md) — tenant-partitioned vector search over `notes` |
 | Login with hardcoded tenant users | [Tenant credentials](#tenant-credentials) |
-| User switching to prove isolation | Log out and back in; scripted in [docs/demo-runbook.md](docs/demo-runbook.md) |
+| User switching to prove isolation | Log out and back in; the tenant badge, the row counts and the notes corpus all change with the session |
 | Reasoning and tool use visible in the UI | Live SSE trace, generated vs executed SQL side by side |
 | Malicious queries blocked or scoped | Transparent refusal naming the layer that fired; proved by the hostile-SQL corpus and the live gate |
 | A demonstrated way of evaluating model performance | [Evaluation](#evaluation) |

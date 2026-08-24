@@ -175,7 +175,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | CI / CD | `.github/workflows/ci.yml` |
 | Images / the deployment unit | `apps/backend/Dockerfile`, `apps/frontend/Dockerfile` + `nginx.conf`, `docker-compose.yml` |
 | A design decision | `docs/decisions/` — new ADR, linked from `docs/INDEX.md` |
-| Assignment-facing docs | `README.md` (security model, quickstart, creds, evaluation, deliverables map, challenges, time spent) and `docs/demo-runbook.md` (the 60-minute call script) |
+| Assignment-facing docs | `README.md` — security model, quickstart, creds, evaluation, deliverables map, challenges, time spent |
 
 ## Layering
 

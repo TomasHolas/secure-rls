@@ -106,7 +106,7 @@ unreachable. LangGraph tool calling requires a model with reliable tool support.
 - Demo insurance without a fallback model: both laptops are physically present
   at the call (Tailscale also works over the same LAN), the host runs a
   KeepAlive-supervised Ollama service, and a pre-call health check
-  (`/api/version` + one live tool call) is part of the demo runbook. If the
+  (`/api/version` + one live tool call) is run before the call. If the
   host still dies mid-call, the deterministic security tests and the committed
   eval report carry the security story without a live model.
 - Security does not depend on the model at all (ADR 0002); the model choice
@@ -117,8 +117,8 @@ unreachable. LangGraph tool calling requires a model with reliable tool support.
   needs — and a chat model asked to embed answers "this server does not support
   embeddings". The ADR 0010 retrieval path therefore had nothing to embed
   against until the model was pulled (recorded in issue #11). The pre-call health
-  check in the demo runbook (#32) covers `/api/embed` alongside `/api/version`
-  for that reason: two models must be present, not one.
+  check therefore covers `/api/embed` alongside `/api/version`: two models must
+  be present, not one.
 
 ## Alternatives
 
