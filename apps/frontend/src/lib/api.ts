@@ -43,6 +43,8 @@ export interface Health {
   status: string;
   version: string;
   prompt_guardrails: boolean | null;
+  /** How many of a thread's first turns still ask the server for a generated title (#118). */
+  title_turns: number | null;
 }
 
 /** The `GET /models` body: the endpoint's live ids plus the id the server defaults to. */
@@ -273,12 +275,16 @@ export async function login(username: string, password: string): Promise<string>
 }
 
 /**
- * GET /health: liveness plus the prompt-guardrail position the server is running in.
+ * GET /health: liveness, the prompt-guardrail position, and the titling window the server keeps.
  *
  * The position is reported only when the body carries an actual boolean. A missing field, a
  * string `"false"`, a `0` - anything that is not a boolean - is `null`, unknown, and draws no
  * pill: the two things this must never do on a guess are claim the model was asked to police
  * itself, and claim it was not.
+ *
+ * `title_turns` is read the same way and `null` means unknown rather than any number. A caller
+ * that does not know the window asks for a title anyway: the server enforces the window itself,
+ * so a guess here could only silence titling that should have run.
  */
 export async function getHealth(): Promise<Health> {
   const response = await apiFetch("/health");
@@ -287,12 +293,14 @@ export async function getHealth(): Promise<Health> {
     status?: unknown;
     version?: unknown;
     prompt_guardrails?: unknown;
+    title_turns?: unknown;
   };
   return {
     status: isString(body.status) ? body.status : "",
     version: isString(body.version) ? body.version : "",
     prompt_guardrails:
       typeof body.prompt_guardrails === "boolean" ? body.prompt_guardrails : null,
+    title_turns: typeof body.title_turns === "number" ? body.title_turns : null,
   };
 }
 

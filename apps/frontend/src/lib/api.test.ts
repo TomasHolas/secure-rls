@@ -221,7 +221,12 @@ describe("health", () => {
       vi
         .fn()
         .mockResolvedValue(
-          jsonResponse({ status: "ok", version: "0.1.0", prompt_guardrails: false }),
+          jsonResponse({
+            status: "ok",
+            version: "0.1.0",
+            prompt_guardrails: false,
+            title_turns: 3,
+          }),
         ),
     );
 
@@ -229,7 +234,20 @@ describe("health", () => {
       status: "ok",
       version: "0.1.0",
       prompt_guardrails: false,
+      title_turns: 3,
     });
+  });
+
+  // The window is a number or it is unknown: a string or a null must not read as "never title".
+  it.each([
+    ["absent", {}],
+    ["the string three", { title_turns: "3" }],
+    ["null", { title_turns: null }],
+  ])("reports no titling window when the field is %s", async (_label, extra) => {
+    const { api } = await load();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ status: "ok", ...extra })));
+
+    await expect(api.getHealth()).resolves.toMatchObject({ title_turns: null });
   });
 
   it("reports the on position when the server states it", async () => {

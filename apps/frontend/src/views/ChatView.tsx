@@ -7,11 +7,19 @@
  * event folds into that turn as it arrives (`lib/sse.ts` frames, `lib/trace.ts` folds).
  * A draft thread is registered lazily: the first question titles it through `onStart`.
  *
- * `onTitled` fires once that first turn is over, whatever it ended as, and is what asks the
+ * `onTitled` fires once a turn is over, whatever it ended as, and is what asks the
  * server for the generated label (ADR 0012 as amended). It runs after the stream, never during
  * it: titling is an LLM call, and one that hangs must not be able to hold up a token or the
  * turn's terminal frame. Whether the turn answered, was blocked or failed does not change it -
- * the label describes the conversation, and the server falls back to the first message.
+ * the label describes the conversation, and the server keeps the standing title on a failure.
+ *
+ * It fires after each of a thread's first `title_turns` turns and then stops (issue #118): a
+ * thread opened with "Hello, how are you" has nothing nameable in its first exchange, so the
+ * label follows the question that comes next. The turn's ordinal is counted from the two places
+ * that hold this thread's turns - the server's `replay` and this view's own live ones - and the
+ * window comes from `/health`, because the server owns it. Not knowing it yet is a reason to ask
+ * rather than to skip: the same window is enforced server-side, so an extra request costs a
+ * lookup and a title can never be silently skipped by this browser guessing.
  *
  * `replay` is what the server remembers of a reopened thread, already folded into turns by the
  * store: the questions, the answers, and the whole trace each turn produced - its reasoning, its
@@ -126,6 +134,7 @@ export function ChatView({
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState("");
   const [guardrails, setGuardrails] = useState<boolean | null>(null);
+  const [titleTurns, setTitleTurns] = useState<number | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const log = useRef<HTMLDivElement>(null);
@@ -166,7 +175,9 @@ export function ChatView({
     let live = true;
     getHealth()
       .then((health) => {
-        if (live) setGuardrails(health.prompt_guardrails);
+        if (!live) return;
+        setGuardrails(health.prompt_guardrails);
+        setTitleTurns(health.title_turns);
       })
       .catch(() => {
         // The server did not answer, so no position is known and none is claimed.
@@ -189,15 +200,17 @@ export function ChatView({
   async function send(message: string): Promise<void> {
     const key = chatKey;
     const mine = () => openKey.current === key;
-    // Set only for a thread registered by this send: its first turn is the one that titles it.
-    let drafted: string | null = null;
+    // This send's ordinal in the thread: the turns the server still remembers, plus this session's.
+    const turn = replay.length + turns.length + 1;
+    // Set to the thread this send ran on, once known - a draft is registered inside the try.
+    let asked: string | null = null;
     // Asking is the explicit request to come back down, whatever the reader was reading.
     following.current = true;
     setTurns((previous) => [...previous, startTurn(message)]);
     setStreaming(true);
     try {
       const thread = threadId ?? (await onStart(message));
-      if (threadId === null) drafted = thread;
+      asked = thread;
       const response = await openChatStream({
         thread_id: thread,
         message,
@@ -220,7 +233,7 @@ export function ChatView({
     } finally {
       if (mine()) setStreaming(false);
       // Off the stream on purpose, and independent of the thread the reader moved to since.
-      if (drafted) onTitled(drafted);
+      if (asked && (typeof titleTurns !== "number" || turn <= titleTurns)) onTitled(asked);
     }
   }
 

@@ -38,6 +38,8 @@ const EXECUTED =
 const QUESTION = "average salary per department";
 const MODEL = "qwen3:8b";
 const VIEWPORT = 400;
+/** The titling window the fake `/health` reports, small enough to close inside one test. */
+const TITLE_TURNS = 2;
 const CONTENT = 2000;
 
 const THOUGHT = "the question asks for an average per department";
@@ -277,7 +279,12 @@ async function renderReady(props: Partial<ChatViewProps> = {}) {
 }
 
 beforeEach(() => {
-  api.getHealth.mockResolvedValue({ status: "ok", version: "1", prompt_guardrails: true });
+  api.getHealth.mockResolvedValue({
+    status: "ok",
+    version: "1",
+    prompt_guardrails: true,
+    title_turns: TITLE_TURNS,
+  });
   api.listModels.mockResolvedValue({ models: ["llama3.1:8b", MODEL], default: MODEL });
   onStart.mockResolvedValue("t1");
   api.openChatStream.mockImplementation(() => Promise.resolve(sseResponse(ANSWERING)));
@@ -328,12 +335,45 @@ describe("the chat view", () => {
     await waitFor(() => expect(onTitled).toHaveBeenCalledWith("t1"));
   });
 
-  it("does not retitle a thread that was already titled by an earlier turn", async () => {
+  it("keeps asking for a title while the thread is inside the window", async () => {
     await renderReady({ threadId: "t7" });
+
+    for (let turn = 1; turn <= TITLE_TURNS; turn += 1) {
+      ask(`${QUESTION} ${turn}`);
+      await waitFor(() => expect(onTitled).toHaveBeenCalledTimes(turn));
+      expect(onTitled).toHaveBeenLastCalledWith("t7");
+    }
+  });
+
+  it("stops asking for a title once the thread is past the window", async () => {
+    await renderReady({ threadId: "t7" });
+
+    for (let turn = 1; turn <= TITLE_TURNS + 2; turn += 1) {
+      ask(`${QUESTION} ${turn}`);
+      await waitFor(() => expect(screen.getByText(`${QUESTION} ${turn}`)).toBeTruthy());
+    }
+
+    await waitFor(() => expect(onTitled).toHaveBeenCalledTimes(TITLE_TURNS));
+  });
+
+  it("counts the turns the server already replayed towards the window", async () => {
+    await renderReady({ threadId: "t7", replay: replayed() });
+
+    ask();
+    await waitFor(() => expect(onTitled).toHaveBeenCalledTimes(1));
+    ask("one turn too many");
+
+    await waitFor(() => expect(screen.getByText("one turn too many")).toBeTruthy());
+    expect(onTitled).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks for a title when the server never stated its window", async () => {
+    api.getHealth.mockResolvedValue({ status: "ok", version: "1", prompt_guardrails: true });
+    await renderReady({ threadId: "t7" });
+
     ask();
 
-    expect(await screen.findByText("Engineering leads at 91000.")).toBeTruthy();
-    expect(onTitled).not.toHaveBeenCalled();
+    await waitFor(() => expect(onTitled).toHaveBeenCalledWith("t7"));
   });
 
   it("asks on the thread it was handed without registering another", async () => {

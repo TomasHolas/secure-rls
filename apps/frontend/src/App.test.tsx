@@ -5,9 +5,10 @@
  * arriving after that first turn, delete behind a confirm, and a re-login listing only the new
  * identity's threads.
  *
- * The retitle fake echoes the title the thread was registered with unless a test scripts one,
- * so only the titling tests below observe a title change - everything else sees the rail the
- * `POST /conversations` title produced.
+ * The retitle fake echoes the title the thread already has unless a test scripts one, so only
+ * the titling tests below observe a title change - everything else sees the rail the
+ * `POST /conversations` title produced. It has to echo per thread rather than one remembered
+ * name, because titling now runs again on the later turns of a thread the reader reopened.
  *
  * The second block covers the section tabs (issue #88, ADR 0014): that a tab a reader has never
  * opened fetches nothing, that the conversation rail belongs to the chat alone, and above all
@@ -52,6 +53,9 @@ const BETA_THREADS = [
 
 const REGISTERED = { thread_id: "t3", created: "2026-08-21T12:00:00+00:00" };
 const GENERATED_TITLE = "Headcount by department";
+const RETITLED = "Median salary in engineering";
+/** The window the fake `/health` reports; two turns is enough to see it close. */
+const TITLE_TURNS = 2;
 
 const REPLAY = [
   { role: "user", content: "what is the average salary per department?" },
@@ -162,10 +166,23 @@ function ask(question: string): void {
 /** The title the lazily registered thread was created with; the retitle fake echoes it. */
 let registered = "";
 
+/** The title a listed thread already carries, so an echoing retitle leaves the rail alone. */
+function titleOf(threadId: string): string {
+  const listed = [...ACME_THREADS, ...BETA_THREADS].find(
+    (thread) => thread.thread_id === threadId,
+  );
+  return listed ? listed.title : registered;
+}
+
 beforeEach(() => {
   registered = "";
   window.sessionStorage.clear();
-  api.getHealth.mockResolvedValue({ status: "ok", version: "1", prompt_guardrails: true });
+  api.getHealth.mockResolvedValue({
+    status: "ok",
+    version: "1",
+    prompt_guardrails: true,
+    title_turns: TITLE_TURNS,
+  });
   api.listModels.mockResolvedValue({ models: [MODEL], default: MODEL });
   api.listConversations.mockResolvedValue(ACME_THREADS);
   api.getConversation.mockImplementation((threadId: string) =>
@@ -181,7 +198,11 @@ beforeEach(() => {
     return Promise.resolve({ ...REGISTERED, title });
   });
   api.retitleConversation.mockImplementation((threadId: string) =>
-    Promise.resolve({ ...REGISTERED, thread_id: threadId, title: registered }),
+    Promise.resolve({
+      ...REGISTERED,
+      thread_id: threadId,
+      title: threadId === REGISTERED.thread_id ? registered : titleOf(threadId),
+    }),
   );
   api.deleteConversation.mockResolvedValue(undefined);
   api.openChatStream.mockImplementation(() => Promise.resolve(sseResponse(TURN)));
@@ -285,18 +306,34 @@ describe("the conversation rail", () => {
     expect(titles(view.container)).toEqual([GENERATED_TITLE, NEWEST.title, OLDEST.title]);
   });
 
-  it("titles only the first turn of a thread, not the ones after it", async () => {
+  it("renames the thread again on a later turn inside the window", async () => {
     api.retitleConversation.mockResolvedValue({ ...REGISTERED, title: GENERATED_TITLE });
     const { view } = await signIn();
     await screen.findByText(OLDEST.title);
 
-    ask("how many people are there?");
+    ask("hello, how are you");
     await screen.findByText("There are 331 people.");
     await waitFor(() => expect(titles(view.container)[0]).toBe(GENERATED_TITLE));
-    ask("and the median?");
+    api.retitleConversation.mockResolvedValue({ ...REGISTERED, title: RETITLED });
+    ask("and the median salary in engineering?");
 
-    await waitFor(() => expect(api.openChatStream).toHaveBeenCalledTimes(2));
-    expect(api.retitleConversation).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(titles(view.container)[0]).toBe(RETITLED));
+    expect(api.retitleConversation).toHaveBeenCalledTimes(TITLE_TURNS);
+    expect(activeTitle(view.container)).toBe(RETITLED);
+  });
+
+  it("stops titling a thread once it is past the window", async () => {
+    api.retitleConversation.mockResolvedValue({ ...REGISTERED, title: GENERATED_TITLE });
+    const { view } = await signIn();
+    await screen.findByText(OLDEST.title);
+
+    for (let turn = 1; turn <= TITLE_TURNS + 1; turn += 1) {
+      ask(`question ${turn}`);
+      await waitFor(() => expect(api.openChatStream).toHaveBeenCalledTimes(turn));
+      await waitFor(() => expect(screen.getByText(`question ${turn}`)).toBeTruthy());
+    }
+
+    await waitFor(() => expect(api.retitleConversation).toHaveBeenCalledTimes(TITLE_TURNS));
     expect(titles(view.container)[0]).toBe(GENERATED_TITLE);
   });
 
