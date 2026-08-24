@@ -13,7 +13,7 @@ that single database.
 
 `--no-guardrails` runs the same suites with `agent.prompt_guardrails` forced off for the graded
 graphs (ADR 0011 as amended). It is the stronger security artifact: with the prompt no longer
-asking the model to decline an attack, a suite that still holds is the four RLS layers holding on
+asking the model to decline an attack, a suite that still holds is the RLS layers holding on
 their own, which is ADR 0002's central claim measured rather than asserted. Without the flag the
 position is `runtime.json`'s, which stays the single owner of the default.
 

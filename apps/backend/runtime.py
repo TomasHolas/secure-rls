@@ -52,7 +52,7 @@ class AgentConfig:
     `prompt_guardrails` is the one knob that changes prompt text and nothing else (ADR 0011 as
     amended): on, the rendered system prompt carries the rules that ask the model to police
     data-borne instructions and states the tenant scope; off, those blocks are omitted so the
-    four RLS layers are demonstrated refusing an attack the model actually attempted (ADR 0002).
+    RLS layers are demonstrated refusing an attack the model actually attempted (ADR 0002).
     It defaults to on because the rules improve answer quality; they were never a boundary, so
     turning them off cannot change what any layer enforces.
     """

@@ -85,7 +85,7 @@ const GUARDRAIL_PILL = {
     tone: "danger",
     label: "prompt guardrails off",
     title:
-      "Those prompt rules are omitted, so the model attempts attacks it would otherwise decline. Row-level security is unchanged: the four server-side layers are what refuses them.",
+      "Those prompt rules are omitted, so the model attempts attacks it would otherwise decline. Row-level security is unchanged: the server-side layers are what refuses them.",
   },
 } as const;
 

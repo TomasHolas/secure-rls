@@ -243,7 +243,7 @@ point; the two blocks are two named constants filling two slots in one template,
 so there is no second copy of a prompt line anywhere.
 
 **Why the knob exists.** Since the prompt gained the data-borne-instruction rule
-the model usually declines the obvious attack itself, so a demo of the four RLS
+the model usually declines the obvious attack itself, so a demo of the RLS
 layers shows a polite model instead of an enforced boundary — good security,
 useless demonstration. ADR 0002's claim is that prompt lines are guidance and
 never a boundary; if that is true, removing them must change nothing an attacker

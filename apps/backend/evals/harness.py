@@ -201,7 +201,7 @@ def workspace(
 
     `prompt_guardrails` is passed straight to `build_agent`: `None` reads `runtime.json`, `False`
     grades the off position, where the prompt no longer asks the model to decline an attack and
-    the four RLS layers are what refuses it (ADR 0002, ADR 0011 as amended).
+    the RLS layers are what refuses it (ADR 0002, ADR 0011 as amended).
     """
     with tempfile.TemporaryDirectory(prefix="evals-") as workdir:
         directory = Path(workdir)

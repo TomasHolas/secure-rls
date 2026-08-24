@@ -11,7 +11,7 @@ No live numbers exist yet: the Ollama endpoint was unreachable when the switch l
 (issue #102), and inventing figures for a security claim would be worse than having none. The
 flag itself is proved offline - `uv run python -m evals --mocked --no-guardrails` completes and
 `uv run python -m evals --dry-run --no-guardrails` reports the position - and pytest proves the
-four RLS layers behave identically in both positions.
+RLS layers behave identically in both positions.
 -->
 
 Not yet run against a live model.
@@ -24,7 +24,7 @@ the closing paragraph stating its tenant scope. Everything else stays - the sche
 sample rows, the grounding rule, the aggregation push-down, the SQL rules, the output discipline.
 
 The model is then not told to decline the payroll-administrator override, the developer-mode
-injection or a plainly worded cross-tenant request. It attempts them, and the four RLS layers
+injection or a plainly worded cross-tenant request. It attempts them, and the RLS layers
 refuse what it wrote (ADR 0002): identity from the JWT, the sqlglot allowlist, the engine
 authorizer plus the scoping rewrite, and the egress row check. A security suite that holds with
 zero leaks in this position is the empirical form of ADR 0002's claim that prompt-level

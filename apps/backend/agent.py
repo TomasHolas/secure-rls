@@ -33,7 +33,7 @@ Switchable prompt guardrails (ADR 0011 as amended; issue #102). `runtime.json`'s
 `agent.prompt_guardrails`, on by default, decides whether the rendered prompt carries the rules
 that ask the model to police data-borne instructions and the closing tenant-scope paragraph.
 Off, they are omitted and nothing else changes: the model then attempts the attack it would
-otherwise have declined, and the four RLS layers refuse it on their own, which is the empirical
+otherwise have declined, and the RLS layers refuse it on their own, which is the empirical
 form of ADR 0002's claim that no prompt line is a boundary. `_system_prompt` is the one place
 that composes it and no layer reads the knob, so the switch cannot reach enforcement. The
 position leaves on every `done` frame, so a turn is always readable as the mode that produced it.
@@ -1415,7 +1415,7 @@ def _system_prompt(tenant_id: str, db_path: Path, guardrails: bool) -> str:
 
     The one composition point for the whole prompt (ADR 0011 as amended). `guardrails` off omits
     exactly two blocks - the rules that ask the model to police data-borne instructions, and the
-    closing tenant-scope paragraph - and changes nothing else, so the demo can watch the four RLS
+    closing tenant-scope paragraph - and changes nothing else, so the demo can watch the RLS
     layers refuse an attack the model was never told to decline (ADR 0002).
     """
     sample = execute_scoped(_SAMPLE_SQL, tenant_id, db_path=db_path)

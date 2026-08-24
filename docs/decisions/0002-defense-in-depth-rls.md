@@ -2,8 +2,8 @@
 
 Status: accepted (amended 2026-08-21: engine authorizer, DoS controls, audit log — sourced
 hardening; amended 2026-08-24: retitled, and the "each sufficient alone" characterization
-corrected; amended 2026-08-24: the prompt guardrails are switchable, so the central claim is
-demonstrated rather than asserted)
+corrected; amended 2026-08-24: the prompt guardrails are switchable, so the
+prompt-is-not-a-layer claim is demonstrated rather than asserted)
 
 ## Context
 
@@ -63,12 +63,20 @@ whose off position omits the prompt's two self-policing blocks — the rule that
 note text and other data-borne instructions are never followed, and the closing
 tenant-scope paragraph — and changes nothing else (ADR 0011 as amended).
 
-Turning it off is what makes the four layers observable. With the rules rendered,
+Turning it off is what makes the layers observable. With the rules rendered,
 the model usually declines a cross-tenant or override request itself: nothing is
 attempted, no layer fires, and a passing security suite cannot distinguish a
 layer that held from a model that never tried. With the rules gone the model
-attempts the request, the layers refuse what it wrote, and the refusal names the
-layer that produced it.
+attempts the request and the layers act on what it actually wrote — which, per
+the Decision above, is two different observations rather than one. A query that
+reaches outside the allowlist (`sqlite_master`, ATTACH, PRAGMA, a second table)
+is *refused*, and the security event names the layer that refused it. A query
+that is perfectly valid and merely asks for someone else's rows — the plainly
+worded cross-tenant request, or `SELECT * FROM employees` — is not refused at
+all: layer 3 rewrites it and layer 4 checks the result, so it succeeds and
+returns nothing foreign. Both are the demonstration; only the first one produces
+a refusal, and a demo that promises a refusal for the second would be
+misdescribing its own architecture.
 
 Two properties make the switch admissible as evidence rather than a hole:
 
@@ -85,8 +93,11 @@ Two properties make the switch admissible as evidence rather than a hole:
 
 The artifact worth having is therefore the adversarial eval suite run in the off
 position (`uv run python -m evals --no-guardrails`, ADR 0004 as amended): zero
-leaks with the model's self-policing disabled is the strongest form of the claim
-this ADR makes. The two positions write separate report files.
+leaks with the model's self-policing disabled is the strongest available form of
+the one claim this section is about — that prompt-level instructions are guidance
+and never a boundary. It says nothing about the individual layers being
+interchangeable or separately sufficient; the Decision above is explicit that
+they are not. The two positions write separate report files.
 
 ## Hardening (amended per sourced review)
 

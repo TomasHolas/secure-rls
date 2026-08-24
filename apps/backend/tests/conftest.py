@@ -11,6 +11,15 @@ The position is flipped globally rather than per module: `runtime()` is an `lru_
 JSON file, so pointing the loader at a rewritten copy and clearing the cache is seen by every
 module that imported it, with no module-by-module patching to forget. The cache is cleared again
 on the way out so the next test reads the committed file.
+
+This deliberately reaches for a private name, `runtime._RUNTIME_PATH`. The alternative was a
+public setter on `runtime.py` that exists only for tests, which would put test-only surface into
+production code for a security-relevant module; and the alternative to the global flip - walking
+`sys.modules` to patch each imported `runtime` reference - silently misses any module imported
+after the fixture ran, which is a false pass in exactly the test that must not produce one. The
+private reach is the accepted cost. Each opted-in suite carries a canary asserting the position it
+was handed is the one its own loader reports, so a rename that broke this would fail loudly
+instead of quietly passing everything.
 """
 
 import json
