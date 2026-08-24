@@ -518,11 +518,11 @@ describe("the chat view", () => {
     const { view } = await renderReady({ threadId: "t1" });
 
     ask();
-    await screen.findByText("thinking");
+    await screen.findByText("working on it");
     const pending = view.container.querySelector(".msg-pending .loader");
 
     expect(pending?.querySelectorAll(".loader-cell")).toHaveLength(GRID_CELLS);
-    expect(pending?.querySelector(".loader-label")?.textContent).toBe("thinking");
+    expect(pending?.querySelector(".loader-label")?.textContent).toBe("working on it");
     expect(view.container.querySelectorAll(".trace .loader-cell")).toHaveLength(0);
 
     stream.push({ type: "token", text: "first" });

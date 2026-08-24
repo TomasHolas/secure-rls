@@ -67,7 +67,7 @@ import type { Turn, TurnUsage } from "../lib/trace";
 
 const STREAM_CUT = "The stream ended before the turn finished.";
 /** The answer card before its first token: the one place in the chat that carries the pixel grid. */
-const PENDING_LABEL = "thinking";
+const PENDING_LABEL = "working on it";
 const GENERIC_FAILURE = "The turn failed. Try again.";
 /** A generation rate reads as a speed, not a measurement: one decimal is all it carries. */
 const RATE_DECIMALS = 1;
