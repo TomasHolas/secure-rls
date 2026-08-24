@@ -24,13 +24,11 @@ export function CodeBlock({
   label,
   code,
   tone,
-  actions,
   children,
 }: {
   label?: string;
   code: string;
   tone?: "accent";
-  actions?: ReactNode;
   children?: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
@@ -45,10 +43,9 @@ export function CodeBlock({
 
   return (
     <div className={`code-block${tone ? ` code-block-${tone}` : ""}`}>
-      {label || actions || clipboard ? (
+      {label || clipboard ? (
         <div className="code-block-head">
           {label ? <span className="code-block-label">{label}</span> : null}
-          {actions}
           {clipboard ? (
             <Button className="btn-xs" onClick={() => void copy()}>
               {copied ? "copied" : "copy"}
