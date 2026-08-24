@@ -104,7 +104,7 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   adversarial cases + retrieval/poisoned-notes attacks, every suite run for
   every tenant over the API's own bounded model client; `--mocked` mode for CI;
   committed scored report at `evals/report.md` (ADR 0004 as amended).
-- `[ ]` **M6 — CI/CD + README.** GitHub Actions: CI (ruff, pytest, dataset
+- `[x]` **M6 — CI/CD + README.** GitHub Actions: CI (ruff, pytest, dataset
   regen diff, frontend build, mocked eval dry run, compose build) + CD (images
   to GHCR on main; `docker compose up` as the deployment — ADR 0013); README
   with architecture, setup, tenant creds, challenges, time spent.
