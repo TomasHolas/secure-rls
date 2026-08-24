@@ -195,8 +195,14 @@ def workspace(
     embedder: rag.EmbedClient,
     tenants: Sequence[str],
     model_id: str,
+    prompt_guardrails: bool | None = None,
 ) -> Iterator[Session]:
-    """Build the real agent over a throwaway copy of the committed dataset, one graph per tenant."""
+    """Build the real agent over a throwaway copy of the committed dataset, one graph per tenant.
+
+    `prompt_guardrails` is passed straight to `build_agent`: `None` reads `runtime.json`, `False`
+    grades the off position, where the prompt no longer asks the model to decline an attack and
+    the four RLS layers are what refuses it (ADR 0002, ADR 0011 as amended).
+    """
     with tempfile.TemporaryDirectory(prefix="evals-") as workdir:
         directory = Path(workdir)
         db_path = directory / "employees.db"
@@ -211,6 +217,7 @@ def workspace(
                     embedder=embedder,
                     model_id=model_id,
                     db_path=db_path,
+                    prompt_guardrails=prompt_guardrails,
                 )
                 for tenant in tenants
             }

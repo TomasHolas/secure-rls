@@ -10,3 +10,4 @@ dist/
 uv.lock.orig
 *.egg-info/
 apps/backend/evals/report-mocked.md
+apps/backend/evals/report-mocked-no-guardrails.md
