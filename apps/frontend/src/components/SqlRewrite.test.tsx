@@ -6,7 +6,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SqlRewrite } from "./SqlRewrite";
+import { SqlRewrite, SqlTemplate } from "./SqlRewrite";
 
 afterEach(() => {
   cleanup();
@@ -94,6 +94,53 @@ describe("the highlight inside the executed card", () => {
     const { container } = render(<SqlRewrite generated={long} executed={long} />);
 
     expect(bodies(container)).toEqual([long, long]);
+    expect(container.querySelector(".sql-add")).toBeNull();
+    expect(container.querySelector(".sql-legend")).toBeNull();
+  });
+});
+
+describe("the template card, which has no generated side", () => {
+  const TEMPLATE =
+    "SELECT department, AVG(performance_score) FROM (SELECT * FROM employees " +
+    "WHERE employees.tenant_id = ?) AS employees GROUP BY department";
+
+  it("keeps the word template in its label, because the SQL is not model output", () => {
+    render(<SqlTemplate sql={TEMPLATE} />);
+
+    expect(screen.getByText("executed SQL (tenant-scoped template)")).toBeTruthy();
+  });
+
+  it("marks the scoping with the same mark as the pair, alias included", () => {
+    const { container } = render(<SqlTemplate sql={TEMPLATE} />);
+
+    expect(marks(container, ".code-block-body .sql-add")).toEqual([
+      "(SELECT * FROM employees WHERE employees.tenant_id = ?) AS employees",
+    ]);
+    expect(bodies(container)).toEqual([TEMPLATE]);
+  });
+
+  it("states what the highlight means once, in the pair's own words", () => {
+    const { container } = render(<SqlTemplate sql={TEMPLATE} />);
+
+    expect(container.querySelectorAll(".sql-legend")).toHaveLength(1);
+    expect(screen.getByText(/added by the RLS rewrite/)).toBeTruthy();
+  });
+
+  it("offers the same copy control, writing plain SQL rather than the markup", () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    render(<SqlTemplate sql={TEMPLATE} />);
+
+    screen.getByRole("button", { name: "copy" }).click();
+
+    expect(writeText).toHaveBeenCalledWith(TEMPLATE);
+  });
+
+  it("renders a statement without the scoping pattern unmarked, claiming nothing", () => {
+    const unscoped = "SELECT department, AVG(performance_score) FROM employees GROUP BY department";
+    const { container } = render(<SqlTemplate sql={unscoped} />);
+
+    expect(bodies(container)).toEqual([unscoped]);
     expect(container.querySelector(".sql-add")).toBeNull();
     expect(container.querySelector(".sql-legend")).toBeNull();
   });
