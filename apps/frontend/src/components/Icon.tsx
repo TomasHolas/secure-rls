@@ -59,6 +59,8 @@ export const MATERIAL_SYMBOLS: Record<string, string> = {
   settings: "settings",
   "refresh-cw": "refresh",
   layers: "layers",
+  eye: "visibility",
+  "eye-off": "visibility_off",
 };
 
 export interface IconProps {

@@ -54,6 +54,7 @@ export function LoginView() {
         type="password"
         value={password}
         onChange={setPassword}
+        revealable
         autoComplete="current-password"
         disabled={pending}
       />

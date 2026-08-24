@@ -98,6 +98,71 @@ describe("LoginView", () => {
     expect(loaders()).toHaveLength(0);
   });
 
+  it("reveals the password on the eye and masks it again, with the label and the glyph following", async () => {
+    const { LoginView } = await load();
+    const { container } = render(<LoginView />);
+    const field = () => screen.getByLabelText("Password") as HTMLInputElement;
+    const glyph = () =>
+      container.querySelector(".field-reveal .material-symbols-outlined")?.textContent;
+
+    const show = screen.getByRole("button", { name: "Show password" });
+    expect(show.getAttribute("aria-pressed")).toBe("false");
+    expect(show.getAttribute("aria-controls")).toBe(field().id);
+    expect(glyph()).toBe("visibility");
+
+    fireEvent.click(show);
+
+    const hide = screen.getByRole("button", { name: "Hide password" });
+    expect(field().getAttribute("type")).toBe("text");
+    expect(hide.getAttribute("aria-pressed")).toBe("true");
+    expect(glyph()).toBe("visibility_off");
+
+    fireEvent.click(hide);
+
+    expect(field().getAttribute("type")).toBe("password");
+    expect(screen.getByRole("button", { name: "Show password" }).getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    expect(glyph()).toBe("visibility");
+  });
+
+  // The reveal is state in the brick and nowhere else, so a remount cannot come back revealed.
+  it("forgets the reveal when the field goes away, and stores it nowhere", async () => {
+    const { LoginView } = await load();
+    render(<LoginView />);
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Show password" }));
+    expect(screen.getByLabelText("Password").getAttribute("type")).toBe("text");
+
+    cleanup();
+    render(<LoginView />);
+
+    expect(screen.getByLabelText("Password").getAttribute("type")).toBe("password");
+    expect(screen.getByRole("button", { name: "Show password" })).toBeTruthy();
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("carries the eye on the password only, inside the field's own box", async () => {
+    const { LoginView } = await load();
+    const { container } = render(<LoginView />);
+
+    expect(container.querySelectorAll(".field-reveal")).toHaveLength(1);
+    const control = container.querySelector(".field-control")!;
+    expect(control.querySelector("input")?.id).toBe("login-password");
+    expect(control.querySelector(".field-reveal")).not.toBeNull();
+  });
+
+  it("disables the eye while the request is in flight, with the fields", async () => {
+    const { LoginView } = await load();
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise<Response>(() => {})));
+    render(<LoginView />);
+
+    fillCredentials();
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    expect(screen.getByRole("button", { name: "Show password" }).hasAttribute("disabled")).toBe(true);
+  });
+
   it("names no credentials anywhere in the UI", async () => {
     const { LoginView } = await load();
     const { container } = render(<LoginView />);

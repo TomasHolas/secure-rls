@@ -7,7 +7,8 @@
 /* ======================== App-level metrics ======================== */
 /* tokens.css is KB's verbatim copy (ADR 0006), so a metric KB does not define belongs here or
    the next sync would drop it. --control-height is the one height every control in a control
-   row takes, so a control added to such a row cannot silently disagree (issue #115). */
+   row takes, so a control added to such a row cannot silently disagree (issue #115), and
+   --field-control-size is the square a control sitting inside a field's own box takes. */
 /* The pixel-grid loader's metrics, rhythm and two opacities live here for the same reason
    (issue #123). A 6px cell puts the inline grid at 22px across - it replaces a 14px glyph and has
    to read from the back of a room - and `.loader-page` trades up to 41px where the loader stands
@@ -16,6 +17,7 @@
    the first one has left. */
 :root {
   --control-height: 48px;
+  --field-control-size: 32px;
   --loader-cell: 6px;
   --loader-gap: 2px;
   --loader-step: 170ms;
@@ -298,6 +300,15 @@
   background: var(--bg-surface-2); border: 1px solid var(--border-default); border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-4); outline: none;
   transition: border-color var(--dur-fast) var(--ease-out);
+}
+/* A field whose input carries a control of its own: the box is still the input, so the border
+   that turns accent on focus is still the whole ring, and the control sits inside it rather than
+   beside it. The input's right padding is what keeps the text from running under the glyph. */
+.field-control { position: relative; display: flex; align-items: center; }
+.field-control .input { padding-right: calc(var(--space-4) + var(--field-control-size)); }
+.field-reveal {
+  position: absolute; right: var(--space-2);
+  width: var(--field-control-size); height: var(--field-control-size);
 }
 .input::placeholder { color: var(--fg-4); }
 .input:disabled { opacity: 0.6; cursor: not-allowed; }
