@@ -5,10 +5,12 @@
  * beautifului.dev onto our own CSS and tokens (ADR 0006) - no Tailwind, no dependency, and the
  * grid is DOM rather than a glyph, because `Icon` is a fixed Material Symbols subset.
  *
- * It composes rather than insisting: the grid alone is the whole loader on a pending button or in
- * the trace's header, where the text beside it already says what is happening; a label turns it
- * into the loading state of a panel; a `since` timestamp adds the elapsed time where how long
- * this is taking is the reader's actual question - the model thinking.
+ * It composes rather than insisting: the grid alone is the whole loader on a pending button, where
+ * the text beside it already says what is happening; a label turns it into the loading state of a
+ * panel; a `since` timestamp adds the elapsed time where how long this is taking is the reader's
+ * actual question - the model thinking; and `grid={false}` drops the grid where a second one would
+ * be on screen at the same time, leaving the shimmering label to say the same thing quietly
+ * (`docs/ui-pattern-review.md` - the owner's placement ruling on issue #123).
  *
  * Every metric of the grid (cell, gap, cycle, the two opacities) is a custom property in
  * `app.css`, so nothing here carries a number that a designer would then have to find in JSX.
@@ -37,18 +39,23 @@ export function Loader({
   label,
   since,
   scale = "inline",
+  grid = true,
 }: {
   label?: ReactNode;
   since?: number | null;
   scale?: LoaderScale;
+  /** Whether to draw the 3x3; `false` leaves the shimmering label as the whole signal, for a place that already has a grid on screen. */
+  grid?: boolean;
 }) {
   return (
     <span className={`loader loader-${scale}`} role="status">
-      <span className="loader-grid" aria-hidden="true">
-        {Array.from({ length: CELLS }, (_, cell) => (
-          <span className="loader-cell" key={cell} />
-        ))}
-      </span>
+      {grid ? (
+        <span className="loader-grid" aria-hidden="true">
+          {Array.from({ length: CELLS }, (_, cell) => (
+            <span className="loader-cell" key={cell} />
+          ))}
+        </span>
+      ) : null}
       {label ? <span className="loader-label">{label}</span> : null}
       {typeof since === "number" ? <Elapsed since={since} /> : null}
     </span>
