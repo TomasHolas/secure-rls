@@ -8,7 +8,7 @@ listings are deliberately unscoped, and `tenant_id` is a filter of the same kind
 `department`: pick one and the page is that tenant's, pick nothing and it is the dataset's.
 
 That is the ONE unscoped read in the repo, and it is named as one: the listings run through
-`db.execute_unscoped_browse`, which keeps layer 2's validator, layer 2.5's read-only connection,
+`db.execute_unscoped`, which keeps layer 2's validator, layer 2.5's read-only connection,
 authorizer, limit caps and deadline, the row cap and the audit row, and drops only what showing
 every tenant makes meaningless (the scoping rewrite, the proof of it, and the tenant egress
 comparison). The scoped executor is still what everything else here uses - the note-hit
@@ -76,7 +76,7 @@ from pathlib import Path
 
 from sqlglot import exp
 
-from db import AuditEntry, audit_window, execute_scoped, execute_unscoped_browse
+from db import AuditEntry, audit_window, execute_scoped, execute_unscoped
 from paths import DB_PATH
 from runtime import runtime
 from security import ALLOWED_TABLE, QueryRejected, require_allowed
@@ -323,7 +323,7 @@ def filter_options(
     """
     require_allowed(column, FILTER_OPTION_COLUMNS, "column", retryable=False)
     predicates, values = _bind(Filters(tenant_id=tenant_id))
-    result = execute_unscoped_browse(
+    result = execute_unscoped(
         _counts_sql(column, predicates), reader_tenant, params=values, db_path=db_path
     )
     return [OptionCount(value=str(value), employees=int(count)) for value, count in result.rows]
@@ -395,7 +395,7 @@ def _page(
     size = _page_size(page_size)
     number = max(page, _FIRST_PAGE)
     total = _total(predicates, values, reader_tenant, db_path)
-    result = execute_unscoped_browse(
+    result = execute_unscoped(
         _page_sql(columns, predicates, sort, direction, size, (number - 1) * size),
         reader_tenant,
         params=values,
@@ -421,7 +421,7 @@ def _total(
     db_path: Path,
 ) -> int:
     """How many rows match the filters at all, page or no page (ADR 0007)."""
-    result = execute_unscoped_browse(
+    result = execute_unscoped(
         _count_sql(predicates), reader_tenant, params=values, db_path=db_path
     )
     ((total,),) = result.rows

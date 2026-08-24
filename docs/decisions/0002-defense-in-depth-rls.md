@@ -3,7 +3,9 @@
 Status: accepted (amended 2026-08-21: engine authorizer, DoS controls, audit log — sourced
 hardening; amended 2026-08-24: retitled, and the "each sufficient alone" characterization
 corrected; amended 2026-08-24: the prompt guardrails are switchable, so the
-prompt-is-not-a-layer claim is demonstrated rather than asserted)
+prompt-is-not-a-layer claim is demonstrated rather than asserted; amended
+2026-08-25: the layers enforce whatever scope the verified token grants - one
+tenant or all of them - see "Scope comes from the token" below)
 
 ## Context
 
@@ -122,6 +124,41 @@ instructions found in note text — on the poisoned-notes attack, the very case 
 off position exists to demonstrate. Tool descriptions now carry no rule the model
 is asked to follow, and the off-position assertion is checked over the system
 prompt and every bound tool description together.
+
+## Scope comes from the token (amended 2026-08-25)
+
+Layer 1 has always said that the tenant is read from the verified JWT and is not
+an input the LLM or the client can reach. The demo now has a fourth user whose
+token grants **every** tenant (`admin`, ADR 0009 as amended), and that sentence
+is what makes it safe rather than an exception to it: what the token grants is
+what the layers enforce, and one tenant versus all of them is a property of the
+claim, never of anything the model wrote.
+
+- **The binding happens before the model is called.** `build_agent` takes
+  `all_tenants` from `auth.Identity` - which comes only from `verify_token` - and
+  `_build_tools` binds every tool of that set to one data path: `execute_scoped`
+  and the partition-filtered retrieval, or `execute_unscoped` and the
+  partition-less one. The tool schemas the model sees are identical either way:
+  no tool gains an argument, and none of them names a tenant or a scope. So there
+  is nothing to fill in with a wider value, and an argument that invents one is
+  refused by the schema rather than ignored. `tests/test_db.py` asserts both
+  directions over the built tool sets themselves - a tenant identity's tools
+  reach only the scoped path, an all-scope identity's reach only the unscoped
+  one, and no runtime input moves either.
+- **The layers do not change.** An all-scope read runs layer 2's allowlist, layer
+  2.5's engine authorizer, read-only connection, caps and deadline, the row cap
+  and the audit row exactly as a scoped read does. Layer 3's rewrite is absent
+  because one tenant is not what was asked for, layer 4a therefore has nothing to
+  prove, and layer 4b's comparison is *inapplicable*, not weakened, for the same
+  reason it is on the auditor listings: the returned rows are supposed to carry
+  other tenants, so a comparison against one tenant has no meaning to make
+  (the wording and the fence are ADR 0014's, unchanged).
+- **The demo claim is unchanged.** It was never "the app can only ever read one
+  tenant"; it is that *the model cannot influence which rows it reaches*. A
+  tenant login still answers 450, 350 or 200 with every attack in the suite
+  refused, and the admin login answers 1000 because its token says so. Both are
+  the same mechanism, which is the point worth showing: scope is data on a signed
+  claim, and enforcement reads that claim rather than the conversation.
 
 ## Hardening (amended per sourced review)
 

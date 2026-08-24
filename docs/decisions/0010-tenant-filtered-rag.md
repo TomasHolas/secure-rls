@@ -1,6 +1,7 @@
 # ADR 0010 — Tenant-filtered RAG over notes (sqlite-vec partition keys)
 
-Status: accepted
+Status: accepted (amended 2026-08-25: retrieval for the all-tenant scope of
+ADR 0009 - the same fixed KNN shape without its partition predicate)
 
 ## Context
 
@@ -128,6 +129,36 @@ on the store and re-embeds when they differ.
   would be more moving parts than the demo can justify — noted as the production
   evolution (the change-detection/incremental-indexing pattern that managed
   services implement).
+
+## Retrieval for an all-tenant scope (added 2026-08-25)
+
+The `admin` identity of ADR 0009 grants every tenant, so its `search_notes` has
+to search every partition. Two shapes were possible and the choice was decided
+empirically, not from memory.
+
+- **Chosen: the same fixed KNN statement without its partition predicate.**
+  Verified against the pinned sqlite-vec (v0.1.9, read back from
+  `vec_version()`): a KNN query over a partitioned `vec0` table with no
+  predicate on the partition key runs cleanly and returns k rows overall,
+  ordered by distance across partitions. So `db.search_vectors_unscoped` is
+  `db.search_vectors` minus one predicate - one statement, one traversal, k
+  means k, and no ranking logic of ours.
+- **Rejected: query each partition and merge by distance.** It would have been
+  the fallback had the partition-less form errored or returned k *per*
+  partition. It costs a fan-out over a tenant list this module would have to
+  learn, plus a merge and a re-truncation to k in Python - a second ranking
+  path to defend in the call, for an identical result.
+
+The layer mapping for that path: L1 unchanged (the scope is the token's, and the
+tool is bound to this function at build time by `agent._build_tools`, never by
+an argument); L2 unchanged (still a fixed shape, no generated SQL); L3's
+partition pre-filter is absent because every partition is what was asked for;
+L4's tenant comparison is **inapplicable rather than weakened**, in ADR 0014's
+sense - the hits are supposed to carry other tenants, so a check against one
+tenant has no meaning to make. Because the result is mixed, these hits carry
+`tenant_id` where the scoped ones do not: a mixed answer has to be able to say
+whose note it is quoting, while a scoped one would only be restating the
+caller's own tenant.
 
 ## Consequences
 

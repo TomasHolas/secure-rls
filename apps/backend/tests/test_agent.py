@@ -352,6 +352,19 @@ def db_path(tmp_path):
 
 
 @pytest.fixture
+def dataset_path(tmp_path):
+    """The committed employees.csv loaded into tmp_path: the only fixture here at demo scale.
+
+    Every other test in this module runs on the tiny inline dataset, whose counts prove nothing
+    about the demo. The scope tests need the real ones - 450, 350, 200 and 1000 - because "the
+    admin sees the whole dataset" is a claim about those numbers.
+    """
+    path = tmp_path / "dataset.db"
+    db.init_db(db.DEFAULT_CSV_PATH, path)
+    return path
+
+
+@pytest.fixture
 def checkpointer(tmp_path):
     """The production checkpointer on a temporary file, so multi-turn memory is the real thing."""
     with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.db")) as saver:
@@ -365,6 +378,7 @@ def build(db_path):
     def make(
         *script,
         tenant=ACME,
+        all_tenants=False,
         checkpointer=None,
         model_id=None,
         chunked=False,
@@ -386,6 +400,7 @@ def build(db_path):
             model_id=model_id,
             db_path=db_path,
             prompt_guardrails=guardrails,
+            all_tenants=all_tenants,
         )
         return graph, llm
 
@@ -952,6 +967,86 @@ def test_anomaly_detection_flags_the_planted_outlier(build):
 
     anomalies = _one(events, "tool_result")["data"]["anomalies"]
     assert [anomaly["name"] for anomaly in anomalies] == [_OUTLIER]
+
+
+@pytest.mark.parametrize(
+    ("tenant", "all_tenants", "rows"),
+    [
+        (ACME, False, 450),
+        (BETA, False, 350),
+        (GAMMA, False, 200),
+        (auth.ALL_TENANTS, True, 1000),
+    ],
+)
+def test_the_scope_in_the_token_is_what_a_turn_counts(dataset_path, tenant, all_tenants, rows):
+    """The demo question, asked through the graph over the committed dataset (ADR 0002 amended).
+
+    One statement, four identities: each tenant still counts its own rows and the all-scope one
+    counts the whole dataset. The model writes the same SQL every time - the count differs
+    because the scope the token granted was bound into the tools before the model was called.
+    """
+    llm = ScriptedLLM(
+        script=[
+            _tool_call("query_db", sql="SELECT COUNT(*) AS employees FROM employees"),
+            AIMessage(content="that is the total"),
+        ]
+    )
+    graph = build_agent(
+        tenant,
+        llm,
+        embedder=FakeEmbed(),
+        db_path=dataset_path,
+        all_tenants=all_tenants,
+    )
+
+    events = list(run_turn(graph, "how many employees are there in total?", _THREAD))
+
+    assert _one(events, "tool_result")["data"]["rows"] == [[rows]]
+    assert _one(events, "done")["status"] == STATUS_OK
+
+
+def test_an_all_scope_turn_reads_every_tenants_rows_and_trips_no_egress_check(build, db_path):
+    """The admin case end to end: foreign rows are the answer, so nothing refuses them.
+
+    Layer 4b's row check is inapplicable to an all-tenant scope, not weakened (ADR 0002 as
+    amended): it compares a row's tenant against the session's one tenant, and this session has
+    every tenant. So the turn returns beta's rows beside acme's, with no security event and an
+    ordinary `ok` status - and the audit row records the read under the all-scope identity.
+    """
+    graph, _ = build(
+        _tool_call("query_db", sql="SELECT name, tenant_id FROM employees"),
+        AIMessage(content="here is everyone, tenant by tenant"),
+        tenant=auth.ALL_TENANTS,
+        all_tenants=True,
+    )
+    events = list(run_turn(graph, "list everyone in the whole dataset", _THREAD))
+
+    result = _one(events, "tool_result")
+    assert {row[1] for row in result["data"]["rows"]} == {ACME, BETA}
+    assert not _of_type(events, "security_event")
+    assert _one(events, "done")["status"] == STATUS_OK
+    assert db.audit_entries(db_path)[-1].tenant == auth.ALL_TENANTS
+
+
+def test_an_all_scope_turn_retrieves_notes_from_every_tenant_and_names_their_owners(build):
+    """Retrieval follows the same grant: the partition-less KNN, with each hit naming its tenant.
+
+    The counterpart of `test_note_search_stays_inside_the_tenant`, on the same query and the same
+    corpus: an acme turn cannot see beta's note, an all-scope turn can, and because the result is
+    mixed the model is told which tenant each note belongs to (ADR 0010 as amended).
+    """
+    graph, _ = build(
+        _tool_call("search_notes", query="beta secret leadership note"),
+        AIMessage(content="beta's note says that"),
+        tenant=auth.ALL_TENANTS,
+        all_tenants=True,
+    )
+    events = list(run_turn(graph, "what do the beta notes say?", _THREAD))
+
+    result = _one(events, "tool_result")
+    assert _BETA_MARKER in result["content"]
+    assert f"[{BETA}]" in result["content"]
+    assert {note["tenant_id"] for note in result["data"]["notes"]} >= {ACME, BETA}
 
 
 def test_note_search_stays_inside_the_tenant(build):

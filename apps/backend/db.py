@@ -63,14 +63,15 @@ its retryable flag - a query the engine itself refuses is an honest, retryable e
 timeout is terminal) and `SecurityViolation` when an inner layer trips, which the agent never
 retries (ADR 0011).
 
-`execute_unscoped_browse` is the ONE deliberately unscoped read here, and the only exception to
-"every read of tenant data is scoped". It exists for the auditor listings of ADR 0014 (as
-rewritten): the Records and Notes tabs show the whole dataset so a reader can see what exists and
-then watch the agent reach only its own tenant's part of it, and a listing that spans tenants
-cannot go through a function that binds one tenant by construction. Unscoped means "not filtered
-to one tenant" and nothing more - it keeps layer 2, layer 2.5, the row cap and the audit row, and
-drops only what returning every tenant makes meaningless (layer 3's rewrite, layer 4a's proof of
-it, and layer 4b's tenant comparison). Nothing the model can call is closed over it.
+`execute_unscoped` is the ONE deliberately unscoped read here, and the only exception to
+"every read of tenant data is scoped". Unscoped means "not filtered to one tenant" and nothing
+more - it keeps layer 2, layer 2.5, the row cap and the audit row, and drops only what returning
+every tenant makes meaningless (layer 3's rewrite, layer 4a's proof of it, and layer 4b's tenant
+comparison). It has two callers, and which one is serving a request is never the model's to
+choose: the auditor listings of ADR 0014, whose Records and Notes tabs show the whole dataset so a
+reader can see what exists; and an ALL-SCOPE identity's tools, bound to it at build time because
+the verified token said so (ADR 0002 as amended). A one-tenant identity's tools are bound to
+`execute_scoped` and nothing a model writes, a client sends or a note contains can rebind them.
 
 The retrieval path (ADR 0010) adds a second, narrow seam, because this module owns every
 `sqlite3.connect` in the repo while `rag.py` owns embedding and orchestration:
@@ -87,7 +88,9 @@ The retrieval path (ADR 0010) adds a second, narrow seam, because this module ow
   read that back over the same writable seam - together, the startup check that makes indexing
   idempotent for an unchanged corpus and re-embedding for a changed one (ADR 0010 as amended).
   None of the three is a serving path.
-- `search_vectors` runs the one fixed KNN shape read-only. The vector store is a SEPARATE
+- `search_vectors` and `search_vectors_unscoped` run the two fixed KNN shapes read-only - the
+  same statement with and without the partition predicate, for a one-tenant and an all-tenant
+  scope respectively. The vector store is a SEPARATE
   file from the employees data on purpose: the connection that runs model-generated SQL caps
   attached databases at zero and therefore cannot reach the virtual table at all. That matters
   more than tidiness - sqlite-vec 0.1.9 does not check the result of preparing its own
@@ -177,6 +180,11 @@ _META_SELECT = f"SELECT fingerprint FROM {VECTOR_META_TABLE}"
 _VECTOR_SEARCH = (
     f"SELECT user_id, {TENANT_COLUMN}, name, note, distance FROM {VECTOR_TABLE} "
     f"WHERE embedding MATCH ? AND k = ? AND {TENANT_COLUMN} = ?"
+)
+# The all-scope shape: the same query without the partition predicate, so k is k over the corpus.
+_VECTOR_SEARCH_ALL = (
+    f"SELECT user_id, {TENANT_COLUMN}, name, note, distance FROM {VECTOR_TABLE} "
+    "WHERE embedding MATCH ? AND k = ?"
 )
 
 _AUDIT_COLUMNS = (
@@ -416,7 +424,7 @@ def execute_scoped(
         _write_audit(_audit_path(db_path), attempt, clock)
 
 
-def execute_unscoped_browse(
+def execute_unscoped(
     sql: str,
     reader_tenant: str,
     *,
@@ -424,21 +432,24 @@ def execute_unscoped_browse(
     db_path: Path = DB_PATH,
     clock: Callable[[], datetime] = _utc_now,
 ) -> QueryResult:
-    """THE ONE UNSCOPED READ IN THIS REPO: the whole dataset, for the auditor listings only.
+    """THE ONE UNSCOPED READ IN THIS REPO: the whole dataset, for its two declared callers.
 
     The Records and Notes listings are the control group for the isolation claim (ADR 0014 as
     rewritten): they show every tenant's rows so a reader can see what exists and then watch the
-    agent, in the same app, reach only its own tenant's part of it. A listing that spans tenants
-    cannot go through `execute_scoped`, which binds one tenant by construction, so this is the
-    single deliberate exception - named so it cannot be mistaken for the ordinary path, and
-    called from nothing but `browse.py`'s fixed listing templates.
+    agent, in the same app, reach only its own tenant's part of it. An all-scope identity is the
+    second caller (ADR 0002 as amended): a token whose verified `scope` claim is `all` grants
+    every tenant, and a read that spans tenants cannot go through `execute_scoped`, which binds
+    one tenant by construction. So this is the single deliberate exception - named so it cannot be
+    mistaken for the ordinary path, and reached from nothing but `browse.py`'s fixed listing
+    templates, `analytics.py`'s fixed templates and the agent's tool binding.
 
     Unscoped means "not filtered to one tenant" and nothing else. Layer 2 (`validate_sql`, with
     the caller's declared parameter count) still refuses everything but one SELECT over
     employees; layer 2.5 is the same read-only connection, employees-only authorizer,
     `sqlite3_limit` caps and query deadline `execute_scoped` opens; the row cap of ADR 0007 still
     trims the result; and the call is audited like every other, under `reader_tenant` - the
-    identity of whoever browsed, an audit field and never a filter.
+    identity of whoever read, an audit field and never a filter, which for an all-scope caller is
+    its distinguished `auth.ALL_TENANTS` claim.
 
     Three things are absent because returning every tenant makes them meaningless rather than
     because they were skipped: layer 3 does not rewrite the query, layer 4a therefore has no
@@ -446,8 +457,10 @@ def execute_unscoped_browse(
     point. The audit row shows it - `executed_sql` carries no scoping subquery - and the tenant a
     reader wants is an ordinary bound filter value in `browse.py` instead.
 
-    Nothing the model can reach is closed over this function: no agent tool calls it, which
-    `tests/test_db.py` asserts over the built tool set itself and over every module's source.
+    What the model can reach is decided before it speaks: `agent._build_tools` binds this function
+    into the tools only for an identity whose verified token carries all-tenant scope, and binds
+    `execute_scoped` for every other one. No tool argument, request field or model output selects
+    between them, which `tests/test_db.py` asserts over the built tool sets themselves.
     """
     attempt = _Attempt(generated_sql=sql, tenant=reader_tenant)
     filters = tuple(params)
@@ -557,14 +570,35 @@ def search_vectors(
     db_path: Path, query_vector: Sequence[float], tenant_id: str, k: int
 ) -> list[VectorMatch]:
     """The k nearest notes inside tenant_id's partition; the tenant is bound, never interpolated."""
+    params = (sqlite_vec.serialize_float32(query_vector), _capped_k(k), tenant_id)
+    return _knn(db_path, _VECTOR_SEARCH, params)
+
+
+def search_vectors_unscoped(
+    db_path: Path, query_vector: Sequence[float], k: int
+) -> list[VectorMatch]:
+    """The k nearest notes across every partition: the retrieval half of an all-tenant scope.
+
+    The vec0 counterpart of `execute_unscoped`, and reached the same way - only for an identity
+    whose verified token carries all-tenant scope (ADR 0010 as amended). sqlite-vec 0.1.9 runs a
+    KNN over a partitioned table with no partition predicate and returns k rows overall, ordered
+    by distance across the partitions, so this is the same fixed shape minus one predicate rather
+    than a merge of per-tenant searches. Every hit carries its own `tenant_id`, so the rows say
+    which tenant each note came from.
+    """
+    params = (sqlite_vec.serialize_float32(query_vector), _capped_k(k))
+    return _knn(db_path, _VECTOR_SEARCH_ALL, params)
+
+
+def _knn(db_path: Path, sql: str, params: tuple[object, ...]) -> list[VectorMatch]:
+    """Run one fixed KNN shape read-only behind the retrieval authorizer, naming any denial."""
     path = _vector_path(db_path)
     if not path.exists():
         raise FileNotFoundError(f"no vector store at {path}: index_notes has not run")
     guard = _VectorGuard()
-    params = (sqlite_vec.serialize_float32(query_vector), _capped_k(k), tenant_id)
     try:
         with closing(_connect_vectors(path, guard)) as conn:
-            return [VectorMatch(*row) for row in conn.execute(_VECTOR_SEARCH, params)]
+            return [VectorMatch(*row) for row in conn.execute(sql, params)]
     except sqlite3.Error as error:
         raise guard.explain(error) from error
 

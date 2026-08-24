@@ -271,10 +271,16 @@ class FakeRunner:
     calls: list[dict[str, str]] = field(default_factory=list)
     events: tuple[dict, ...] = EVENTS
 
-    def __call__(self, *, tenant_id, thread_id, message, model):
+    def __call__(self, *, tenant_id, all_tenants, thread_id, message, model):
         """Record the turn, then yield the fixed event sequence with the model echoed back."""
         self.calls.append(
-            {"tenant_id": tenant_id, "thread_id": thread_id, "message": message, "model": model}
+            {
+                "tenant_id": tenant_id,
+                "all_tenants": all_tenants,
+                "thread_id": thread_id,
+                "message": message,
+                "model": model,
+            }
         )
         for event in self.events:
             yield {**event, "model": model} if event["type"] == "done" else dict(event)
@@ -319,7 +325,7 @@ class ExpiringRunner:
 
     clock: FrozenClock
 
-    def __call__(self, *, tenant_id, thread_id, message, model):
+    def __call__(self, *, tenant_id, all_tenants, thread_id, message, model):
         """Yield the first event, lapse the token well past its expiry, then finish the turn."""
         for index, event in enumerate(EVENTS):
             if index == 1:
@@ -408,10 +414,16 @@ class GatedRunner:
     release: threading.Event = field(default_factory=threading.Event)
     finished: threading.Event = field(default_factory=threading.Event)
 
-    def __call__(self, *, tenant_id, thread_id, message, model):
+    def __call__(self, *, tenant_id, all_tenants, thread_id, message, model):
         """Yield the canned events, holding at the gate once the first one is out."""
         self.calls.append(
-            {"tenant_id": tenant_id, "thread_id": thread_id, "message": message, "model": model}
+            {
+                "tenant_id": tenant_id,
+                "all_tenants": all_tenants,
+                "thread_id": thread_id,
+                "message": message,
+                "model": model,
+            }
         )
         try:
             for index, event in enumerate(EVENTS):
@@ -431,7 +443,7 @@ class BreakingRunner:
 
     prefix: tuple[dict, ...]
 
-    def __call__(self, *, tenant_id, thread_id, message, model):
+    def __call__(self, *, tenant_id, all_tenants, thread_id, message, model):
         """Replay the prefix, then fail the way an unreachable endpoint would."""
         for event in self.prefix:
             yield dict(event)

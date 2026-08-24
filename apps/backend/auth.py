@@ -9,6 +9,21 @@ and `refreshed_token` re-issues one for a still-valid token that expires within
 `auth.refresh_within_minutes` - so an active caller is never signed out mid-session
 while tokens stay short-lived in absolute terms. Refreshing decodes with the same
 pinned verification as `verify_token`: an expired or forged token refreshes nothing.
+
+Scope (ADR 0009 as amended). An identity reads either one tenant or every tenant, and
+which one it is travels in the signed token as the `scope` claim - `tenant` or `all` -
+beside the `tenant_id` claim it has always carried. `Identity.all_tenants` is the typed
+form of it, and it is the ONLY source of all-tenant scope in the repo: the agent binds
+its tools to the scoped or the unscoped path from this flag at build time (ADR 0002 as
+amended), so no tool argument, request field or model output can name or widen a scope.
+The admin user's `tenant_id` claim is the distinguished value `ALL_TENANTS`, which no
+tenant in the dataset uses, and it stays what the audit trail records the reader as.
+
+Verification is unchanged in kind: the same pinned HS256 decode, so a hand-edited
+`scope` fails the signature like any other tampering. A token carrying no `scope` at all
+is read as one-tenant scope - the least privilege, and the shape every token had before
+this claim existed - while a `scope` this module never mints is refused rather than
+quietly downgraded.
 """
 
 import hashlib
@@ -22,37 +37,58 @@ import jwt
 from runtime import runtime
 
 SECRET_ENV_VAR = "JWT_SECRET"
+SCOPE_CLAIM = "scope"
+SCOPE_TENANT = "tenant"
+SCOPE_ALL = "all"
+# The tenant claim of an all-scope identity: a value no tenant in the dataset carries.
+ALL_TENANTS = "all-tenants"
 
 _JWT_ALGORITHM = "HS256"
 _REQUIRED_CLAIMS = ["sub", "tenant_id", "exp", "iat"]
 _MIN_SECRET_BYTES = 32
+_SCOPES = frozenset({SCOPE_TENANT, SCOPE_ALL})
 
-# username -> (tenant_id, stored PBKDF2 hash); plaintext demo passwords live only in the README.
-_DEMO_USERS: dict[str, tuple[str, str]] = {
+# username -> (tenant_id, scope, stored PBKDF2 hash); plaintexts live only in the README.
+_DEMO_USERS: dict[str, tuple[str, str, str]] = {
     "alice@acme": (
         "acme",
+        SCOPE_TENANT,
         "pbkdf2_sha256$600000$417244ce9f6e9feb891d4d97b893e1a1"
         "$171b47b7341efaa3da642d00864fe1d59dba825f85616e8dbe20332f44c7d2f0",
     ),
     "bob@beta": (
         "beta",
+        SCOPE_TENANT,
         "pbkdf2_sha256$600000$70dcf225eba0585c19de6e1cf172c1ba"
         "$b6fc7d8db4bfe599d428cb768afad03b4059109bf39913d65346e12c79acf6a2",
     ),
     "carol@gamma": (
         "gamma",
+        SCOPE_TENANT,
         "pbkdf2_sha256$600000$b58f0c96777c2186adf57082bd765d1b"
         "$ffbfefb8ee191009d5f933f1507b4d0a515a83f45372402e4c2886bbb827c6b8",
+    ),
+    "admin": (
+        ALL_TENANTS,
+        SCOPE_ALL,
+        "pbkdf2_sha256$600000$281305efb0dd662b92186fa6224db2a9"
+        "$76dd56a50ca1e1cc0ce20e731baa438cc39fb48903aa9ad4ba7e4c3bf1599789",
     ),
 }
 
 
 @dataclass(frozen=True)
 class Identity:
-    """The verified caller: subject and the tenant every RLS layer scopes to."""
+    """The verified caller: subject, the tenant the RLS layers scope to, and its scope.
+
+    `all_tenants` is that scope in typed form: false is the ordinary one-tenant identity,
+    true the all-tenant one whose `tenant_id` is `ALL_TENANTS`. It defaults to the narrow
+    reading, so an identity built without saying so is never an all-tenant one.
+    """
 
     sub: str
     tenant_id: str
+    all_tenants: bool = False
 
 
 class AuthError(Exception):
@@ -77,18 +113,19 @@ def verify_password(username: str, password: str) -> Identity | None:
     record = _DEMO_USERS.get(username)
     if record is None:
         return None
-    tenant_id, stored = record
+    tenant_id, scope, stored = record
     if not _password_matches(password, stored):
         return None
-    return Identity(sub=username, tenant_id=tenant_id)
+    return Identity(sub=username, tenant_id=tenant_id, all_tenants=scope == SCOPE_ALL)
 
 
 def create_token(identity: Identity) -> str:
-    """Sign a short-lived HS256 token carrying the identity's subject and tenant claim."""
+    """Sign a short-lived HS256 token carrying the identity's subject, tenant and scope."""
     issued_at = datetime.now(UTC)
     claims = {
         "sub": identity.sub,
         "tenant_id": identity.tenant_id,
+        SCOPE_CLAIM: SCOPE_ALL if identity.all_tenants else SCOPE_TENANT,
         "iat": issued_at,
         "exp": issued_at + timedelta(minutes=runtime().auth.token_ttl_minutes),
     }
@@ -123,8 +160,18 @@ def _verified_claims(token: str) -> dict:
 
 
 def _identity_of(claims: dict) -> Identity:
-    """The identity a verified claim set carries: the subject and its tenant."""
-    return Identity(sub=claims["sub"], tenant_id=claims["tenant_id"])
+    """The identity a verified claim set carries: the subject, its tenant and its scope."""
+    return Identity(
+        sub=claims["sub"], tenant_id=claims["tenant_id"], all_tenants=_all_tenants(claims)
+    )
+
+
+def _all_tenants(claims: dict) -> bool:
+    """Whether the verified scope claim grants every tenant; anything unminted is refused."""
+    scope = claims.get(SCOPE_CLAIM, SCOPE_TENANT)
+    if scope not in _SCOPES:
+        raise AuthError(f"the token carries an unknown scope: {scope!r}")
+    return scope == SCOPE_ALL
 
 
 def _password_matches(password: str, stored: str) -> bool:

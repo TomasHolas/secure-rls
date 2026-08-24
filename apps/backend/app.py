@@ -3,9 +3,12 @@
 Every handler is one call into a module that already owns the logic. Nothing here validates
 SQL, scopes a tenant or talks to a model; it wires, authorizes and serializes.
 
-Identity (ADR 0002 layer 1). `tenant_id` and `sub` come only from `auth.verify_token`. The
-request body is never consulted for identity - `ChatRequest` has no tenant field and Pydantic
-drops any the client invents, so a body claiming another tenant is silently ineffective.
+Identity (ADR 0002 layer 1). `tenant_id`, `sub` and the scope come only from `auth.verify_token`.
+The request body is never consulted for identity - `ChatRequest` has no tenant or scope field and
+Pydantic drops any the client invents, so a body claiming another tenant, or all of them, is
+silently ineffective. `/chat` hands the runner both halves of the verified identity, and the
+runner passes them to `build_agent`, which binds the tools to the one data path that scope allows
+(ADR 0002 as amended, ADR 0009 as amended).
 
 Endpoints:
 
@@ -78,7 +81,7 @@ turn's worker, so a reader who leaves mid-generation shortens the stream and nev
 Browsing the data itself (ADR 0014 as rewritten). The Records and Notes tabs are the demo's
 control group, so their listings show the WHOLE dataset - all three tenants - with `tenant_id` a
 filter of the same kind as `department`. They read through `browse.py`'s allowlisted templates
-down `db.execute_unscoped_browse`, the one deliberately unscoped read in the repo: validator,
+down `db.execute_unscoped`, the one deliberately unscoped read in the repo: validator,
 engine authorizer, limit caps, deadline, row cap and audit row all still apply, and only the
 tenant scoping and its egress comparison are absent, because returning every tenant is the point.
 The notes SEARCH is the opposite and stays that way: it delegates to `rag.search_notes_scoped`,
@@ -298,10 +301,16 @@ class ModelEndpointError(Exception):
 
 
 class ChatRunner(Protocol):
-    """Runs one turn for a tenant and yields the ADR 0012 trace events in order."""
+    """Runs one turn for an identity and yields the ADR 0012 trace events in order."""
 
     def __call__(
-        self, *, tenant_id: str, thread_id: str, message: str, model: str
+        self,
+        *,
+        tenant_id: str,
+        all_tenants: bool,
+        thread_id: str,
+        message: str,
+        model: str,
     ) -> Iterator[TraceEvent]:
         """Stream the turn's trace events; a raise is a transport failure, not an answer."""
         ...
@@ -404,10 +413,15 @@ def bounded_model(base_url: str, model: str, *, reasoning: bool) -> ChatOllama:
 def ollama_chat_runner(
     base_url: str, thinking: Callable[[str], bool], db_path: Path
 ) -> ChatRunner:
-    """The production runner: ChatOllama plus the tenant's graph over the SQLite checkpointer."""
+    """The production runner: ChatOllama plus the identity's graph over the SQLite checkpointer."""
 
     def run(
-        *, tenant_id: str, thread_id: str, message: str, model: str
+        *,
+        tenant_id: str,
+        all_tenants: bool,
+        thread_id: str,
+        message: str,
+        model: str,
     ) -> Iterator[TraceEvent]:
         """Build the graph for this turn and stream it; the checkpointer closes with the stream."""
         with SqliteSaver.from_conn_string(str(CHECKPOINT_DB_PATH)) as checkpointer:
@@ -418,6 +432,7 @@ def ollama_chat_runner(
                 embedder=OllamaEmbed(base_url),
                 model_id=model,
                 db_path=db_path,
+                all_tenants=all_tenants,
             )
             yield from run_turn(graph, message, thread_id)
 
@@ -707,6 +722,7 @@ def create_app(
         model = _resolve_model(body.model, list_models)
         events = run_chat(
             tenant_id=identity.tenant_id,
+            all_tenants=identity.all_tenants,
             thread_id=body.thread_id,
             message=body.message,
             model=model,

@@ -1,7 +1,8 @@
 # ADR 0011 — Agent design: explicit graph, retry policy, memory, tool contracts
 
 Status: accepted (amended 2026-08-24: the prompt guardrails are a switchable knob; a turn's
-sent history is bounded too)
+sent history is bounded too; amended 2026-08-25: the tools are bound to the data path the
+verified token's scope allows - one tenant or all of them, ADR 0009 as amended)
 
 ## Context
 
@@ -269,6 +270,21 @@ multi-turn adversarial evals (ADR 0004).
 | `detect_anomalies(column, group_by?)` | Tukey IQR fences (outlier beyond 1.5x IQR from the quartiles), computed within each group (default: department). Chosen over z-scores because salaries are lognormal by design (ADR 0008) and z-scores assume normality — they would flag the healthy right tail. | Deterministic statistics on scoped rows |
 | `search_notes(query)` | Tenant-partitioned KNN over embedded notes (ADR 0010). | Fixed parameterized shape, pre-filtered |
 
+**Which data path a tool set is bound to (amended 2026-08-25).** The table above
+describes a one-tenant identity, which is every tenant user. An identity whose
+verified token carries all-tenant scope (ADR 0009 as amended) gets the same five
+tools with the same arguments, bound instead to the unscoped executor and the
+partition-less KNN: `_build_tools` takes `all_tenants` from `build_agent`, which
+takes it from `auth.Identity`, and makes the choice once, before the model is
+called. Nothing about the model's interface moves — no tool gains, loses or
+renames an argument, and none of them names a tenant or a scope — so the closure
+property this section rests on is unchanged: the scope is not an input the model
+can reach, it is a fact about the token the tools were built for. `analytics.py`
+takes the same flag as a keyword-only argument defaulting to the narrow reading,
+so its templates choose the executor rather than growing a second copy of
+themselves. Both directions are asserted over the built tool sets in
+`tests/test_db.py` (ADR 0002 as amended).
+
 ### Chart kinds, and what `plot` does not send (amended after issue #70)
 
 Six kinds, each one an allowlisted fixed template in `analytics.py` — the arguments are
@@ -296,10 +312,17 @@ so the backend never formats and the product never grows a second formatter to d
 
 ### System prompt
 
-Schema card + a few own-tenant sample rows (the assignment's "embed schema +
-sample rows"); aggregation push-down and column-selection instructions
-(ADR 0007); the tenant-scope instruction retained as UX guidance, explicitly
-not a security layer (ADR 0002).
+Schema card + a few sample rows from the data the caller can read (the
+assignment's "embed schema + sample rows"); aggregation push-down and
+column-selection instructions (ADR 0007); the scope instruction retained as UX
+guidance, explicitly not a security layer (ADR 0002).
+
+The prompt states the caller's scope honestly in the two places it names one -
+who the model is analyst for, and the closing paragraph - so an all-tenant
+session is told its rows span tenants and asked to say which tenant a figure
+belongs to, and its sample rows come from the same data path its tools were
+bound to. That is answer quality: the layers read the token, never this text,
+and the closing paragraph is the block the guardrail switch drops.
 
 Three further rules, each one line, all of them UX and answer-quality guidance
 rather than enforcement — nothing in the prompt is a boundary (ADR 0002), and

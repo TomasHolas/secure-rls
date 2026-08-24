@@ -1,7 +1,9 @@
 # ADR 0009 — Auth implementation: PBKDF2 password hashing, pinned-algorithm JWT
 
 Status: accepted (amended 2026-08-21: sliding session - 120-minute token, renewed
-within 30 minutes of expiry via the X-Refreshed-Token response header)
+within 30 minutes of expiry via the X-Refreshed-Token response header; amended
+2026-08-25: a fourth demo user, `admin`, whose token carries an all-tenant scope
+claim - an owner decision, asked for twice)
 
 ## Context
 
@@ -18,14 +20,36 @@ RLS layer 1's foundation. Constraint: prefer the stdlib over new dependencies.
   OWASP's first choice is Argon2id (m=19456, t=2, p=1; also what FastAPI's own
   tutorial now demonstrates via pwdlib) — PBKDF2 is chosen here for stdlib-only
   purity, and Argon2id is the documented one-dependency upgrade path.
-- **Users**: three demo identities (one per tenant), hashes hardcoded in
-  `auth.py`; plaintext demo passwords documented only in the README, clearly
-  labeled demo-only. Demo identities are not secrets; signing keys are.
+- **Users**: four demo identities, hashes hardcoded in `auth.py`; plaintext demo
+  passwords documented only in the README, clearly labeled demo-only. Demo
+  identities are not secrets; signing keys are. Three are one per tenant. The
+  fourth, `admin`, is the **all-tenant** identity of the amendment below.
+- **Scope is a claim, not a second code path** (amended 2026-08-25). An identity
+  reads either one tenant or every tenant, and which one travels in the signed
+  token as a `scope` claim - `tenant` or `all` - beside the `tenant_id` claim it
+  has always carried. `Identity.all_tenants` is that claim in typed form, and it
+  is the only source of all-tenant scope in the repo: `app.py` reads it off the
+  verified token and hands it to `build_agent`, which binds the tools to the
+  scoped or the unscoped data path once, before the model is called (ADR 0002 as
+  amended). No tool argument, request field or model output can name a scope, so
+  the property layer 1 has always had - "the tenant is not an input anywhere the
+  LLM or the client can reach" - now covers the scope too.
+  - The admin's `tenant_id` claim is the distinguished value `all-tenants`, which
+    no tenant in the dataset uses. It is what the audit trail records the reader
+    as, exactly as a tenant claim is for a tenant user, so every admin read is
+    attributable in the same log.
+  - Verification is unchanged in kind: HS256 with the algorithm list pinned. A
+    tenant token hand-edited to `scope: "all"` fails the signature like any other
+    tampering, which is asserted as a test.
+  - A token carrying **no** `scope` claim reads as one-tenant scope: the least
+    privilege, and the shape every token had before the claim existed. A `scope`
+    this server never mints is refused outright rather than quietly downgraded -
+    an unrecognized value is a token we did not issue, not a narrower one.
 - **JWT**: HS256 via PyJWT — explicitly legitimate when the issuer is the sole
   audience (OWASP JWT Cheat Sheet). Verification pins the algorithm list
   (`jwt.decode(token, key, algorithms=["HS256"])`) per RFC 8725 section 3.1,
   rejecting `alg=none` and confusion attacks. Claims: `sub`, `tenant_id`,
-  `exp`, `iat`.
+  `scope`, `exp`, `iat`.
 - **Session lifetime: a sliding session** (amended per issue #71).
   `auth.token_ttl_minutes` is **120**, and `auth.refresh_within_minutes` is
   **30**: an authenticated request whose token expires within that window is
@@ -66,7 +90,13 @@ RLS layer 1's foundation. Constraint: prefer the stdlib over new dependencies.
 - The startup fail-fast means `cp .env.example .env` alone is not enough to
   run — the setup docs include the one-line secret generation.
 - Layer 1's JWT tampering tests (wrong signature, alg=none, expired, missing)
-  map one-to-one to the RFC 8725 requirements.
+  map one-to-one to the RFC 8725 requirements, and the scope claim is tested the
+  same way: a tenant token re-encoded with `scope: "all"` does not verify.
+- The all-tenant identity is a **wider grant, not a weaker one**: it reads
+  through the same validator, authorizer, read-only connection, caps, deadline
+  and audit row as every other read (ADR 0002 as amended). What it demonstrates
+  in the demo is precisely that - the layers enforce whatever scope the verified
+  token grants, and the model still cannot influence which one that is.
 - The sliding session is an **idle** timeout in OWASP's terms: a continuously
   used session renews indefinitely, because a stateless token cannot be capped
   without a server-side record of when the session actually began. That is the

@@ -22,9 +22,12 @@ from types import CodeType
 
 import pytest
 import sqlglot
+from pydantic import ValidationError
 
 import agent
+import auth
 import db
+import rag
 from db import SecurityViolation
 from security import QueryRejected
 
@@ -101,8 +104,16 @@ _SQLITE_MODULE = "sqlite" + "3"
 _CONNECT_CALL = f"{_SQLITE_MODULE}.connect"
 _CONNECTION_OWNERS = frozenset({"db.py", "conversations.py", "test_conversations.py"})
 # ADR 0014's single deliberate exception: defined in db.py, called from the listings, tested here.
-_UNSCOPED_CALL = "execute_unscoped_browse"
-_UNSCOPED_CALLERS = frozenset({"db.py", "browse.py", "test_db.py"})
+_UNSCOPED_CALL = "execute_unscoped"
+_UNSCOPED_CALLERS = frozenset(
+    {"db.py", "browse.py", "analytics.py", "agent.py", "test_db.py"}
+)
+# The closure names the tool set binds its data paths under, read back to see which one it took.
+_QUERY_PATH = "run_query"
+_SEARCH_PATH = "run_search"
+_SCOPE_FLAG = "all_tenants"
+# An argument that would name a tenant or widen a scope, which no tool schema may accept.
+_SCOPE_ARGUMENTS = ("tenant_id", "tenant", "scope", "all_tenants")
 
 
 def _frozen_clock() -> datetime:
@@ -643,7 +654,7 @@ def test_the_unscoped_browse_read_returns_every_tenants_rows(db_path):
     """
     sql = "SELECT tenant_id FROM employees"
 
-    everyone = db.execute_unscoped_browse(sql, ACME, db_path=db_path, clock=_frozen_clock)
+    everyone = db.execute_unscoped(sql, ACME, db_path=db_path, clock=_frozen_clock)
     mine = db.execute_scoped(sql, ACME, db_path=db_path, clock=_frozen_clock)
 
     assert {row[0] for row in everyone.rows} == {ACME, BETA, GAMMA}
@@ -653,7 +664,7 @@ def test_the_unscoped_browse_read_returns_every_tenants_rows(db_path):
 
 def test_the_unscoped_browse_read_rewrites_nothing_and_binds_no_tenant(db_path):
     """No scoping subquery and no tenant value in the statement: the SQL says what it is."""
-    result = db.execute_unscoped_browse(
+    result = db.execute_unscoped(
         "SELECT name FROM employees", ACME, db_path=db_path, clock=_frozen_clock
     )
 
@@ -677,7 +688,7 @@ def test_the_unscoped_browse_read_rewrites_nothing_and_binds_no_tenant(db_path):
 def test_the_unscoped_browse_read_still_answers_to_the_validator(db_path, sql):
     """Unscoped is not unvalidated: layer 2's allowlist is exactly the one it always was."""
     with pytest.raises(QueryRejected):
-        db.execute_unscoped_browse(sql, ACME, db_path=db_path, clock=_frozen_clock)
+        db.execute_unscoped(sql, ACME, db_path=db_path, clock=_frozen_clock)
 
 
 @pytest.mark.parametrize(
@@ -695,7 +706,7 @@ def test_the_unscoped_browse_read_still_answers_to_the_engine_authorizer(
     _stand_down_validation(monkeypatch)
 
     with pytest.raises(SecurityViolation) as caught:
-        db.execute_unscoped_browse(sql, ACME, db_path=db_path, clock=_frozen_clock)
+        db.execute_unscoped(sql, ACME, db_path=db_path, clock=_frozen_clock)
 
     assert caught.value.kind == "authorizer_denied"
 
@@ -706,7 +717,7 @@ def test_the_unscoped_browse_read_still_refuses_a_write_on_a_read_only_file(monk
     monkeypatch.setattr(db, "_ALLOWED_ACTIONS", frozenset(range(40)))
 
     with pytest.raises(QueryRejected) as caught:
-        db.execute_unscoped_browse(
+        db.execute_unscoped(
             "INSERT INTO employees (user_id, tenant_id) VALUES (99, 'acme')",
             ACME,
             db_path=db_path,
@@ -720,7 +731,7 @@ def test_the_unscoped_browse_read_still_caps_its_rows_and_says_it_truncated(db_p
     """ADR 0007 is untouched: the cap trims the output and the true total is still reported."""
     tuned(max_result_rows=3)
 
-    result = db.execute_unscoped_browse(
+    result = db.execute_unscoped(
         "SELECT name FROM employees", ACME, db_path=db_path, clock=_frozen_clock
     )
 
@@ -733,14 +744,14 @@ def test_the_unscoped_browse_read_still_answers_to_the_query_deadline(db_path, t
     tuned(query_timeout_ms=200)
 
     with pytest.raises(QueryRejected) as caught:
-        db.execute_unscoped_browse(_RUNAWAY_SQL, ACME, db_path=db_path, clock=_frozen_clock)
+        db.execute_unscoped(_RUNAWAY_SQL, ACME, db_path=db_path, clock=_frozen_clock)
 
     assert "budget" in caught.value.reason
 
 
 def test_the_unscoped_browse_read_declares_its_parameters_like_any_template(db_path):
     """A template binds what it declared and nothing else; an undeclared `?` is still refused."""
-    bound = db.execute_unscoped_browse(
+    bound = db.execute_unscoped(
         "SELECT name FROM employees WHERE salary > ?",
         ACME,
         params=(2500,),
@@ -750,7 +761,7 @@ def test_the_unscoped_browse_read_declares_its_parameters_like_any_template(db_p
 
     assert [row[0] for row in bound.rows] == ["Ben", "Gil"]
     with pytest.raises(QueryRejected):
-        db.execute_unscoped_browse(
+        db.execute_unscoped(
             "SELECT name FROM employees WHERE salary > ?",
             ACME,
             db_path=db_path,
@@ -760,7 +771,7 @@ def test_the_unscoped_browse_read_declares_its_parameters_like_any_template(db_p
 
 def test_the_unscoped_browse_read_is_audited_under_the_reader_who_asked(db_path):
     """The trail is of data access whoever caused it, and it shows this read carried no scoping."""
-    db.execute_unscoped_browse(
+    db.execute_unscoped(
         "SELECT name FROM employees", ACME, db_path=db_path, clock=_frozen_clock
     )
 
@@ -772,7 +783,7 @@ def test_the_unscoped_browse_read_is_audited_under_the_reader_who_asked(db_path)
 
 def test_a_refused_unscoped_browse_read_is_audited_too(db_path):
     with pytest.raises(QueryRejected):
-        db.execute_unscoped_browse(
+        db.execute_unscoped(
             "SELECT * FROM sqlite_master", ACME, db_path=db_path, clock=_frozen_clock
         )
 
@@ -780,13 +791,17 @@ def test_a_refused_unscoped_browse_read_is_audited_too(db_path):
     assert entry.verdict == db.VERDICT_REJECTED
 
 
-def test_only_the_browse_listings_may_name_the_unscoped_read():
-    """The exception is reachable from one module, which is what keeps the agent claim a fact.
+def test_only_the_declared_callers_may_name_the_unscoped_read():
+    """The exception is reachable from four modules, which is what keeps the agent claim a fact.
 
-    ADR 0014 as rewritten allows exactly one unscoped read, called only by the dataset listings.
-    A third module reaching it would be a second unscoped path, and nothing else here would
-    notice. The sweep is over the parsed tree rather than the text, so a module may explain the
-    exception in a docstring - `app.py` does - without counting as a caller of it.
+    There is still exactly one unscoped read (ADR 0014 as rewritten, ADR 0002 as amended), and
+    its callers are enumerated here: `db.py` defines it, `browse.py`'s dataset listings run
+    through it, and `analytics.py` and `agent.py` reach it only for an identity whose verified
+    token carries all-tenant scope - which the binding tests below prove is decided before the
+    model is called and cannot be moved by anything it writes. A fifth module reaching it would
+    be a second unscoped path, and nothing else here would notice. The sweep is over the parsed
+    tree rather than the text, so a module may explain the exception in a docstring - `app.py`
+    does - without counting as a caller of it.
     """
     scanned = list(_python_sources())
     assert Path(db.__file__) in scanned, "the sweep must reach the module it is guarding"
@@ -810,22 +825,69 @@ def _references(path: Path, name: str) -> bool:
     return False
 
 
-def test_no_agent_tool_is_closed_over_the_unscoped_read(db_path):
-    """Proven at the binding rather than in prose: the model's own tool set cannot reach it.
+def test_a_tenant_identitys_tools_are_bound_to_the_scoped_read_and_reach_no_other(db_path):
+    """Proven at the binding rather than in prose: an ordinary tool set cannot reach the exception.
 
     Every tool the graph is built with is enumerated and every name its code reaches - nested code
-    objects and free variables included - is collected. `execute_scoped` is in that set, which is
-    what stops this from passing vacuously; the unscoped read is not, so no argument the model
-    writes and no injection it obeys has anything to call. No tool description mentions it either,
-    so the model is never even told the name.
+    objects and free variables included - is collected, together with the data path each tool
+    closed over when the set was built. `execute_scoped` is what this set holds, which is what
+    stops the assertion from passing vacuously; the unscoped read is nowhere in it, so no argument
+    the model writes and no injection it obeys has anything to call. No tool description mentions
+    it either, so the model is never even told the name.
     """
     tools = agent._build_tools(ACME, _NoEmbedding(), db_path)
 
     reached = set().union(*(_referenced_names(tool.func) for tool in tools.values()))
 
-    assert "execute_scoped" in reached
+    assert _closed_over(tools["query_db"].func, _QUERY_PATH) is db.execute_scoped
+    assert _closed_over(tools["search_notes"].func, _SEARCH_PATH).func is rag.search_notes_scoped
+    assert _scope_flags(tools) == {False}
     assert _UNSCOPED_CALL not in reached
     assert not any(_UNSCOPED_CALL in (tool.description or "") for tool in tools.values())
+
+
+def test_an_all_scope_identitys_tools_are_bound_to_the_unscoped_read_at_build_time(db_path):
+    """The other direction of the same fence: the exception is reached only by a granted scope.
+
+    An all-scope identity (ADR 0009 as amended) is the second declared caller of the unscoped
+    read, and this is where its tool set is shown taking it: every data path of the set is the
+    unscoped one, bound when the tools were built from `all_tenants` - which `build_agent` takes
+    from the verified token and from nothing else. The two directions together are the fence: a
+    tenant identity can never reach the unscoped read, and an all-scope one reaches nothing else.
+    """
+    tools = agent._build_tools(auth.ALL_TENANTS, _NoEmbedding(), db_path, all_tenants=True)
+
+    assert _closed_over(tools["query_db"].func, _QUERY_PATH) is db.execute_unscoped
+    assert _closed_over(tools["search_notes"].func, _SEARCH_PATH).func is rag.search_notes_unscoped
+    assert _scope_flags(tools) == {True}
+
+
+def test_no_runtime_input_can_move_a_tool_set_from_one_scope_to_the_other(db_path):
+    """The scope is not an input anywhere the model or the client can reach, in either set.
+
+    The two tool sets present the model the identical interface - the same tools with the same
+    argument names - and none of those names is a tenant or a scope, so there is nothing to fill
+    in with a wider one. An argument that names one is refused by the schema rather than ignored,
+    in both sets, and what each set reads is what its binding decided: the tenant set sees one
+    tenant's rows and the all-scope set sees every tenant's, on the very same statement.
+    """
+    tenant_tools = agent._build_tools(ACME, _NoEmbedding(), db_path)
+    admin_tools = agent._build_tools(auth.ALL_TENANTS, _NoEmbedding(), db_path, all_tenants=True)
+    sql = "SELECT tenant_id FROM employees"
+
+    assert _schemas(tenant_tools) == _schemas(admin_tools)
+    for tools in (tenant_tools, admin_tools):
+        for field in _SCOPE_ARGUMENTS:
+            assert not any(field in fields for fields in _schemas(tools).values())
+            with pytest.raises(ValidationError):
+                tools["query_db"].args_schema.model_validate({"sql": sql, field: BETA})
+
+    assert {row[0] for row in tenant_tools["query_db"].func(sql).data["rows"]} == {ACME}
+    assert {row[0] for row in admin_tools["query_db"].func(sql).data["rows"]} == {
+        ACME,
+        BETA,
+        GAMMA,
+    }
 
 
 def _referenced_names(function) -> set[str]:
@@ -838,6 +900,27 @@ def _referenced_names(function) -> set[str]:
         seen.update(code.co_freevars)
         pending.extend(const for const in code.co_consts if isinstance(const, CodeType))
     return seen
+
+
+def _closed_over(function, name: str):
+    """The value one tool closed over under a name, so its bound data path can be read back."""
+    closure = dict(zip(function.__code__.co_freevars, function.__closure__ or (), strict=True))
+    assert name in closure, f"{function.__name__} closes over no {name}"
+    return closure[name].cell_contents
+
+
+def _scope_flags(tools: dict) -> set[bool]:
+    """The scope every tool that carries one was built with; a set, so a disagreement is visible."""
+    return {
+        _closed_over(tool.func, _SCOPE_FLAG)
+        for tool in tools.values()
+        if _SCOPE_FLAG in tool.func.__code__.co_freevars
+    }
+
+
+def _schemas(tools: dict) -> dict[str, list[str]]:
+    """The argument names each tool offers the model: the whole interface it can write into."""
+    return {name: sorted(tool.args_schema.model_fields) for name, tool in tools.items()}
 
 
 class _NoEmbedding:
