@@ -9,6 +9,10 @@ import pytest
 
 from auth import (
     _DEMO_USERS,
+    ALL_TENANTS,
+    SCOPE_ALL,
+    SCOPE_CLAIM,
+    SCOPE_TENANT,
     SECRET_ENV_VAR,
     AuthError,
     Identity,
@@ -38,17 +42,91 @@ def _signing_secret(monkeypatch):
 
 def _unsigned_token(claims: dict) -> str:
     """Forge an alg=none token: the RFC 8725 attack a pinned algorithm list must reject."""
-
-    def segment(payload: dict) -> str:
-        raw = json.dumps(payload, separators=(",", ":")).encode()
-        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
-
-    return f"{segment({'alg': 'none', 'typ': 'JWT'})}.{segment(claims)}."
+    return f"{_segment({'alg': 'none', 'typ': 'JWT'})}.{_segment(claims)}."
 
 
 @pytest.mark.parametrize(("username", "password", "tenant_id"), DEMO_CREDENTIALS)
 def test_correct_password_returns_identity(username, password, tenant_id):
     assert verify_password(username, password) == Identity(sub=username, tenant_id=tenant_id)
+
+
+def test_the_admin_credentials_return_an_all_tenant_identity():
+    """The fourth demo user is the all-scope one, and its tenant claim is the distinguished value.
+
+    Scope is a property of the identity, not of a second user store (ADR 0009 as amended): the
+    same PBKDF2 record, the same lookup, one more field on what comes back.
+    """
+    assert verify_password("admin", "demo-admin") == Identity(
+        sub="admin", tenant_id=ALL_TENANTS, all_tenants=True
+    )
+
+
+def test_a_tenant_identity_is_never_all_scope_by_default():
+    """The narrow reading is the default everywhere an identity is built without saying so."""
+    assert Identity(sub="alice@acme", tenant_id="acme").all_tenants is False
+    assert verify_password("alice@acme", "demo-acme").all_tenants is False
+
+
+@pytest.mark.parametrize(
+    ("identity", "scope"),
+    [
+        (Identity(sub="alice@acme", tenant_id="acme"), SCOPE_TENANT),
+        (Identity(sub="admin", tenant_id=ALL_TENANTS, all_tenants=True), SCOPE_ALL),
+    ],
+)
+def test_a_token_states_the_scope_it_was_signed_for(identity, scope):
+    """The scope travels as a signed claim, so verification returns the identity that was minted."""
+    token = create_token(identity)
+
+    assert _claims(token)[SCOPE_CLAIM] == scope
+    assert verify_token(token) == identity
+
+
+def test_a_tenant_token_edited_to_claim_all_scope_fails_the_signature():
+    """Layer 1's whole point: widening the scope is tampering, and tampering is refused.
+
+    The payload is rewritten to the exact claims an admin token carries and re-attached to the
+    signature the tenant token came with - the attack a client would actually try, since the SPA
+    holds the token and can read it. HS256 covers the payload, so it does not verify.
+    """
+    header, payload, signature = create_token(
+        Identity(sub="alice@acme", tenant_id="acme")
+    ).split(".")
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=="))
+    forged = _segment({**claims, SCOPE_CLAIM: SCOPE_ALL, "tenant_id": ALL_TENANTS})
+
+    with pytest.raises(AuthError):
+        verify_token(f"{header}.{forged}.{signature}")
+
+
+def test_a_token_carrying_a_scope_this_server_never_mints_is_refused():
+    """An unrecognized scope is an error, never a quiet downgrade to the narrow reading."""
+    issued_at = datetime.now(UTC)
+    token = jwt.encode(
+        {
+            "sub": "alice@acme",
+            "tenant_id": "acme",
+            SCOPE_CLAIM: "superuser",
+            "iat": issued_at,
+            "exp": issued_at + timedelta(minutes=5),
+        },
+        TEST_SECRET,
+        algorithm="HS256",
+    )
+
+    with pytest.raises(AuthError):
+        verify_token(token)
+
+
+def test_a_token_carrying_no_scope_at_all_reads_as_one_tenant():
+    """Absence is the least privilege, which is what makes the claim safe to add to a live app."""
+    assert verify_token(_token_expiring_in(60)) == Identity(sub="alice@acme", tenant_id="acme")
+
+
+def _segment(payload: dict) -> str:
+    """One base64url JWT segment, the way a client re-encoding a payload would produce it."""
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
 def test_wrong_password_returns_none():
@@ -60,17 +138,18 @@ def test_unknown_user_returns_none():
 
 
 def test_stored_hashes_match_adr_parameters():
-    for tenant_id, stored in _DEMO_USERS.values():
+    for tenant_id, scope, stored in _DEMO_USERS.values():
         algorithm, iterations, salt_hex, digest_hex = stored.split("$")
         assert algorithm == "pbkdf2_sha256"
         assert int(iterations) == 600_000
         assert len(bytes.fromhex(salt_hex)) == 16
         assert len(bytes.fromhex(digest_hex)) == 32
-        assert tenant_id in {"acme", "beta", "gamma"}
+        assert tenant_id in {"acme", "beta", "gamma", ALL_TENANTS}
+        assert scope in {SCOPE_TENANT, SCOPE_ALL}
 
 
 def test_salts_are_unique_per_user():
-    salts = {stored.split("$")[2] for _, stored in _DEMO_USERS.values()}
+    salts = {stored.split("$")[2] for *_, stored in _DEMO_USERS.values()}
     assert len(salts) == len(_DEMO_USERS)
 
 
