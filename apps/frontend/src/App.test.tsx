@@ -2,8 +2,8 @@
  * The signed-in shell: the conversation rail beside the chat, driven by a fake API. Covers
  * what the sidebar promises - the caller's threads listed, one open and highlighted, its
  * exchanges replayed, New chat registering a thread on the first question, the generated title
- * arriving after that first turn, delete behind a confirm, and a re-login listing only the new
- * identity's threads.
+ * arriving after that first turn, a rename in the rail landing as the row the server stored,
+ * delete behind a confirm, and a re-login listing only the new identity's threads.
  *
  * The retitle fake echoes the title the thread already has unless a test scripts one, so only
  * the titling tests below observe a title change - everything else sees the rail the
@@ -41,6 +41,7 @@ const api = vi.hoisted(() => ({
   getConversation: vi.fn(),
   createConversation: vi.fn(),
   retitleConversation: vi.fn(),
+  renameConversation: vi.fn(),
   deleteConversation: vi.fn(),
   openChatStream: vi.fn(),
 }));
@@ -68,6 +69,8 @@ const BETA_THREADS = [
 const REGISTERED = { thread_id: "t3", created: "2026-08-21T12:00:00+00:00" };
 const GENERATED_TITLE = "Headcount by department";
 const RETITLED = "Median salary in engineering";
+/** What the rename fake stores, deliberately not what the reader typed: the rail adopts the row. */
+const STORED_NAME = "Q3 salary review";
 /** The window the fake `/health` reports; two turns is enough to see it close. */
 const TITLE_TURNS = 2;
 
@@ -260,6 +263,9 @@ beforeEach(() => {
       title: threadId === REGISTERED.thread_id ? registered : titleOf(threadId),
     }),
   );
+  api.renameConversation.mockImplementation((threadId: string) =>
+    Promise.resolve({ ...REGISTERED, thread_id: threadId, title: STORED_NAME }),
+  );
   api.deleteConversation.mockResolvedValue(undefined);
   api.openChatStream.mockImplementation(() => Promise.resolve(sseResponse(TURN)));
   api.browseRecords.mockResolvedValue(RECORDS_PAGE);
@@ -440,6 +446,20 @@ describe("the conversation rail", () => {
       message: "and the median?",
       model: MODEL,
     });
+  });
+
+  it("renames a thread from the rail and shows the row the server stored", async () => {
+    const { view } = await signIn();
+    await screen.findByText(OLDEST.title);
+
+    fireEvent.click(screen.getByLabelText(`Rename conversation ${OLDEST.title}`));
+    const box = screen.getByLabelText("Rename conversation");
+    fireEvent.change(box, { target: { value: "q3 salary review" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    expect(api.renameConversation).toHaveBeenCalledWith(OLDEST.thread_id, "q3 salary review");
+    await waitFor(() => expect(titles(view.container)).toEqual([NEWEST.title, STORED_NAME]));
+    expect(screen.queryByLabelText("Rename conversation")).toBeNull();
   });
 
   it("asks for confirmation before deleting, and cancelling keeps the thread", async () => {

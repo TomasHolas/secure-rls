@@ -84,18 +84,21 @@ for forms. Never hand-write `<button className="btn ...">`.
 Every icon comes from **Google Material Symbols**
 (https://fonts.google.com/icons) — no other icon library, no hand-rolled SVGs.
 `Icon.tsx` maps our stable `name` keys to Material ligatures and renders them via a
-**self-hosted subset font** (`public/fonts/material-symbols-subset.v3.woff2`,
+**self-hosted subset font** (`public/fonts/material-symbols-subset.v4.woff2`,
 `@font-face` in `tokens.css`). The map mirrors exactly the glyphs in that subset, so
 to add an icon: add a mapping in `MATERIAL_SYMBOLS`, then regenerate the subset woff2
 — fetch
 `https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined&icon_names=<comma,list>`
 (the `icon_names` list must cover **every** value in `MATERIAL_SYMBOLS`), download the
 linked woff2 and save it under a **bumped version suffix**
-(`...subset.v4.woff2`, ...), updating the `@font-face` url in `tokens.css` to match.
+(`...subset.v5.woff2`, ...), updating the `@font-face` url in `tokens.css` to match.
 The version bump is the cache-bust: `public/` assets are not fingerprinted by the
 bundler, so reusing the filename makes browsers serve the stale font and new glyphs
 render as literal text. A name whose ligature is not in the subset renders as literal
-text, so keep the map and the subset in sync.
+text, so keep the map and the subset in sync — and prove it rather than assume it: enumerate the
+new file's GSUB ligatures (`uv run --with fonttools --with brotli python`, unwrapping the
+extension lookups Google's subsetter emits) and check every value in `MATERIAL_SYMBOLS` is among
+them before the old file is deleted.
 ### Pill — the status chip
 
 ```tsx
@@ -446,8 +449,18 @@ inline in its views; here it is a brick, so no view re-styles an input.
 
 ```tsx
 <TextField id="login-password" label="Password" type="password" value={password}
-  onChange={setPassword} autoComplete="current-password" disabled={pending} />
+  onChange={setPassword} revealable autoComplete="current-password" disabled={pending} />
 ```
+
+`revealable` puts the **eye** inside a password field's own box: pressed, the input is `text` and
+the glyph is `visibility_off` under the label "Hide password"; unpressed it is `password`,
+`visibility` and "Show password", with `aria-pressed` tracking the state either way. The brick
+owns the toggle rather than accepting a control a view passes in — a trailing-control *slot* would
+be a licence to hand-roll a different eye in the next view, and the reveal would then live wherever
+that view kept it. Here it is state in the brick: written nowhere, and gone when the field
+unmounts. It draws nothing on a field that is not a password, since there is nothing to reveal.
+The box the ring is drawn on is still the input, and the button sits inside it, so focusing either
+leaves one ring around one field rather than an outline nested in an outline.
 
 There is deliberately **no `date`**: a native date input renders its placeholder in the viewer's
 locale (`dd.mm.yyyy` on this machine, `mm/dd/yyyy` on the next) with the OS calendar glyph, while

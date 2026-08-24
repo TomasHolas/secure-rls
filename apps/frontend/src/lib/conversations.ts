@@ -22,6 +22,11 @@
  * unchanged - which is why this store can stay a plain "ask and adopt" and hold no rule of its
  * own about which name wins.
  *
+ * `rename` is the reader's own half of the same request: the PATCH carries the title they typed
+ * and the server stamps the row as theirs for good. This store holds no rule about that either -
+ * it sends the words and adopts the row, exactly as `titleThread` does, so the two can never
+ * disagree here about which name the rail shows.
+ *
  * `replay` holds what the server remembers of the open thread, already folded into turns by
  * `lib/trace.ts`: the questions, the answers, and the whole trace each turn produced - its
  * reasoning, its calls and their arguments, its SQL pairs, tables and charts, its retries and its
@@ -44,6 +49,7 @@ import {
   deleteConversation,
   getConversation,
   listConversations,
+  renameConversation,
   retitleConversation,
 } from "./api";
 import type { Thread } from "./api";
@@ -53,6 +59,7 @@ import type { Turn } from "./trace";
 const LIST_FAILURE = "Could not load your conversations.";
 const OPEN_FAILURE = "Could not open that conversation.";
 const DELETE_FAILURE = "Could not delete that conversation.";
+const RENAME_FAILURE = "Could not rename that conversation.";
 const TITLE_FAILURE = "the conversation title was not refreshed";
 
 export interface ConversationsStore {
@@ -68,6 +75,8 @@ export interface ConversationsStore {
   /** Opens a thread and resolves with the id that ended up open, or null when it could not be. */
   select: (threadId: string) => Promise<string | null>;
   remove: (threadId: string) => void;
+  /** Names a thread as the reader typed it and adopts the row the server answers with. */
+  rename: (threadId: string, title: string) => void;
   /** Registers the thread the first question of a draft belongs to and returns its id. */
   startThread: (title: string) => Promise<string>;
   /** Has the server title the thread from the turn it just had, and adopts the row it stores. */
@@ -149,6 +158,17 @@ export function useConversations(): ConversationsStore {
       .catch((cause) => setError(reason(cause, DELETE_FAILURE)));
   }, []);
 
+  const rename = useCallback((threadId: string, title: string) => {
+    setError(null);
+    renameConversation(threadId, title)
+      .then((renamed) =>
+        setThreads((previous) =>
+          previous.map((thread) => (thread.thread_id === renamed.thread_id ? renamed : thread)),
+        ),
+      )
+      .catch((cause) => setError(reason(cause, RENAME_FAILURE)));
+  }, []);
+
   const startThread = useCallback(async (title: string) => {
     const thread = await createConversation(title);
     setThreads((previous) => [thread, ...previous]);
@@ -176,6 +196,7 @@ export function useConversations(): ConversationsStore {
     newChat,
     select,
     remove,
+    rename,
     startThread,
     titleThread,
   };

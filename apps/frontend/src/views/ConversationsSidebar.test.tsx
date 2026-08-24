@@ -7,6 +7,10 @@
  * The claim each block pins is the one a screenshot cannot: that the collapsed rail leaves no
  * focusable control behind its own edge, that the column inside it is laid out at one width in
  * both states - which is why its icons cannot move sideways - and that Escape closes the search.
+ *
+ * The rename block pins the three ways an inline edit can end and what each one sends: Enter and
+ * blur save the trimmed name, Escape and an emptied box send nothing, and the row keeps the
+ * title it had. `App.test.tsx` is where the request and the rail adopting the stored row are.
  */
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -21,6 +25,7 @@ const OLDEST = { thread_id: "t1", title: "average salary per department", create
 
 const SEARCH = "Search conversations";
 const CLOSE_SEARCH = "Close search conversations";
+const RENAME = "Rename conversation";
 function store(overrides: Partial<ConversationsStore> = {}): ConversationsStore {
   return {
     threads: [NEWEST, OLDEST],
@@ -32,6 +37,7 @@ function store(overrides: Partial<ConversationsStore> = {}): ConversationsStore 
     newChat: vi.fn(),
     select: vi.fn(),
     remove: vi.fn(),
+    rename: vi.fn(),
     startThread: vi.fn(),
     titleThread: vi.fn(),
     ...overrides,
@@ -57,7 +63,7 @@ function collapse(): void {
 
 /** Every control the collapsed rail clips out of view, and whether Tab can still reach it. */
 function tabbableWhenClipped(container: HTMLElement): string[] {
-  const clipped = ".rail-item-open, .rail-item-delete, .rail-search-toggle, .rail-search-input";
+  const clipped = ".rail-item-open, .rail-item-action, .rail-search-toggle, .rail-search-input";
   return Array.from(container.querySelectorAll<HTMLElement>(clipped))
     .filter((control) => control.tabIndex >= 0)
     .map((control) => control.className);
@@ -216,6 +222,101 @@ describe("the inline search", () => {
     cleanup();
     rail({ threads: [] });
     expect(screen.getByText("No conversations yet.")).toBeTruthy();
+  });
+});
+
+describe("renaming a row", () => {
+  function edit(thread = NEWEST): HTMLInputElement {
+    fireEvent.click(screen.getByLabelText(`Rename conversation ${thread.title}`));
+    return screen.getByLabelText(RENAME) as HTMLInputElement;
+  }
+
+  it("turns the row's title into a box prefilled with it, and takes the row's typography", () => {
+    const container = rail();
+
+    const box = edit();
+
+    expect(box.value).toBe(NEWEST.title);
+    expect(document.activeElement).toBe(box);
+    const title = getComputedStyle(container.querySelector(".rail-item-title")!);
+    const typed = getComputedStyle(box);
+    expect([typed.fontSize, typed.fontWeight]).toEqual([title.fontSize, title.fontWeight]);
+    expect([typed.padding, typed.borderStyle]).toEqual(["0px", "none"]);
+  });
+
+  it("leaves the row nothing to open while it is being renamed", () => {
+    const container = rail();
+
+    edit();
+
+    expect(screen.queryByRole("button", { name: NEWEST.title })).toBeNull();
+    expect(container.querySelectorAll(".rail-item")[0].querySelector(".rail-item-open")).toBeNull();
+    expect(container.querySelector(".rail-item-meta")?.textContent).toBeTruthy();
+  });
+
+  it("saves what was typed on Enter", () => {
+    const rename = vi.fn();
+    rail({ rename });
+
+    fireEvent.change(edit(), { target: { value: "  q3 salary review  " } });
+    fireEvent.keyDown(screen.getByLabelText(RENAME), { key: "Enter" });
+
+    expect(rename).toHaveBeenCalledWith(NEWEST.thread_id, "q3 salary review");
+    expect(screen.queryByLabelText(RENAME)).toBeNull();
+  });
+
+  it("saves on blur, which is what clicking away from an inline rename means", () => {
+    const rename = vi.fn();
+    rail({ rename });
+
+    fireEvent.change(edit(), { target: { value: "q3 salary review" } });
+    fireEvent.blur(screen.getByLabelText(RENAME));
+
+    expect(rename).toHaveBeenCalledWith(NEWEST.thread_id, "q3 salary review");
+  });
+
+  it("cancels on Escape, and the blur that follows it saves nothing", () => {
+    const rename = vi.fn();
+    const container = rail({ rename });
+    const box = edit();
+
+    fireEvent.change(box, { target: { value: "q3 salary review" } });
+    fireEvent.keyDown(box, { key: "Escape" });
+    fireEvent.blur(box);
+
+    expect(rename).not.toHaveBeenCalled();
+    expect(titles(container)).toEqual([NEWEST.title, OLDEST.title]);
+  });
+
+  // A blank title is a 400 server-side, so an emptied box is a cancel rather than a request.
+  it("cancels rather than sending an empty title", () => {
+    const rename = vi.fn();
+    const container = rail({ rename });
+
+    fireEvent.change(edit(), { target: { value: "   " } });
+    fireEvent.keyDown(screen.getByLabelText(RENAME), { key: "Enter" });
+
+    expect(rename).not.toHaveBeenCalled();
+    expect(titles(container)).toEqual([NEWEST.title, OLDEST.title]);
+  });
+
+  it("sends nothing when the name was left exactly as it was", () => {
+    const rename = vi.fn();
+    rail({ rename });
+
+    fireEvent.keyDown(edit(), { key: "Enter" });
+
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it("renames the row the pencil belongs to, not the one that is open", () => {
+    const rename = vi.fn();
+    rail({ rename, activeId: NEWEST.thread_id });
+
+    fireEvent.change(edit(OLDEST), { target: { value: "last quarter" } });
+    fireEvent.keyDown(screen.getByLabelText(RENAME), { key: "Enter" });
+
+    expect(rename).toHaveBeenCalledWith(OLDEST.thread_id, "last quarter");
   });
 });
 

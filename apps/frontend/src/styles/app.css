@@ -7,7 +7,8 @@
 /* ======================== App-level metrics ======================== */
 /* tokens.css is KB's verbatim copy (ADR 0006), so a metric KB does not define belongs here or
    the next sync would drop it. --control-height is the one height every control in a control
-   row takes, so a control added to such a row cannot silently disagree (issue #115). */
+   row takes, so a control added to such a row cannot silently disagree (issue #115), and
+   --field-control-size is the square a control sitting inside a field's own box takes. */
 /* The pixel-grid loader's metrics, rhythm and two opacities live here for the same reason
    (issue #123). A 6px cell puts the inline grid at 22px across - it replaces a 14px glyph and has
    to read from the back of a room - and `.loader-page` trades up to 41px where the loader stands
@@ -16,6 +17,7 @@
    the first one has left. */
 :root {
   --control-height: 48px;
+  --field-control-size: 32px;
   --loader-cell: 6px;
   --loader-gap: 2px;
   --loader-step: 170ms;
@@ -186,17 +188,29 @@
   transition: transform var(--rail-glide-dur) var(--rail-ease), height var(--rail-glide-dur) var(--rail-ease), opacity var(--dur-fast) var(--ease-out);
 }
 .sidebar-list.gliding .rail-glide { opacity: 1; }
-.rail-item-open {
+/* The row's box, whether it is a button to open the thread or the box it is renamed in: one
+   declaration, so an edit cannot end up a different height from the row it replaces. */
+.rail-item-open, .rail-item-edit {
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
-  padding: var(--space-2) var(--space-3); background: none; border: none;
-  text-align: left; font-family: var(--font-body); cursor: pointer;
+  padding: var(--space-2) var(--space-3);
 }
+.rail-item-open { background: none; border: none; text-align: left; font-family: var(--font-body); cursor: pointer; }
 .rail-item-title { font-size: var(--text-sm); font-weight: 500; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-item.active .rail-item-title { color: var(--fg-1); }
 .rail-item-meta { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--fg-4); }
-/* The delete control stays out of the way until the row is hovered or focused. */
-.rail-item-delete { width: 28px; height: 28px; margin-right: var(--space-1); opacity: 0; }
-.rail-item:hover .rail-item-delete, .rail-item-delete:focus-visible { opacity: 1; }
+/* The rename box takes the title's own typography and adds no box of its own - no border, no
+   padding - so the row it sits in keeps the height and the width it had as text. The ring is the
+   row's, exactly as it is for the open button, rather than a second outline inside it. */
+.rail-rename-input {
+  width: 100%; box-sizing: border-box; padding: 0; border: none; outline: none;
+  background: none; color: var(--fg-1);
+  font-family: var(--font-body); font-size: var(--text-sm); font-weight: 500;
+}
+.rail-item:has(.rail-rename-input:focus) { box-shadow: var(--focus-ring); }
+/* The row's controls stay out of the way until it is hovered or focused. */
+.rail-item-action { width: 28px; height: 28px; opacity: 0; }
+.rail-item-delete { margin-right: var(--space-1); }
+.rail-item:hover .rail-item-action, .rail-item-action:focus-visible { opacity: 1; }
 
 .page { padding: var(--space-8) var(--space-10); max-width: none; margin: 0; }
 .page-head { margin-bottom: var(--space-6); }
@@ -286,6 +300,15 @@
   background: var(--bg-surface-2); border: 1px solid var(--border-default); border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-4); outline: none;
   transition: border-color var(--dur-fast) var(--ease-out);
+}
+/* A field whose input carries a control of its own: the box is still the input, so the border
+   that turns accent on focus is still the whole ring, and the control sits inside it rather than
+   beside it. The input's right padding is what keeps the text from running under the glyph. */
+.field-control { position: relative; display: flex; align-items: center; }
+.field-control .input { padding-right: calc(var(--space-4) + var(--field-control-size)); }
+.field-reveal {
+  position: absolute; right: var(--space-2);
+  width: var(--field-control-size); height: var(--field-control-size);
 }
 .input::placeholder { color: var(--fg-4); }
 .input:disabled { opacity: 0.6; cursor: not-allowed; }
