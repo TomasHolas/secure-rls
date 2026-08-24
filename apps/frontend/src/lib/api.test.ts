@@ -193,6 +193,26 @@ describe("sliding session", () => {
   });
 });
 
+describe("a browse request", () => {
+  // A filter the reader left alone is not a filter: the disabled tenant control (#117 enables it)
+  // therefore adds nothing to the URL the server parses, which is what keeps #115 a layout change.
+  it("sends only the filters that carry a value", async () => {
+    const { api } = await load();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ columns: [], rows: [], total: 0, ignored: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.browseRecords({ tenant_id: "", name: "ada", hired_from: "2020-01-31", page: 1 });
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]), "http://localhost");
+    expect(url.searchParams.has("tenant_id")).toBe(false);
+    expect(url.searchParams.get("name")).toBe("ada");
+    expect(url.searchParams.get("hired_from")).toBe("2020-01-31");
+    expect(url.searchParams.get("page")).toBe("1");
+  });
+});
+
 describe("health", () => {
   it("reports the prompt-guardrail position the server states", async () => {
     const { api } = await load();

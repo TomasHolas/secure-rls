@@ -10,6 +10,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ParamProbe } from "./ParamProbe";
+import { expectOneControlHeight } from "../test/styles";
 
 afterEach(cleanup);
 
@@ -49,6 +50,12 @@ describe("ParamProbe", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(onSend).toHaveBeenCalledWith("tenant_id=beta");
+  });
+
+  it("puts its send control on the height and baseline of its box", () => {
+    const view = render(<ParamProbe id="probe" ignored={[]} onSend={vi.fn()} />);
+
+    expectOneControlHeight(view.container.querySelector(".search-row"), 2);
   });
 
   it("offers a parameter box rather than a tenant to pick", () => {

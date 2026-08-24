@@ -11,6 +11,13 @@
  * live. The executed SQL is shown under the table for the same reason the chat trace shows it:
  * the scoping subquery with its bound tenant is the evidence, and hiding it would waste it.
  *
+ * The grid is six cells - three single filters and three `FieldPair`s - because a bound pair
+ * that is one cell cannot be split across rows by the wrap, and six is full at three, two and
+ * one column, so no control is ever stranded beside dead space (issue #115). The dates are ISO
+ * text rather than native date inputs: a native picker prints `dd.mm.yyyy` or `mm/dd/yyyy`
+ * depending on the viewer's machine, while the table cells, the executed statement and the
+ * server's own refusal all speak ISO, so what a reader types now matches what they read.
+ *
  * There is deliberately no tenant filter — a caller holds exactly one tenant, and offering to
  * pick one would imply otherwise. What there is instead is the `ParamProbe`: a reader may append
  * a query parameter of their own to the request and read back what the server did with it, so
@@ -25,7 +32,7 @@ import { CodeBlock } from "../components/CodeBlock";
 import { DataTable } from "../components/DataTable";
 import { ParamProbe } from "../components/ParamProbe";
 import { Pill } from "../components/Pill";
-import { SelectField, TextField } from "../components/forms";
+import { FieldPair, SelectField, TextField } from "../components/forms";
 import { EmptyState, Page, PageHeader, Section } from "../components/layout";
 import { ApiError, browseRecords, listDepartments } from "../lib/api";
 import type { BrowsePage, DepartmentCount } from "../lib/api";
@@ -36,8 +43,11 @@ const EXECUTED_LABEL = "executed after tenant scoping";
 const PROBE_TITLE = "Attack it yourself";
 const SORTABLE = ["user_id", "name", "department", "salary", "performance_score", "hire_date"];
 const FIRST_PAGE = 1;
+// The same example date the server's own refusal names, so the hint and the error agree.
+const ISO_DATE_HINT = "2020-01-31";
 
 interface Draft {
+  tenant_id: string;
   name: string;
   department: string;
   salary_min: string;
@@ -49,6 +59,7 @@ interface Draft {
 }
 
 const EMPTY: Draft = {
+  tenant_id: "",
   name: "",
   department: "",
   salary_min: "",
@@ -147,12 +158,22 @@ export function RecordsView({ tenant }: { tenant: string }) {
         aside={rows ? <Pill tone="accent">{formatCount(rows.total, "matching row")}</Pill> : null}
       >
         <form
-          className="filter-grid"
+          className="filter-grid control-row"
           onSubmit={(event) => {
             event.preventDefault();
             apply();
           }}
         >
+          {/* A filter of the same kind as department once the listings show all tenants (#117). */}
+          <SelectField
+            id="records-tenant"
+            label="Tenant"
+            value={draft.tenant_id}
+            options={[]}
+            onChange={field("tenant_id")}
+            placeholder="any tenant"
+            disabled
+          />
           <TextField
             id="records-name"
             label="Name contains"
@@ -171,54 +192,60 @@ export function RecordsView({ tenant }: { tenant: string }) {
             onChange={field("department")}
             placeholder="any department"
           />
-          <TextField
-            id="records-salary-min"
-            label="Salary from"
-            type="number"
-            value={draft.salary_min}
-            onChange={field("salary_min")}
-          />
-          <TextField
-            id="records-salary-max"
-            label="Salary to"
-            type="number"
-            value={draft.salary_max}
-            onChange={field("salary_max")}
-          />
-          <TextField
-            id="records-score-min"
-            label="Score from"
-            type="number"
-            value={draft.score_min}
-            onChange={field("score_min")}
-          />
-          <TextField
-            id="records-score-max"
-            label="Score to"
-            type="number"
-            value={draft.score_max}
-            onChange={field("score_max")}
-          />
-          <TextField
-            id="records-hired-from"
-            label="Hired from"
-            type="date"
-            value={draft.hired_from}
-            onChange={field("hired_from")}
-          />
-          <TextField
-            id="records-hired-to"
-            label="Hired to"
-            type="date"
-            value={draft.hired_to}
-            onChange={field("hired_to")}
-          />
+          <FieldPair>
+            <TextField
+              id="records-salary-min"
+              label="Salary from"
+              type="number"
+              value={draft.salary_min}
+              onChange={field("salary_min")}
+            />
+            <TextField
+              id="records-salary-max"
+              label="Salary to"
+              type="number"
+              value={draft.salary_max}
+              onChange={field("salary_max")}
+            />
+          </FieldPair>
+          <FieldPair>
+            <TextField
+              id="records-score-min"
+              label="Score from"
+              type="number"
+              value={draft.score_min}
+              onChange={field("score_min")}
+            />
+            <TextField
+              id="records-score-max"
+              label="Score to"
+              type="number"
+              value={draft.score_max}
+              onChange={field("score_max")}
+            />
+          </FieldPair>
+          <FieldPair>
+            <TextField
+              id="records-hired-from"
+              label="Hired from"
+              value={draft.hired_from}
+              onChange={field("hired_from")}
+              placeholder={ISO_DATE_HINT}
+            />
+            <TextField
+              id="records-hired-to"
+              label="Hired to"
+              value={draft.hired_to}
+              onChange={field("hired_to")}
+              placeholder={ISO_DATE_HINT}
+            />
+          </FieldPair>
           <div className="filter-actions">
-            <Button variant="primary" type="submit" disabled={loading}>
-              Apply
-            </Button>
             <Button onClick={reset} disabled={loading}>
               Reset
+            </Button>
+            <Button variant="primary" type="submit" disabled={loading}>
+              Apply
             </Button>
           </div>
         </form>

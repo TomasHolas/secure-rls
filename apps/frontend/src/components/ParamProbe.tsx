@@ -48,7 +48,7 @@ export function ParamProbe({
   return (
     <>
       <form
-        className="search-row"
+        className="search-row control-row"
         onSubmit={(event) => {
           event.preventDefault();
           onSend(draft);

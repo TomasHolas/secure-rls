@@ -124,6 +124,8 @@ export interface IgnoredParam {
 
 /** The filters, sort and window a listing accepts; anything else is not a parameter it reads. */
 export interface BrowseQuery {
+  // Carried empty until the listings show every tenant and this becomes a filter like the rest (#117).
+  tenant_id?: string;
   name?: string;
   department?: string;
   salary_min?: string;

@@ -11,6 +11,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RecordsView } from "./RecordsView";
+import { expectOneControlHeight } from "../test/styles";
 
 const api = vi.hoisted(() => ({
   browseRecords: vi.fn(),
@@ -231,6 +232,60 @@ describe("the records tab", () => {
     await waitFor(() => expect(lastProbe()).toBe("tenant_id=beta"));
     expect(await screen.findByText(/read from your verified token/)).toBeTruthy();
     expect(screen.getByText("450 matching rows")).toBeTruthy();
+  });
+
+  it("keeps every filter control on one height and one baseline", async () => {
+    const view = await show();
+
+    expectOneControlHeight(view.container.querySelector(".filter-grid"), 11);
+  });
+
+  it("keeps the two bounds of a filter in one cell, so no wrap can split them", async () => {
+    const view = await show();
+
+    const pairs = Array.from(view.container.querySelectorAll(".field-pair"));
+    expect(
+      pairs.map((pair) => Array.from(pair.querySelectorAll("label"), (label) => label.textContent)),
+    ).toEqual([
+      ["Salary from", "Salary to"],
+      ["Score from", "Score to"],
+      ["Hired from", "Hired to"],
+    ]);
+  });
+
+  it("closes the form with its actions rather than stranding them between filters", async () => {
+    const view = await show();
+
+    const grid = view.container.querySelector(".filter-grid")!;
+    const actions = grid.querySelector(".filter-actions")!;
+    expect(actions.parentElement).toBe(grid);
+    expect(grid.lastElementChild).toBe(actions);
+    expect(Array.from(actions.querySelectorAll("button"), (button) => button.textContent)).toEqual([
+      "Reset",
+      "Apply",
+    ]);
+  });
+
+  it("asks for a date in ISO, the way the table and the server both write it", async () => {
+    await show();
+
+    const from = screen.getByLabelText("Hired from") as HTMLInputElement;
+    expect(from.type).toBe("text");
+    expect(from.placeholder).toBe("2020-01-31");
+
+    fireEvent.change(from, { target: { value: "2020-01-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(lastQuery().hired_from).toBe("2020-01-31"));
+  });
+
+  it("carries a tenant control that asks the server for nothing until it is a filter", async () => {
+    await show();
+
+    expect((screen.getByLabelText("Tenant") as HTMLSelectElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(lastQuery().tenant_id).toBe(""));
   });
 
   it("keeps the rows readable when the department list is unavailable", async () => {

@@ -17,6 +17,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NotesView } from "./NotesView";
+import { expectOneControlHeight } from "../test/styles";
 
 const api = vi.hoisted(() => ({
   browseNotes: vi.fn(),
@@ -251,6 +252,14 @@ describe("the notes tab", () => {
     });
     expect(await screen.findByText(/read from your verified token/)).toBeTruthy();
     expect(screen.getAllByText(/450 notes/).length).toBeGreaterThan(0);
+  });
+
+  it("keeps the search button on the height and baseline of the box beside it", async () => {
+    const view = await show();
+
+    const rows = view.container.querySelectorAll(".search-row");
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expectOneControlHeight(row, 2);
   });
 
   it("still lists the corpus when the manifest is unavailable", async () => {
