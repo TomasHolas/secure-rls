@@ -103,7 +103,10 @@ foreign vectors never participate in scoring (ADR 0010).
 Hardening around the layers (ADR 0002 as amended): a progress-handler query
 timeout (`db.query_timeout_ms`, 2000 ms) and `sqlite3_limit` caps (DoS control),
 a hard result-row cap with an explicit truncation signal and aggregation
-push-down (ADR 0007), and a persistent audit log of every generated SQL,
+push-down, plus a character cap on what one result may contribute to the model's
+prompt — the reader still gets every row, the model's copy is cut at a line
+boundary and told how much of it it is looking at (ADR 0007 as amended), and a
+persistent audit log of every generated SQL,
 validation verdict, rewritten SQL, and tenant context — which also feeds the UI
 trace and the eval leakage checks.
 
@@ -168,7 +171,7 @@ generator produces.
 
 | Tool | Description | RLS enforcement |
 |---|---|---|
-| `query_db(sql)` | LLM-generated SQL, validated then executed. Results hard-capped with an explicit truncation signal (ADR 0007). | Layers 2+2.5+3+4; SQL shown in the UI trace |
+| `query_db(sql)` | LLM-generated SQL, validated then executed. Results hard-capped with an explicit truncation signal, and the model's copy of a wide result capped again in characters so one listing cannot fill its context window (ADR 0007 as amended). | Layers 2+2.5+3+4; SQL shown in the UI trace |
 | `get_stats(metric, column, group_by?)` | Typed args (metric/column/group_by from allowlists); fixed parameterized query — zero generated SQL. | Built on the scoped executor |
 | `plot(kind, column, metric?, group_by?, series_by?, bins?)` | Fetches its own data via the scoped executor; returns one `chart_spec` (bar, line, grouped bar, histogram, scatter or box; `bins` is the histogram's bin count, `series_by` the grouped bar's second dimension) to the SPA — charted values never pass through the model. | Built on the scoped executor |
 | `detect_anomalies(column, group_by?)` | Tukey IQR fences (1.5 x IQR) per group, default department; chosen over z-scores because the salary distribution is lognormal by design (bonus). | Built on the scoped executor |

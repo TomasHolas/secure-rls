@@ -209,6 +209,39 @@ describe("a tool card's own state", () => {
     expect(screen.getByText("showing 200 of 543 rows")).toBeTruthy();
   });
 
+  it("says the model read less of a result than the table beside it shows", () => {
+    panel([
+      { type: "tool_call", id: "c1", tool: "query_db", args: { sql: "SELECT * FROM employees" } },
+      {
+        type: "tool_result",
+        id: "c1",
+        tool: "query_db",
+        content: "cut for the model",
+        withheld: 183,
+        data: RESULT_DATA,
+      },
+    ]);
+
+    expect(screen.getByText("183 lines withheld from the model")).toBeTruthy();
+    expect(screen.getByText("3 rows")).toBeTruthy();
+  });
+
+  it("says nothing about the model's copy when it was handed the whole result", () => {
+    panel([
+      ...CALL,
+      {
+        type: "tool_result",
+        id: "c1",
+        tool: "query_db",
+        content: "d | a",
+        withheld: 0,
+        data: RESULT_DATA,
+      },
+    ]);
+
+    expect(screen.queryByText(/withheld from the model/)).toBeNull();
+  });
+
   it("shows a retried call as its own card with the attempt and the fed-back reason", () => {
     const { container } = panel([
       { type: "tool_call", id: "c1", tool: "query_db", args: { sql: "SELECT * FROM employee" } },

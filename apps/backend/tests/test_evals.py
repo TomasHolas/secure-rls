@@ -505,6 +505,35 @@ def test_the_dry_run_lists_every_ask_without_touching_an_endpoint(capsys):
         assert f"`{attack.name}`" in listed
 
 
+def test_a_case_filter_grades_only_what_it_named(tmp_path):
+    """`--case` re-runs one finding against an endpoint without paying for the whole suite."""
+    report = tmp_path / "subset.md"
+    named = adversarial.ATTACKS[0]
+    code = main(
+        [
+            *["--mocked", "--tenant", ACME, "--suite", "security"],
+            *["--case", named.name, "--out", str(report)],
+        ]
+    )
+    written = report.read_text()
+
+    assert code == 0
+    assert f"Cases: `{named.name}` only." in written
+    assert f"`{named.name}`" in written
+    for attack in adversarial.ATTACKS[1:]:
+        assert f"`{attack.name}`" not in written
+
+
+def test_a_case_filter_refuses_to_overwrite_a_committed_scorecard(tmp_path):
+    """A three-case run is not a scorecard, so it insists on being told where to write."""
+    assert main(["--mocked", "--tenant", ACME, "--case", adversarial.ATTACKS[0].name]) == 2
+
+
+def test_a_case_name_no_suite_defines_fails_loudly(tmp_path):
+    """A typo must not grade nothing and report a clean sheet."""
+    assert main(["--mocked", "--case", "no-such-attack", "--out", str(tmp_path / "r.md")]) == 2
+
+
 def test_the_model_gate_records_the_guardrail_position_in_its_appended_section():
     """`gate-results.md` is append-only and ADR 0005 cites it: a section must own its position."""
     probe = model_gate.PROBES[0]

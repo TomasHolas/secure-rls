@@ -51,6 +51,22 @@ def test_the_history_send_budget_leaves_room_for_the_answer():
     assert agent.context_window - agent.max_output_tokens - agent.history_headroom_tokens > 0
 
 
+def test_one_tool_reply_is_capped_well_inside_the_send_budget():
+    """The per-reply cap of issue #142 is derived from the send budget, not picked to look round.
+
+    The overflow it answers was a single 200-row `SELECT *` rendered for the model: 51,910
+    characters, four times the window, inside the one turn `min_history_turns` exists to protect.
+    So the cap has to leave room for as many maximal replies as that floor keeps, beside the system
+    prompt and the tool schemas - ADR 0007 as amended does the arithmetic and this is its guard.
+    """
+    agent = runtime().agent
+    budget = agent.context_window - agent.max_output_tokens - agent.history_headroom_tokens
+    reply = agent.max_tool_reply_chars / agent.history_chars_per_token
+
+    assert agent.max_tool_reply_chars > 0
+    assert reply * agent.min_history_turns < budget
+
+
 def test_refresh_window_fits_inside_the_token_lifetime():
     rt = runtime()
     assert 0 < rt.auth.refresh_within_minutes < rt.auth.token_ttl_minutes

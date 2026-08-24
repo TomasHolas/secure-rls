@@ -65,6 +65,14 @@ class AgentConfig:
     when one of them is huge. The estimate covers everything a request carries: the messages, the
     system prompt, and the bound tool definitions.
 
+    `max_tool_reply_chars` bounds the other half of the same overflow (ADR 0007 as amended, issue
+    #142): how much ONE tool result may contribute to a prompt. Dropping older turns cannot help a
+    single turn whose one result is already wider than the window, so the model's copy of a result
+    is cut at a row boundary to this many characters and told how many rows were withheld. It caps
+    presentation to the model alone - the reader's payload keeps every row `db.max_result_rows`
+    allows - and it is derived from the send budget above rather than picked, so the two bounds
+    compose; ADR 0007 as amended carries the arithmetic.
+
     `prompt_guardrails` is the one knob that changes prompt text and nothing else (ADR 0011 as
     amended): on, the rendered system prompt carries the rules that ask the model to police
     data-borne instructions and states the tenant scope; off, those blocks are omitted so the
@@ -82,6 +90,7 @@ class AgentConfig:
     history_headroom_tokens: int
     history_chars_per_token: float
     min_history_turns: int
+    max_tool_reply_chars: int
     turn_deadline_s: float
     thinking: bool
     duration_decimals: int

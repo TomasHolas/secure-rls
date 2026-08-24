@@ -17,6 +17,11 @@ asking the model to decline an attack, a suite that still holds is the RLS layer
 their own, which is ADR 0002's central claim measured rather than asserted. Without the flag the
 position is `runtime.json`'s, which stays the single owner of the default.
 
+`--case` grades only the named asks or attacks, repeatably, for re-running one finding against a
+live endpoint without paying for the whole suite. It is a filter and never a scorecard, so it
+insists on `--out`: a three-case run must not be able to overwrite a committed report. An unknown
+name exits 2 rather than grading nothing and reporting a clean sheet.
+
 The report is written whole, not appended, because it is the current model's scorecard rather
 than a log; the timestamp and model id are passed into the renderer by this module, so nothing
 deep in the report generator reaches for an ambient clock. The guardrail position is part of a
@@ -65,18 +70,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parse_args(argv)
     tenants = tuple(arguments.tenant) or harness.TENANTS
     suites = tuple(arguments.suite) or SUITES
+    cases = tuple(arguments.case)
     guarded = not arguments.no_guardrails and runtime().agent.prompt_guardrails
+    unknown = _unknown(cases, suites)
+    if unknown:
+        print(
+            f"no such ask or attack in {', '.join(suites)}: {', '.join(unknown)}", file=sys.stderr
+        )
+        return 2
     if arguments.dry_run:
-        print(_listing(tenants, suites, guarded))
+        print(_listing(tenants, suites, guarded, cases))
         return 0
+    if cases and not arguments.out:
+        print("--case grades a subset, so pass --out; it is not a scorecard", file=sys.stderr)
+        return 2
     stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     llm, embedder, model = _model(arguments, tenants)
     override = False if arguments.no_guardrails else None
     with harness.workspace(llm, embedder, tenants, model, override) as session:
-        graded = _grade(session, tenants, suites)
+        graded = _grade(session, tenants, suites, cases)
         indexed = session.indexed
     report = _render(
-        model, stamp, arguments.mocked, guarded, indexed, tenants, suites, *graded
+        model, stamp, arguments.mocked, guarded, indexed, tenants, suites, cases, *graded
     )
     out = arguments.out or _report_path(arguments.mocked, guarded)
     out.write_text(f"{report}\n")
@@ -93,6 +108,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--suite", action="append", default=[], choices=SUITES, help="run only this suite"
+    )
+    parser.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        help="grade only this named ask or attack, repeatable; needs --out",
     )
     parser.add_argument(
         "--out",
@@ -134,8 +155,22 @@ def _model(
     )
 
 
+def _selected[Case: (correctness.Ask, adversarial.Attack)](
+    items: Sequence[Case], cases: Sequence[str]
+) -> list[Case]:
+    """The asks or attacks `--case` named, or all of them when it named none."""
+    return [item for item in items if not cases or item.name in cases]
+
+
+def _unknown(cases: Sequence[str], suites: Sequence[str]) -> list[str]:
+    """The `--case` names no selected suite defines, so a typo fails loudly instead of grading 0."""
+    known = {ask.name for ask in correctness.ASKS if CORRECTNESS in suites}
+    known |= {attack.name for attack in adversarial.ATTACKS if SECURITY in suites}
+    return sorted(set(cases) - known)
+
+
 def _grade(
-    session: Session, tenants: Sequence[str], suites: Sequence[str]
+    session: Session, tenants: Sequence[str], suites: Sequence[str], cases: Sequence[str]
 ) -> tuple[list[correctness.Score], list[adversarial.Score]]:
     """Run every selected suite for every tenant, in the order the report prints them."""
     scored: list[correctness.Score] = []
@@ -145,7 +180,7 @@ def _grade(
         graph = session.graphs[tenant_id]
         if CORRECTNESS in suites:
             frame = correctness.frame_for(tenant_id)
-            for ask in correctness.ASKS:
+            for ask in _selected(correctness.ASKS, cases):
                 _announce(CORRECTNESS, tenant_id, ask.name)
                 expect = ask.truth(frame)
                 turn = harness.collect(graph, ask.question, f"{tenant_id}-{ask.name}", truth)
@@ -154,7 +189,7 @@ def _grade(
         if SECURITY in suites:
             target = adversarial.target_for(tenant_id)
             planted = harness.poisoned_ids(tenant_id)
-            for attack in adversarial.ATTACKS:
+            for attack in _selected(adversarial.ATTACKS, cases):
                 _announce(SECURITY, tenant_id, attack.name)
                 questions = adversarial.questions_for(attack, target)
                 thread = f"{tenant_id}-{attack.name}"
@@ -225,12 +260,15 @@ def _render(
     indexed: int,
     tenants: Sequence[str],
     suites: Sequence[str],
+    cases: Sequence[str],
     scored: Sequence[correctness.Score],
     attacked: Sequence[adversarial.Score],
 ) -> str:
     """The whole report: the headline, both suite sections, the findings, how to reproduce."""
     blocks = [
-        _headline(model, stamp, is_mocked, guarded, indexed, tenants, suites, scored, attacked)
+        _headline(
+            model, stamp, is_mocked, guarded, indexed, tenants, suites, cases, scored, attacked
+        )
     ]
     if CORRECTNESS in suites:
         blocks.append(correctness.render(scored, tenants))
@@ -249,10 +287,15 @@ def _headline(
     indexed: int,
     tenants: Sequence[str],
     suites: Sequence[str],
+    cases: Sequence[str],
     scored: Sequence[correctness.Score],
     attacked: Sequence[adversarial.Score],
 ) -> str:
-    """What was run against what, and the two numbers a reader came for."""
+    """What was run against what, and the two numbers a reader came for.
+
+    A `--case` run says so on the identity line beside the suites and tenants it was filtered to,
+    or its rates would read as the whole suite's when they are a subset's.
+    """
     turns = _turns(scored, attacked)
     seconds = sum(turn.seconds for turn in turns)
     lines = [
@@ -261,6 +304,7 @@ def _headline(
         f"Model `{model}`, run {stamp}. Endpoint: "
         f"{_MOCKED_ENDPOINT if is_mocked else _LIVE_ENDPOINT}. "
         f"Suites: {', '.join(suites)}. Tenants: {', '.join(f'`{name}`' for name in tenants)}. "
+        f"{_case_note(cases)}"
         f"Dataset: the committed `employees.csv`, {indexed} notes indexed with "
         f"{_MOCKED_EMBEDDER if is_mocked else f'`{runtime().agent.embed_model}`'}.",
         "",
@@ -280,6 +324,13 @@ def _headline(
         f"- Output tokens per turn: {_tokens(turns)}",
     ]
     return "\n".join(lines)
+
+
+def _case_note(cases: Sequence[str]) -> str:
+    """How the headline states a `--case` filter, and nothing at all when there was none."""
+    if not cases:
+        return ""
+    return f"Cases: {', '.join(f'`{name}`' for name in cases)} only. "
 
 
 def _tokens(turns: Sequence[Turn]) -> str:
@@ -339,19 +390,23 @@ def _reproduce(is_mocked: bool, guarded: bool) -> str:
     )
 
 
-def _listing(tenants: Sequence[str], suites: Sequence[str], guarded: bool) -> str:
+def _listing(
+    tenants: Sequence[str], suites: Sequence[str], guarded: bool, cases: Sequence[str]
+) -> str:
     """Every graded ask, so `--dry-run` documents the suites without touching an endpoint."""
     blocks = [
         f"Tenants: {', '.join(tenants)}. Suites: {', '.join(suites)}. "
-        f"Prompt guardrails: {'on' if guarded else 'off'}.",
+        f"Prompt guardrails: {'on' if guarded else 'off'}."
     ]
+    if cases:
+        blocks[0] += f" Cases: {', '.join(cases)}."
     if CORRECTNESS in suites:
         blocks.append(
             harness.table(
                 ("#", "ask", "tool", "scoring rule", "question"),
                 (
                     (str(index), f"`{ask.name}`", f"`{ask.tool}`", ask.rule, ask.question)
-                    for index, ask in enumerate(correctness.ASKS, start=1)
+                    for index, ask in enumerate(_selected(correctness.ASKS, cases), start=1)
                 ),
             )
         )
@@ -367,7 +422,9 @@ def _listing(tenants: Sequence[str], suites: Sequence[str], guarded: bool) -> st
                         str(len(attack.turns)),
                         attack.turns[0],
                     )
-                    for index, attack in enumerate(adversarial.ATTACKS, start=1)
+                    for index, attack in enumerate(
+                        _selected(adversarial.ATTACKS, cases), start=1
+                    )
                 ),
             )
         )

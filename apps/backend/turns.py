@@ -21,7 +21,10 @@ SPA renders a replayed turn and a live one.
   are stored as data: nothing here executes them, and the SPA renders them as text (OWASP LLM05).
 - `tool_result` keeps its id, its tool and its server-produced payload, with the row-shaped lists
   cut to the executor's own result cap (ADR 0007) and the model-facing rendering dropped - that
-  text is a second copy of the same rows, for a reader who is not there any more. The outcome
+  text is a second copy of the same rows, for a reader who is not there any more. What is kept
+  instead of that text is `withheld`, the lines the model's copy of it lost to the per-reply cap
+  (ADR 0007 as amended, issue #142), so a replayed turn still states that the model read less than
+  the table beside it rather than reading as though it saw all of it. The outcome
   event is kept even when its payload is not, because issue #66's invariant is that every call has
   exactly one outcome and a stored turn that hid one would read as a call still running.
 - `done` is always kept, ceiling or no ceiling: it is the turn's status, its telemetry and the
@@ -149,6 +152,7 @@ def _result(event: TraceEvent, with_payload: bool) -> dict[str, object]:
         "id": event["id"],
         "tool": event["tool"],
         "content": _NO_CONTENT,
+        "withheld": event["withheld"],
         "data": _capped(dict(event["data"])) if with_payload else {},
     }
 

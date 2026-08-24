@@ -59,6 +59,7 @@ def _tool_result(call_id: str = "c1", rows: int = 1) -> dict:
         "id": call_id,
         "tool": "query_db",
         "content": "department | count",
+        "withheld": 0,
         "data": {
             "generated_sql": GENERATED_SQL,
             "executed_sql": EXECUTED_SQL,

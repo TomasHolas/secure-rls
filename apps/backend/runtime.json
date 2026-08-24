@@ -29,6 +29,7 @@
     "history_headroom_tokens": 1024,
     "history_chars_per_token": 2.5,
     "min_history_turns": 2,
+    "max_tool_reply_chars": 8000,
     "turn_deadline_s": 600.0,
     "thinking": true,
     "duration_decimals": 2,

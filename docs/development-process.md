@@ -54,8 +54,8 @@ This page is the one place the totals are stated, so no other doc can drift from
 them:
 
 ```bash
-cd apps/backend && uv run pytest -q     # 1038 tests
-cd apps/frontend && npm test            # 342 tests, 21 files
+cd apps/backend && uv run pytest -q     # 1060 tests
+cd apps/frontend && npm test            # 370 tests, 23 files
 ```
 
 The backend suite is weighted toward the boundary: 272 tests on the SQL
@@ -78,7 +78,13 @@ uv run python -m evals --dry-run        # list every graded ask, no endpoint nee
 uv run python -m evals --mocked         # network-free: scripted model, hashed embedder
 uv run python -m evals                  # the live run that produced report.md
 uv run python -m evals --no-guardrails  # the same, with the prompt's self-policing off
+uv run python -m evals --case <name> --out /tmp/one.md   # re-run one ask or attack
 ```
+
+`--case` is repeatable and insists on `--out`: a subset is a re-run of one
+finding, never a scorecard, so it can neither overwrite a committed report nor be
+mistaken for one — the report's headline names the cases it was filtered to. An
+unknown name exits 2 instead of grading nothing and reporting a clean sheet.
 
 Both suites run for **every tenant** — an isolation claim is a claim about each
 tenant's own session, and the correctness ground truth differs per tenant — over
