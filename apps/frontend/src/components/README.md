@@ -180,9 +180,12 @@ and what actually ran — **both always visible, with no toggle** (ADR 0012 as a
 issue #121). Inside the executed card, what the tenant-scoping layer added is highlighted:
 the model wrote everything unmarked, and
 `(SELECT * FROM employees WHERE employees.tenant_id = ?) AS employees` is the layer-3
-rewrite with its bound parameter. A legend states what the highlight means, and the
-highlight itself carries a heavier weight and a solid rule as well as the tint — colour is
-never the only signal. Either card's `copy` writes plain SQL, never the markup.
+rewrite with its bound parameter. A legend states what the highlight means — a quiet
+caption in the card label's own register, with a small swatch carrying the mark's tint and
+rule so it points without competing, and the same sentence on the marked region as a
+tooltip for where the caption has scrolled away. The highlight itself carries a heavier
+weight and a solid rule as well as the tint — colour is never the only signal. Either
+card's `copy` writes plain SQL, never the markup.
 
 `lib/sqldiff.ts` owns the alignment and this brick only paints it. That module diffs
 **tokens**, case-insensitively (sqlglot re-renders the statement onto one flat line with
