@@ -45,6 +45,15 @@ describe("what the loader composes", () => {
     expect(container.querySelector(".loader-elapsed")).toBeNull();
   });
 
+  it("drops the grid on request, leaving the shimmering label and the clock", () => {
+    const { container } = render(<Loader label="Thinking" since={NOW} grid={false} />);
+
+    expect(container.querySelector(".loader-grid")).toBeNull();
+    expect(container.querySelectorAll(".loader-cell")).toHaveLength(0);
+    expect(container.querySelector(".loader-label")?.textContent).toBe("Thinking");
+    expect(container.querySelector(".loader-elapsed")).not.toBeNull();
+  });
+
   it("takes the page scale where it stands alone in an empty panel", () => {
     const { container } = render(<Loader scale="page" label="Loading rows…" />);
 

@@ -22,6 +22,11 @@
  * One thinking step per model round, closed to start with, labelled with its round from the second
  * one on: a turn that thought again after its tool results shows two, and which is which is on the
  * chip rather than left to the reader to infer.
+ *
+ * Nothing in the panel animates except that step's shimmering label. The header carried a pixel
+ * grid of its own while a turn streamed, which put two of them on screen at once for a signal one
+ * of them already gave; the owner's placement ruling on issue #123 took the grid out of the trace
+ * entirely and left it to the answer card's placeholder (`docs/ui-pattern-review.md`).
  */
 
 import { useState } from "react";
@@ -78,7 +83,6 @@ export function TracePanel({
         <Icon name={open ? "chevron-down" : "chevron-right"} size={16} />
         <span className="trace-head-label">Trace</span>
         <span className="trace-count">{items.length}</span>
-        {streaming ? <Loader /> : null}
       </button>
       {open ? (
         <ul className="trace-body">
@@ -111,8 +115,10 @@ function TraceItemStep({ item }: { item: TraceItem }) {
 }
 
 /**
- * One model round's thinking. While the round's thinking is still arriving the step is open and
- * its title is the `Loader` counting up from the moment the first chunk landed; once it settles it
+ * One model round's thinking. While the round's thinking is still arriving the step is open and its
+ * title is the `Loader`, shimmering and counting up from the moment the first chunk landed - the
+ * label alone, no pixel grid: the grid belongs to the answer card's placeholder and one turn shows
+ * it once (`docs/ui-pattern-review.md`). Once the round settles the step
  * folds itself away, leaving that same span on the row as `Thought for 2.8s` - the thinking-trace
  * pattern from beautifului.dev, whose header swaps a live verb for a past-tense summary carrying
  * the cost. Which round it was is on the chip from the second one on.
@@ -136,7 +142,7 @@ function ReasoningStep({ item }: { item: ReasoningItem }) {
       icon={REASONING_ICON}
       title={
         live ? (
-          <Loader label={REASONING_TITLE} since={item.startedAt} />
+          <Loader label={REASONING_TITLE} since={item.startedAt} grid={false} />
         ) : span === null ? (
           SETTLED_TITLE
         ) : (

@@ -225,6 +225,9 @@ function marked(container: HTMLElement): string {
   return [...container.querySelectorAll(".sql-add")].map((mark) => mark.textContent).join(" ");
 }
 
+/** The loader brick's 3x3, so a test can say the grid is there rather than count nine by hand. */
+const GRID_CELLS = 9;
+
 /** The Material ligature the pill carrying this label renders, or "" when it carries none. */
 function pillGlyph(label: string): string {
   const pill = screen.getByText(label).closest(".pill");
@@ -507,6 +510,26 @@ describe("the chat view", () => {
     expect(await screen.findByText(/showing 200 of 543 rows/)).toBeTruthy();
     expect(screen.getByText("Engineering")).toBeTruthy();
     expect(screen.getByText("91,000")).toBeTruthy();
+  });
+
+  it("waits for the first token behind the pixel grid, which the trace does not repeat", async () => {
+    const stream = manualStream();
+    api.openChatStream.mockResolvedValue(stream.response);
+    const { view } = await renderReady({ threadId: "t1" });
+
+    ask();
+    await screen.findByText("thinking");
+    const pending = view.container.querySelector(".msg-pending .loader");
+
+    expect(pending?.querySelectorAll(".loader-cell")).toHaveLength(GRID_CELLS);
+    expect(pending?.querySelector(".loader-label")?.textContent).toBe("thinking");
+    expect(view.container.querySelectorAll(".trace .loader-cell")).toHaveLength(0);
+
+    stream.push({ type: "token", text: "first" });
+    await screen.findByText("first");
+
+    expect(view.container.querySelector(".msg-pending")).toBeNull();
+    stream.close();
   });
 
   it("renders the thinking and the calling tool in the trace, never a graph node", async () => {
