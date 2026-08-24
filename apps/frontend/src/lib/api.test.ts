@@ -257,6 +257,46 @@ describe("a browse request", () => {
   });
 });
 
+describe("renaming a conversation", () => {
+  const stored = { thread_id: "t1", title: "Q3 salary review", created: "2026-08-20T12:15:00+00:00" };
+
+  // The body is the title and nothing else. The `renamed` flag that makes a reader's own words
+  // final is the server's to stamp, so a client field claiming it would be a second opinion.
+  it("patches the thread with the title alone", async () => {
+    const { api } = await load();
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(stored));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.renameConversation("t1", "Q3 salary review")).resolves.toEqual(stored);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toMatch(/\/conversations\/t1$/);
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual({ title: "Q3 salary review" });
+    expect(Object.keys(JSON.parse(init.body))).toEqual(["title"]);
+  });
+
+  it("escapes the thread id it names in the path", async () => {
+    const { api } = await load();
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(stored));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.renameConversation("a/b c", "renamed");
+
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/conversations\/a%2Fb%20c$/);
+  });
+
+  it("reports a thread that is gone as the same 404 sentence every conversation call does", async () => {
+    const { api } = await load();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ detail: "no" }, 404)));
+
+    await expect(api.renameConversation("t1", "renamed")).rejects.toMatchObject({
+      status: 404,
+      message: "That conversation no longer exists.",
+    });
+  });
+});
+
 describe("health", () => {
   it("reports the prompt-guardrail position the server states", async () => {
     const { api } = await load();

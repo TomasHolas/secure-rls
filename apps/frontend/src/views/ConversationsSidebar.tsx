@@ -19,12 +19,17 @@
  * and never as markup, and the server has already stripped it down to one displayable line.
  * It is also the row's `title`, so a truncated thread reads in full on hover.
  *
+ * A title is also the reader's to change: the pencil on a row turns that text node into an input
+ * and `store.rename` sends what they typed. Which name wins afterwards is the server's rule, not
+ * this view's - the PATCH stamps the row as renamed and no generated label writes over it again
+ * (ADR 0012 as amended), so a rename landing during a titling window needs nothing here.
+ *
  * The rail's shape is the beautifului.dev sidebar's, reimplemented on our tokens (issue #114,
  * `docs/ui-pattern-review.md`): a collapse that clips instead of re-laying out, one gliding hover
  * highlight, and the search growing out of its own icon.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Button } from "../components/Button";
@@ -37,6 +42,7 @@ import type { Thread } from "../lib/api";
 
 export function ConversationsSidebar({ store }: { store: ConversationsStore }) {
   const [pendingDelete, setPendingDelete] = useState<Thread | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
   function confirmDelete(): void {
@@ -57,7 +63,13 @@ export function ConversationsSidebar({ store }: { store: ConversationsStore }) {
         }
       >
         {store.error ? <p className="form-error">{store.error}</p> : null}
-        <RailThreads store={store} query={query} onDelete={setPendingDelete} />
+        <RailThreads
+          store={store}
+          query={query}
+          renaming={renaming}
+          onRename={setRenaming}
+          onDelete={setPendingDelete}
+        />
       </Sidebar>
 
       <ConfirmDialog
@@ -99,10 +111,14 @@ function RailSearch({ value, onChange }: { value: string; onChange: (value: stri
 function RailThreads({
   store,
   query,
+  renaming,
+  onRename,
   onDelete,
 }: {
   store: ConversationsStore;
   query: string;
+  renaming: string | null;
+  onRename: (threadId: string | null) => void;
   onDelete: (thread: Thread) => void;
 }) {
   const collapsed = useSidebarCollapsed();
@@ -131,6 +147,17 @@ function RailThreads({
     <GlideList hidden={collapsed}>
       {shown.map((thread) => {
         const active = thread.thread_id === store.activeId;
+        if (thread.thread_id === renaming) {
+          return (
+            <li key={thread.thread_id} className={active ? "rail-item active" : "rail-item"}>
+              <RailRename
+                thread={thread}
+                onSave={(title) => store.rename(thread.thread_id, title)}
+                onClose={() => onRename(null)}
+              />
+            </li>
+          );
+        }
         return (
           <li key={thread.thread_id} className={active ? "rail-item active" : "rail-item"}>
             <button
@@ -146,7 +173,17 @@ function RailThreads({
             </button>
             <button
               type="button"
-              className="btn-icon rail-item-delete"
+              className="btn-icon rail-item-action"
+              onClick={() => onRename(thread.thread_id)}
+              aria-label={`Rename conversation ${thread.title}`}
+              title="Rename this conversation"
+              tabIndex={collapsed ? -1 : undefined}
+            >
+              <Icon name="edit" size={15} />
+            </button>
+            <button
+              type="button"
+              className="btn-icon rail-item-action rail-item-delete"
               onClick={() => onDelete(thread)}
               aria-label={`Delete conversation ${thread.title}`}
               title="Delete this conversation"
@@ -158,6 +195,62 @@ function RailThreads({
         );
       })}
     </GlideList>
+  );
+}
+
+/**
+ * A row's title while the reader is renaming it: the same box, now an input over the same
+ * timestamp, so the row keeps its height and its width whichever state it is in.
+ *
+ * Enter and blur save, Escape cancels, and a box left empty cancels too - a blank title is a 400
+ * server-side, so it is never sent. Saving on blur is what an inline rename does everywhere: the
+ * reader's undo is the key that says cancel, not clicking away. Whichever of the three settles
+ * the edit first is the one that counts - the flag is what stops the blur that follows an Enter
+ * or an Escape from saving a second time.
+ */
+function RailRename({
+  thread,
+  onSave,
+  onClose,
+}: {
+  thread: Thread;
+  onSave: (title: string) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(thread.title);
+  const settled = useRef(false);
+
+  function finish(save: boolean): void {
+    if (settled.current) return;
+    settled.current = true;
+    const named = draft.trim();
+    if (save && named && named !== thread.title) onSave(named);
+    onClose();
+  }
+
+  return (
+    // The row's group handlers - the glide's pointer tracking, the click that opens a thread -
+    // have no business in a text box the reader is typing a name into.
+    <span
+      className="rail-item-edit"
+      onPointerMove={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <input
+        className="rail-rename-input"
+        aria-label="Rename conversation"
+        value={draft}
+        autoFocus
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== "Escape") return;
+          event.stopPropagation();
+          finish(event.key === "Enter");
+        }}
+        onBlur={() => finish(true)}
+      />
+      <span className="rail-item-meta">{formatCreated(thread.created)}</span>
+    </span>
   );
 }
 

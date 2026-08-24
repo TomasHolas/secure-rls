@@ -401,6 +401,23 @@ export async function retitleConversation(threadId: string): Promise<Thread> {
   return (await response.json()) as Thread;
 }
 
+/**
+ * PATCH /conversations/{id} carrying a title: the thread named by the reader themselves.
+ *
+ * The body is the title and nothing else. The `renamed` flag that makes a reader's own words
+ * final is the server's to stamp (ADR 0012 as amended) - this client sends what was typed and
+ * adopts the row that comes back, so the rail shows the stored name rather than the typed one.
+ */
+export async function renameConversation(threadId: string, title: string): Promise<Thread> {
+  const response = await apiFetch(`/conversations/${encodeURIComponent(threadId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!response.ok) throw new ApiError(response.status, conversationFailure(response.status));
+  return (await response.json()) as Thread;
+}
+
 /** DELETE /conversations/{id}: drops the thread and its checkpointer state server-side. */
 export async function deleteConversation(threadId: string): Promise<void> {
   const response = await apiFetch(`/conversations/${encodeURIComponent(threadId)}`, {
