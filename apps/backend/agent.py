@@ -88,6 +88,22 @@ announced no call yet (and the calls that model turn was writing are dropped rat
 the stored history keeps no call without a result), and a turn cut at `audit` has already settled
 every call of the round it finished.
 
+Bounded history (ADR 0011 as amended; issue #131). Those bounds cap what a turn may generate and
+how long it may take; none of them caps what it SENDS, and a long thread eventually assembles a
+prompt larger than `context_window`, which the endpoint refuses outright - a dead turn rather than
+a shorter memory. So before every model call `_fit_history` estimates the assembled prompt and
+drops whole oldest turns until it fits `context_window - max_output_tokens -
+history_headroom_tokens`, never below the newest `min_history_turns`. The estimate is characters
+over `history_chars_per_token` - deterministic, no tokenizer, no model call - so it is an estimate
+with a margin rather than a count, and it counts everything the request carries: the messages, the
+system prompt, and the bound tool definitions, which are the largest fixed part of a prompt after
+the system card. What it drops is a whole turn, a question and everything that question produced,
+because dropping messages one at a time would leave a tool result without the assistant message
+that asked for it. The system prompt is never a candidate: it is not part of the history this
+trims. Neither is the current question, which lives in the newest turn the floor keeps. Trimming
+changes only what one call is sent - the checkpointer keeps every message, so replay is
+unaffected - and a turn that trimmed says so on `done` as `history_trimmed`.
+
 A missing note index is neither a model error nor a security refusal: `search_notes` states that
 retrieval is unavailable as its own tool result (ADR 0010 as amended), so the model can report it
 in the same turn instead of the turn spending its retry budget on an operator condition.
@@ -105,8 +121,8 @@ stands, and `app.py` serializes them onto the SSE stream verbatim:
     {"type": "retry", "id": str, "tool": str, "layer": str, "kind": str, "attempt": int,
      "max_attempts": int, "reason": str}
     {"type": "done", "status": "ok|blocked|gave_up|cut_short|failed", "answer": str,
-     "grounded": bool, "model": str, "prompt_guardrails": bool, "input_tokens": int,
-     "output_tokens": int, "duration_s": float}
+     "grounded": bool, "history_trimmed": bool, "model": str, "prompt_guardrails": bool,
+     "input_tokens": int, "output_tokens": int, "duration_s": float}
 
 `token` carries user-visible text exactly once: the model's own output as it streams out of
 `reason`, or the deterministic text `respond` composes - a refusal, a give-up, the notice that a
@@ -126,7 +142,8 @@ replays (ADR 0012 as amended, issue #90), and this module streams it and nothing
 this turn made (`stream_mode="custom"` means the raw chunks never leave this module, so usage is
 read off the message `reason` accumulated) and the wall-clock seconds `run_turn` measured. It
 also carries `grounded`: whether any tool of this turn returned a result the answer could rest
-on.
+on, and `history_trimmed`: whether any model call of this turn was sent less than the thread's
+whole history so it would fit the context window.
 
 Of the five `done` statuses this graph composes four - `ok`, `blocked`, `gave_up`, `cut_short`.
 `failed` is the API layer's terminal frame for a run that broke before `respond` (ADR 0012 as
@@ -165,8 +182,9 @@ issue #90). This module streams those events and stores none of them itself.
 import inspect
 import json
 import logging
+import math
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
@@ -434,12 +452,19 @@ class DoneEvent(TypedDict):
     `prompt_guardrails` is the position the switch was in for this turn (ADR 0011 as amended) -
     the authoritative per-turn record of which prompt produced the answer above it, so a trace
     cannot be read as the other mode's.
+
+    `history_trimmed` says the thread had grown past what one model call may be sent, so older
+    turns were left out of what this turn's model calls saw (ADR 0011 as amended). It is a field
+    of the terminal frame for the same reason `grounded` is: it is a property of the finished
+    turn, and the turn already has one frame for those. Nothing was trimmed from storage - the
+    checkpointer keeps every message and replay still shows the whole thread.
     """
 
     type: Literal["done"]
     status: str
     answer: str
     grounded: bool
+    history_trimmed: bool
     model: str
     prompt_guardrails: bool
     input_tokens: int
@@ -505,6 +530,7 @@ class AgentState(TypedDict):
     output_tokens: int
     nudge: bool
     grounded: bool
+    trimmed: bool
 
 
 @dataclass(frozen=True)
@@ -518,6 +544,14 @@ class _ModelTurn:
     message: AIMessage
     cut: bool
     held: bool
+
+
+@dataclass(frozen=True)
+class _Fitted:
+    """The history one model call is sent, and how many of the thread's oldest turns it lost."""
+
+    messages: list[AnyMessage]
+    dropped: int
 
 
 @dataclass(frozen=True)
@@ -619,6 +653,7 @@ def build_agent(
         system=SystemMessage(content=_system_prompt(tenant_id, db_path, guardrails)),
         model=model_id or runtime().agent.model,
         guardrails=guardrails,
+        tool_tokens=_tool_tokens(tools.values()),
     )
     graph = StateGraph(AgentState)
     graph.add_node(REASON, nodes.reason)
@@ -658,6 +693,7 @@ def run_turn(graph: CompiledStateGraph, question: str, thread_id: str) -> Iterat
         output_tokens=0,
         nudge=False,
         grounded=False,
+        trimmed=False,
     )
     yield from graph.stream(state, _turn_config(thread_id), stream_mode="custom")
 
@@ -734,13 +770,18 @@ def _replay_role(message: AnyMessage) -> str:
 
 @dataclass(frozen=True)
 class _Nodes:
-    """The graph's nodes, sharing the bound model, the tool registry and the system prompt."""
+    """The graph's nodes, sharing the bound model, the tool registry and the system prompt.
+
+    `tool_tokens` is what the bound tool definitions add to every request, estimated once at build
+    time because they never change, and counted against the send budget of ADR 0011 as amended.
+    """
 
     llm: Runnable
     tools: dict[str, StructuredTool]
     system: SystemMessage
     model: str
     guardrails: bool
+    tool_tokens: int
 
     def reason(self, state: AgentState) -> dict[str, object]:
         """Ask the model what to do next, streaming its reasoning and its text as they arrive.
@@ -755,18 +796,25 @@ class _Nodes:
         an ungrounded answer, so its words are dropped, a tool round is charged and the model is
         asked once more with the grounding instruction appended to what it sees. Charging the
         round is what bounds the nudge to one: it is only offered while no round has been spent.
+
+        It is also the one place a model call is made, so it is where the history is fitted to the
+        context window: a thread too long to send loses its oldest turns here and the turn reports
+        that it did (ADR 0011 as amended). The system prompt is passed separately and is therefore
+        never a candidate for it.
         """
         writer = get_stream_writer()
         writer(NodeStartEvent(type="node_start", node=REASON))
         bounds = runtime().agent
         unspent = state["iterations"] == 0
+        fitted = _fit_history(self.system, _history(state), self.tool_tokens)
         turn = self._call_model(
-            _history(state), writer, state["started"] + bounds.turn_deadline_s, hold=unspent
+            fitted.messages, writer, state["started"] + bounds.turn_deadline_s, hold=unspent
         )
         spent_in, spent_out = _tokens(turn.message)
         update: dict[str, object] = {
             "input_tokens": state["input_tokens"] + spent_in,
             "output_tokens": state["output_tokens"] + spent_out,
+            "trimmed": state["trimmed"] or bool(fitted.dropped),
         }
         if unspent and not turn.cut and not turn.message.tool_calls:
             return {**update, "nudge": True, "iterations": state["iterations"] + 1}
@@ -853,7 +901,8 @@ class _Nodes:
 
         The terminal frame also reports whether a tool result of this turn grounds the answer at
         all (ADR 0011 as amended): a turn that answered without data after its one nudge says so
-        rather than reading like every other answer.
+        rather than reading like every other answer. It reports the same way whether the thread
+        was too long to send whole, so a shorter memory is stated rather than felt.
         """
         writer = get_stream_writer()
         writer(NodeStartEvent(type="node_start", node=RESPOND))
@@ -871,6 +920,7 @@ class _Nodes:
                 status=status,
                 answer=answer,
                 grounded=state["grounded"],
+                history_trimmed=state["trimmed"],
                 model=self.model,
                 prompt_guardrails=self.guardrails,
                 input_tokens=state["input_tokens"],
@@ -982,6 +1032,93 @@ def _history(state: AgentState) -> list[AnyMessage]:
     if not state["nudge"]:
         return list(state["messages"])
     return [*state["messages"], SystemMessage(content=_GROUNDING_NUDGE)]
+
+
+def _fit_history(system: SystemMessage, history: Sequence[AnyMessage], fixed: int) -> _Fitted:
+    """Drop whole oldest turns until the estimated prompt fits what one call may send (ADR 0011).
+
+    The budget is the context window less what the answer may take (`max_output_tokens`) and less
+    a headroom the estimate's own error is paid out of, because the window has to hold the prompt
+    and the generation together - the overflow of issue #131 was the prompt alone. `fixed` is what
+    the request carries whatever the history holds - the bound tool definitions - counted against
+    the budget beside the system prompt and, like it, never a candidate for trimming.
+
+    The unit dropped is a whole turn, so the transcript the model reads never loses the assistant
+    message a tool result answers, and the floor of `min_history_turns` is never crossed: the
+    newest turns carry the question being asked and the exchange it follows on from.
+
+    A thread that still does not fit at the floor - one enormous turn - is sent as it is. The
+    endpoint refuses it exactly as it does today, which is a bounded and stated edge rather than a
+    loop that would trim the current question away to satisfy an arithmetic check.
+    """
+    bounds = runtime().agent
+    budget = bounds.context_window - bounds.max_output_tokens - bounds.history_headroom_tokens
+    floor = max(bounds.min_history_turns, 1)
+    blocks = _turn_blocks(history)
+    sizes = [sum(_estimate(message) for message in block) for block in blocks]
+    total = fixed + _estimate(system) + sum(sizes)
+    dropped = 0
+    while len(blocks) - dropped > floor and total > budget:
+        total -= sizes[dropped]
+        dropped += 1
+    if dropped:
+        _LOG.info("history did not fit: %d older turns left out of what was sent", dropped)
+    return _Fitted(
+        messages=[message for block in blocks[dropped:] for message in block], dropped=dropped
+    )
+
+
+def _turn_blocks(history: Sequence[AnyMessage]) -> list[list[AnyMessage]]:
+    """The history cut into turns: each user question with everything that question produced.
+
+    A turn is the unit trimming works in because a tool result only means anything beside the
+    assistant message that asked for it. Anything ahead of the first question joins the oldest
+    block rather than being dropped on its own.
+    """
+    blocks: list[list[AnyMessage]] = []
+    for message in history:
+        if isinstance(message, HumanMessage) or not blocks:
+            blocks.append([])
+        blocks[-1].append(message)
+    return blocks
+
+
+def _estimate(message: BaseMessage) -> int:
+    """How many tokens one message is worth, estimated from its characters.
+
+    The tool calls are measured too: the arguments the model wrote are part of what goes back to it.
+    """
+    calls = getattr(message, "tool_calls", None) or []
+    return _estimate_text(message.text + "".join(json.dumps(call) for call in calls))
+
+
+def _estimate_text(text: str) -> int:
+    """The token estimate of a piece of prompt text (ADR 0011 as amended).
+
+    An estimate and never a count: no tokenizer is imported and no model is asked. The divisor is
+    a `runtime.json` knob set below the densest rate measured against the endpoint's own reported
+    prompt tokens, so the estimate errs high rather than low - a history is mostly the things that
+    tokenize denser than prose, tables of figures and SQL and JSON schemas - and the send budget
+    keeps a headroom on top for the times it is still wrong.
+    """
+    return math.ceil(len(text) / runtime().agent.history_chars_per_token)
+
+
+def _tool_tokens(tools: Iterable[StructuredTool]) -> int:
+    """What the bound tool definitions cost every prompt, estimated once per graph.
+
+    They are sent on every call in both guardrail positions - name, description and argument
+    schema - so a budget that counted only the messages would believe a request smaller than the
+    one the endpoint receives. Measured against the endpoint's reported prompt tokens they are the
+    largest fixed part of a request after the system prompt, which is why they are counted rather
+    than absorbed by the headroom.
+    """
+    return sum(
+        _estimate_text(
+            f"{tool.name}{tool.description or ''}{json.dumps(tool.args_schema.model_json_schema())}"
+        )
+        for tool in tools
+    )
 
 
 def _route_after_reason(state: AgentState) -> str:

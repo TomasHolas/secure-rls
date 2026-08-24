@@ -982,9 +982,10 @@ def _sse(events: Iterator[TraceEvent], model: str, history: TurnLog) -> Iterator
     The terminal frame carries the telemetry the turn managed to produce: the seconds it ran
     before it broke, and no token counts, because a run that never reached `respond` never got
     a usage report to pass on. It reports the turn as ungrounded for the same reason: a run that
-    never answered has no answer a tool result could stand behind. The prompt-guardrail position
-    is read off the knob rather than off the broken run, since a run that never built a prompt
-    never chose a position of its own (ADR 0011 as amended).
+    never answered has no answer a tool result could stand behind, and it claims no trimmed history
+    because only the graph knows what it managed to send. The prompt-guardrail position is read off
+    the knob rather than off the broken run, since a run that never built a prompt never chose a
+    position of its own (ADR 0011 as amended).
 
     History is written from here rather than from around the runner (issue #90), so every frame the
     reader was sent - this terminal one included - is a frame the turn's stored history holds, and
@@ -1006,6 +1007,7 @@ def _sse(events: Iterator[TraceEvent], model: str, history: TurnLog) -> Iterator
                 status=STATUS_FAILED,
                 answer=_TURN_FAILED,
                 grounded=False,
+                history_trimmed=False,
                 model=model,
                 prompt_guardrails=runtime().agent.prompt_guardrails,
                 input_tokens=0,

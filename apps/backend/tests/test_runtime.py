@@ -36,6 +36,21 @@ def test_the_shipped_default_keeps_the_prompt_guardrails_on():
     )
 
 
+def test_the_history_send_budget_leaves_room_for_the_answer():
+    """What one model call may send must fit the window beside the generation it is allowed.
+
+    This is the arithmetic of issue #131: a budget that did not subtract `max_output_tokens` and a
+    headroom for the estimate's own error would let a prompt fill the window on its own, which is
+    the request the endpoint refused. The floor is at least one turn, or a trim could drop the
+    question the turn exists to answer.
+    """
+    agent = runtime().agent
+    assert agent.history_headroom_tokens > 0
+    assert agent.history_chars_per_token > 0
+    assert agent.min_history_turns >= 1
+    assert agent.context_window - agent.max_output_tokens - agent.history_headroom_tokens > 0
+
+
 def test_refresh_window_fits_inside_the_token_lifetime():
     rt = runtime()
     assert 0 < rt.auth.refresh_within_minutes < rt.auth.token_ttl_minutes
