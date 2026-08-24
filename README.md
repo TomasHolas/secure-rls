@@ -144,22 +144,34 @@ rather than trust it ([ADR 0014](docs/decisions/0014-records-and-notes-browsing.
   its arguments, the generated and the executed statement side by side with the
   tenant rewrite highlighted inside the one that ran, result
   tables, charts, retries, refusals, and what the turn cost in tokens.
-- **Records** — the caller's own rows, paged and filterable. Signed in as
-  `alice@acme` it reads 450; as `bob@beta`, 350. That difference *is* the
-  isolation, visible without asking anything.
-- **Notes** — the corpus the agent retrieves over, with a search box that calls
-  `rag.search_notes_scoped`: literally the same partition-filtered vector search
-  the `search_notes` tool uses, showing the distance it scored each note by.
-  Notes carrying a planted injection payload are badged from
-  `poisoned_manifest.json`, so the second-order injection demo is one screen.
+- **Records** — the **whole dataset**: all 1000 rows across all three tenants,
+  paged and filterable, with `tenant_id` a filter of the same kind as
+  `department`. Filter nothing and it says "1,000 rows · all tenants"; pick a
+  tenant and it says "450 rows · tenant acme". These tabs are the control group,
+  not a tenant view — they show what exists, so the agent reaching only its own
+  450 is checkable instead of self-reported.
+- **Notes** — the whole corpus the agent retrieves over, with a search box that
+  calls `rag.search_notes_scoped`: literally the same partition-filtered vector
+  search the `search_notes` tool uses, showing the distance it scored each note
+  by. The search is **scoped to your tenant while the list beside it is not**,
+  and that asymmetry is the demonstration: read beta's planted injection payload
+  in the list, search for its exact text as `alice@acme`, get nothing back.
+  Notes carrying a planted payload are badged from `poisoned_manifest.json`
+  across every tenant, so the second-order injection demo is one screen.
 
-Neither browsing tab opens a second data path: every row is served by an
-allowlisted fixed template through the same `db.execute_scoped` the agent's
-tools use, and both tabs carry an **"Attack it yourself"** box that appends a
-query parameter of the reader's choosing to the next request. Typing
-`tenant_id=beta` as an acme user returns acme's 450 rows unchanged, with the
-server's own explanation above them: the tenant is read from the verified token
-and bound server-side, so no request can name one.
+The isolation you can see, in one session: the tabs show 1000 rows and the agent
+answers 450. Log in as `bob@beta` and the tabs show the same 1000 while the agent
+answers 350. The tabs are also the only place in the app that reads unscoped, and
+it is named as such: `db.execute_unscoped_browse`, called by nothing but the two
+listing templates in `browse.py`. It keeps the validator, the engine authorizer,
+the read-only connection, the limit caps, the query deadline, the row cap and the
+audit row — it drops only the tenant scoping, its structural proof and the tenant
+egress check, because returning every tenant is the point. Tests assert that no
+agent tool is closed over it and that no other module can reach it, so the claim
+being defended — the *agent* cannot leave its tenant — is untouched
+([ADR 0014](docs/decisions/0014-records-and-notes-browsing.md)). Both tabs also
+carry a **"Probe the request"** box that appends a query parameter of the
+reader's choosing and shows every parameter the server reports it did not read.
 
 ### Data
 
