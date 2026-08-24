@@ -29,6 +29,11 @@
  * fold the live stream goes through, so the chat view receives turns of the same shape whether
  * they were streamed or reopened. `chatKey` changes on every switch: it is the signal the chat
  * view resets its live turns on.
+ *
+ * `select` answers with the thread it opened, or null when the registry would not hand it over -
+ * a deleted thread and another identity's are the same 404 and get the same answer here. The
+ * shell restoring a thread named in the URL is the caller that needs to tell the two apart, and
+ * this store is the only place that knows (issue #135, `lib/location.ts`).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -60,7 +65,8 @@ export interface ConversationsStore {
   loading: boolean;
   error: string | null;
   newChat: () => void;
-  select: (threadId: string) => void;
+  /** Opens a thread and resolves with the id that ended up open, or null when it could not be. */
+  select: (threadId: string) => Promise<string | null>;
   remove: (threadId: string) => void;
   /** Registers the thread the first question of a draft belongs to and returns its id. */
   startThread: (title: string) => Promise<string>;
@@ -108,18 +114,22 @@ export function useConversations(): ConversationsStore {
   // Reopening the thread already open is a no-op: it would drop the traces of this session's turns.
   const select = useCallback(
     (threadId: string) => {
-      if (threadId === open.activeId) return;
+      if (threadId === open.activeId) return Promise.resolve<string | null>(threadId);
       setError(null);
       setLoading(true);
-      getConversation(threadId)
+      return getConversation(threadId)
         .then((conversation) => {
           setOpen((previous) => ({
             activeId: conversation.thread_id,
             replay: replayTurns(conversation.messages, conversation.turns),
             chatKey: previous.chatKey + 1,
           }));
+          return conversation.thread_id;
         })
-        .catch((cause) => setError(reason(cause, OPEN_FAILURE)))
+        .catch((cause) => {
+          setError(reason(cause, OPEN_FAILURE));
+          return null;
+        })
         .finally(() => setLoading(false));
     },
     [open.activeId],
