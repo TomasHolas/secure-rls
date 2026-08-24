@@ -145,6 +145,61 @@ be none. And the empty transcript no longer pins itself to the bottom: the follo
 effect now runs only once a turn exists, because a log with nothing in it is read from the top and
 without that change the canvas opened scrolled past its own first card.
 
+### Adopted - the pipeline strip (owner request, follow-up to the canvas)
+
+The owner's question on seeing the canvas was the right one: *"I love the graph, but why is it in
+the empty conversation? Should it be somewhere after execution?"* Both, and they are two different
+displays. The canvas stays the **map** - what the path is, before anything has been asked. The
+trace gains the **journey**: a compact strip under one executed statement saying where *that*
+statement actually got.
+
+**What it is.** Six chips on one text line, the canvas's own six steps with the canvas's own
+labels - `components/pipelineSteps.ts` is the single list both drawings read, so the map and the
+journey cannot come to disagree about what the path is. A statement that ran lights every chip and
+carries the row count on the last one; a statement a layer refused lights what had passed it, marks
+the refusing layer, and leaves the rest dark. It renders under the `SqlRewrite` pair in a
+`tool_result` and under the blocked notice on a refusal.
+
+**This is still not the pattern #91 rejected, and here the line is finer than it was for the
+canvas.** The canvas is safe because nothing feeds it. The strip *is* fed by a turn - so the rule
+it holds to instead is that **it only ever draws completed facts**. There is no strip while a call
+is in flight, no chip in a pending state, nothing that says what is about to happen: a chip exists
+only once the server has already reported the outcome it is drawn from. What #91 objected to was a
+display that claims to know the next step; this one claims only where a statement that is already
+finished got to. A `2/N` on a running turn would still be fiction, and still is not shipped.
+
+**The lighting is justified per step, not decorative.** A `tool_result` payload carrying
+`executed_sql` is itself the proof of the whole path: `db.execute_scoped` returns a result only
+after the validator approved the statement, the rewrite scoped every `employees` reference and was
+structurally proven to have done so, the statement ran on a read-only connection under the
+employees-only authorizer, and every returned `tenant_id` was re-checked. Each of those raises
+rather than returns, so there is no payload on which a layer was skipped.
+
+**A refusal lights only what provably ran, which is not the same as "everything to its left."**
+The mapping is off what `agent.py` actually puts on the wire - the `layer` string, plus the
+`SecurityViolation` `kind` for the three checks that share the `scoped execution` layer - and each
+entry names the steps that refusal proves had already passed the statement on. The canvas orders
+its cards by layer number while the executor opens the engine at execution time, so a statement
+refused *before* it ran leaves the engine-authorizer chip dark even though it sits earlier in the
+row. A refusal whose layer identifier is not in that table renders **no strip at all**: on an
+enforcement path, a wrong picture is worse than no picture.
+
+**Template tools get the strip too.** `get_stats` reports an `executed_sql` and no generated one -
+its statement is a fixed server template rather than model output - and it reaches the data through
+the same `db.execute_scoped`. Layer 2 validates that template like any other statement, so denying
+it a strip would imply a weaker path where there is none; what differs is only *who wrote the SQL*,
+which the first chip says (`template` rather than `model`). `plot`, `detect_anomalies` and
+`search_notes` report no executed statement at all and get no strip, because nothing of what they
+returned came down that path.
+
+**Two costs, stated.** The row count now appears twice on an expanded call - once as the step's own
+chip in the header, once at the end of the strip - which is a repetition, kept because the last
+chip is the payoff of the sentence the strip makes ("only the caller's rows: 3"). And the strip
+believes the wire: an engine timeout is reported by `agent.py` under the `query validation` layer,
+so the strip would mark validation as the layer that stopped a statement the validator had in fact
+approved. That is a backend attribution, not a display decision, and the display cannot correct it
+without inventing a fact of its own.
+
 ## Rejected
 
 | Pattern | Why not |

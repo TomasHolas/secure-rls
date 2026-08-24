@@ -31,14 +31,15 @@ components/
   InlineSearch.tsx a search box that grows right-to-left out of its own icon
   GlideList.tsx    a row group with one highlight that glides to the row under the pointer
   PipelineCanvas.tsx  the query pipeline as draggable cards on a dotted canvas (the chat's empty state)
+  pipelineSteps.ts    the six steps themselves - the ONE list the canvas and the strip both read
   Modal.tsx        the one dialog brick — portal, backdrop, Escape/backdrop/× dismissal
   ConfirmDialog.tsx  the confirm step in front of a delete, on Modal + Button
   forms/           FormCard, TextField, SelectField, ChipRow, FieldPair (+ index barrel)
   layout/          AppLayout, Header, Tabs, Sidebar, Page, PageHeader, Section,
                    EmptyState (+ index barrel)
   charts/          Chart — renders a backend ChartSpec (+ index barrel)
-  chat/            ChatMessage, Composer, ModelPicker, TracePanel, TraceStep,
-                   ToolResultView (+ index barrel)
+  chat/            ChatMessage, Composer, ModelPicker, PipelineStrip, TracePanel,
+                   TraceStep, ToolResultView (+ index barrel)
 ```
 
 Views live beside them in `src/views/` (`LoginView`, `SessionBadge`, `ChatView`,
@@ -371,7 +372,9 @@ The chat's empty state, and the one diagram in the app: six cards on a dotted ca
 happens to every SQL statement the model writes - the statement, layers 2, 2.5, 3 and 4, and the
 rows that survive them - joined by connectors that light when a card is selected. The copy is one
 line per layer from the README's security table, so the screen and the docs cannot drift, and the
-brick takes no props because there is nothing per-caller about it.
+brick takes no props because there is nothing per-caller about it. The steps themselves live in
+`pipelineSteps.ts`, which `chat/PipelineStrip` reads too: this canvas is the map of the path, the
+strip is the journey one statement took down it, and neither keeps a copy of the other's labels.
 
 It is allowed to look like a plan because it *is* one: the order is fixed in `security.py` and
 `db.py` and holds whatever is asked. That is the line against the plan-shaped displays issue #91
@@ -754,6 +757,41 @@ reopened thread shows its SQL rewrite, tables and charts through these bricks ra
 second renderer. Such a turn starts `open` — the evidence is why it is there — and carries no
 reasoning, retry or step timing, because none of those are stored.
 
+### chat/PipelineStrip
+
+```tsx
+<PipelineStrip result={outcome.data} />    {/* under the SQL pair, in ToolResultView */}
+<PipelineStrip refusal={outcome} />        {/* under the blocked notice, in TracePanel */}
+```
+
+Where **one** statement actually got down the pipeline, in one text line. `PipelineCanvas` on the
+empty chat is the map; this is the journey, and both read `components/pipelineSteps.ts`, so the six
+steps have one owner and the two drawings cannot come to disagree. The chips are the `Pill` brick,
+one per step, joined by a short rule.
+
+It is fed by a turn, unlike the canvas, and the rule that keeps it on the right side of the line
+issue #91 drew is that **it draws only completed facts**: no strip while a call is in flight, and
+no chip in a pending state (`docs/ui-pattern-review.md`).
+
+- **A statement that ran lights every step**, and that is a proof rather than a decoration: a
+  payload carrying `executed_sql` cannot exist unless the validator approved the statement, the
+  rewrite scoped it and was structurally proven to have done so, the engine ran it read-only under
+  the employees-only authorizer, and every returned `tenant_id` was re-checked - each of those
+  raises instead of returning. The first chip says who wrote the SQL (`model`, or `template` for a
+  fixed-template tool like `get_stats`), the last one how many rows came back.
+- **A refusal lights only what provably ran.** The `layer` string, plus the `SecurityViolation`
+  `kind` for the three checks that share the `scoped execution` layer, maps onto the step that
+  stopped the statement; each entry names what that refusal proves had already passed. A statement
+  refused before it ran leaves the engine-authorizer chip dark even though it sits earlier in the
+  row, because the executor opens the engine at execution time while the canvas orders by layer
+  number. **A layer identifier the table cannot place renders no strip at all** - a wrong picture
+  of an enforcement path is worse than none.
+- **Three states in two channels** (WCAG 1.4.1): the `Pill` tone, plus a check for passed, an x for
+  the layer that stopped it, and no glyph and a dashed outline for a step never reached. Nothing
+  transitions. The kind and the reason ride the stopped chip's `title`; the notice above the strip
+  already prints both in words, and a replayed turn folds to the same items, so it draws the same
+  strip a live turn drew.
+
 ### chat/TraceStep
 
 ```tsx
@@ -781,7 +819,7 @@ settles, and the reader's click wins from then on whatever the caller does after
 
 A `tool_result` payload, each key through the brick that owns it: `generated_sql` +
 `executed_sql` through `SqlRewrite` (an `executed_sql` with no generated side through
-`SqlTemplate`), `columns`/`rows` through `DataTable`,
+`SqlTemplate`) and then `PipelineStrip` under either card, `columns`/`rows` through `DataTable`,
 `chart_spec` through `Chart` verbatim, `notes` as note cards (employee-written text,
 quoted as data), `anomalies` as a derived table. A payload with no structured keys falls
 back to the text the model itself read, so no result ever renders as nothing. A replayed
