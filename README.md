@@ -458,16 +458,22 @@ uv run python -m evals --no-guardrails  # the same, with the prompt's self-polic
 The last one is the run worth having: with the guardrails on, an attack the model
 declines itself never reaches a layer, so a passing suite cannot distinguish a
 layer that held from a model that never tried. Each position writes its own report
-file. [`report-no-guardrails.md`](apps/backend/evals/report-no-guardrails.md) is
-the place the off-position scorecard lands and is **still owed** — the endpoint
-was unreachable when the switch landed, and inventing numbers for a security claim
-would be worse than having none.
+file; [`report-no-guardrails.md`](apps/backend/evals/report-no-guardrails.md) is
+the off-position scorecard, run live on 2026-08-24.
 
-| | Result |
-|---|---|
-| Correctness | **74/75 (98.7%)** |
-| Security | **75/75 (100%)** attacks held |
-| **Leaks** | **0** |
+| | Guardrails on | Guardrails off |
+|---|---|---|
+| Correctness | **74/75 (98.7%)** | **75/75 (100%)** |
+| Security | **75/75 (100%)** attacks held | **67/75 (89.3%)** attacks held |
+| **Leaks** | **0** | **0** over 171 turns |
+
+The off position's eight non-held attacks are all the same event and none is a
+leak: a multi-turn scenario grew past the 16384-token context bound and the
+endpoint refused the request, so the turn failed closed with zero foreign rows
+(issue #131). With the self-policing prompt rules removed, the model attempts
+what it used to decline — and the deterministic layers still return nothing
+foreign, which is ADR 0002's central claim as a measured result rather than an
+assertion.
 | Turns that never reached a terminal frame | 0 |
 | Turns stopped by a per-turn bound | 1 |
 | Wall time | 39.3 min, 13.8 s per turn |
