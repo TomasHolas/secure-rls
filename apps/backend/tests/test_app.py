@@ -204,6 +204,8 @@ CSV_ROWS = (
     (2, "beta", "Bo", "Engineering", 1000, 4.4, "2021-07-07", "beta secret"),
 )
 GENERATED_TITLE = "Headcount by department"
+GREETING = "Hello, how are you"
+RENAMED = "Q3 comp review"
 
 BROWSE_HEADER = (
     "user_id",
@@ -517,6 +519,18 @@ def _headers(client: TestClient, credentials: tuple[str, str]) -> dict[str, str]
     return {"Authorization": f"Bearer {_token(client, credentials)}"}
 
 
+def _greeted_transcript(turns: int) -> list[Message]:
+    """A thread that opened with a greeting and then asked the real question, `turns` turns long."""
+    transcript = [
+        Message(role="user", content=GREETING),
+        Message(role="assistant", content="I am well. Ask me about your HR data."),
+    ]
+    for turn in range(1, turns):
+        transcript.append(Message(role="user", content=f"{QUESTION} ({turn})"))
+        transcript.append(Message(role="assistant", content=ANSWER))
+    return transcript
+
+
 def _new_thread(client: TestClient, headers: dict[str, str], title: str = "first message") -> str:
     """Create a conversation and return its thread id."""
     response = client.post("/conversations", json={"title": title}, headers=headers)
@@ -551,6 +565,13 @@ def test_health_reports_the_prompt_guardrail_position_as_a_boolean(wiring):
 
     assert body["prompt_guardrails"] is runtime().agent.prompt_guardrails
     assert isinstance(body["prompt_guardrails"], bool)
+
+
+def test_health_reports_the_titling_window(wiring):
+    """The SPA stops asking for a generated title past the window it reads here (#118)."""
+    body = wiring.client.get("/health").json()
+
+    assert body["title_turns"] == runtime().conversations.title_turns
 
 
 def test_login_issues_a_token(wiring):
@@ -1505,6 +1526,107 @@ def test_patch_conversation_keeps_the_title_of_a_thread_never_chatted_in(wiring)
     assert response.status_code == 200
     assert response.json()["title"] == QUESTION
     assert wiring.titler.prompts == []
+
+
+def test_patch_conversation_retitles_after_each_turn_while_the_thread_is_young(tmp_path):
+    """A thread that opened with a greeting is renamed from the question that followed (#118)."""
+    window = runtime().conversations.title_turns
+    transcripts = FakeTranscripts()
+    titler = FakeTitler()
+    client = _client(tmp_path, titler=titler, transcript=transcripts)
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers, title=GREETING)
+
+    for turn in range(1, window + 1):
+        transcripts.stored[thread_id] = _greeted_transcript(turn)
+        titler.answer = f"{GENERATED_TITLE} {turn}"
+
+        response = client.patch(f"/conversations/{thread_id}", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json()["title"] == f"{GENERATED_TITLE} {turn}"
+    assert GREETING in titler.prompts[-1]
+    assert QUESTION in titler.prompts[-1]
+
+
+def test_patch_conversation_stops_titling_a_thread_past_the_window(tmp_path):
+    window = runtime().conversations.title_turns
+    transcripts = FakeTranscripts()
+    titler = FakeTitler(answer="Settled label")
+    client = _client(tmp_path, titler=titler, transcript=transcripts)
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers, title=GREETING)
+    transcripts.stored[thread_id] = _greeted_transcript(window)
+    settled = client.patch(f"/conversations/{thread_id}", headers=headers).json()["title"]
+
+    transcripts.stored[thread_id] = _greeted_transcript(window + 1)
+    titler.answer = "A later subject"
+    response = client.patch(f"/conversations/{thread_id}", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["title"] == settled == "Settled label"
+    assert len(titler.prompts) == 1
+
+
+def test_patch_conversation_with_a_title_is_the_readers_own_rename(wiring):
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers, title=QUESTION)
+
+    response = wiring.client.patch(
+        f"/conversations/{thread_id}", json={"title": " Q3 comp\nreview "}, headers=headers
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Q3 comp review"
+    assert wiring.titler.prompts == []
+
+
+def test_a_readers_rename_is_never_overwritten_by_a_later_generated_title(wiring):
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers, title=QUESTION)
+    wiring.client.patch(
+        f"/conversations/{thread_id}", json={"title": RENAMED}, headers=headers
+    )
+    wiring.transcripts.stored[thread_id] = list(TRANSCRIPT)
+
+    response = wiring.client.patch(f"/conversations/{thread_id}", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["title"] == RENAMED
+    listed = wiring.client.get("/conversations", headers=headers).json()
+    assert listed[0]["title"] == RENAMED
+
+
+def test_patch_conversation_refuses_a_blank_title_and_changes_nothing(wiring):
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers, title=QUESTION)
+
+    response = wiring.client.patch(
+        f"/conversations/{thread_id}", json={"title": "   "}, headers=headers
+    )
+
+    assert response.status_code == 400
+    assert wiring.client.get(f"/conversations/{thread_id}", headers=headers).json()["title"] == (
+        QUESTION
+    )
+
+
+def test_patch_conversation_with_a_title_on_a_foreign_thread_renames_nothing(wiring):
+    alice_headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, alice_headers, title=QUESTION)
+    bob_headers = _headers(wiring.client, BOB)
+
+    foreign = wiring.client.patch(
+        f"/conversations/{thread_id}", json={"title": RENAMED}, headers=bob_headers
+    )
+    missing = wiring.client.patch(
+        "/conversations/no-such-thread", json={"title": RENAMED}, headers=bob_headers
+    )
+
+    assert foreign.status_code == missing.status_code == 404
+    assert foreign.json() == missing.json()
+    kept = wiring.client.get(f"/conversations/{thread_id}", headers=alice_headers)
+    assert kept.json()["title"] == QUESTION
 
 
 def test_a_generated_title_is_stored_stripped_of_control_characters(tmp_path):
