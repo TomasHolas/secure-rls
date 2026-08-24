@@ -5,6 +5,10 @@
  * the model's statement, layers 2, 2.5, 3 and 4, and the rows that survive them. The copy is one
  * line per layer from the README's security table, so the screen and the docs cannot drift.
  *
+ * The six steps themselves live in `pipelineSteps.ts`, which `chat/PipelineStrip` reads too: this
+ * canvas is the MAP of the path and the strip is the JOURNEY one statement took down it, and two
+ * drawings of one enforcement path may not keep two copies of its labels.
+ *
  * It is the *static* pipeline, and that is why it is allowed to look like a plan: the order is
  * fixed in `db.py` and `security.py` and holds for every question, unlike an agent's run, whose
  * next tool is decided by what the last one returned (issue #91 rejected step rings for exactly
@@ -39,6 +43,8 @@ import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 
 import { Icon } from "./Icon";
+import { PIPELINE_STEPS } from "./pipelineSteps";
+import type { PipelineStep } from "./pipelineSteps";
 import { Pill } from "./Pill";
 
 /** How far a connector's control points reach along the gap it crosses. */
@@ -51,83 +57,11 @@ const DRAG_SLOP = 3;
 /** The gap a dragged card keeps from the canvas edge, in px. */
 const DRAG_INSET = 8;
 
-type PipelineStep = {
-  id: string;
-  /** Centre of the card as a 0-1 fraction of the canvas width, so the flow scales with it. */
-  x: number;
-  /** The card's kind pill: the layer this step is, where it is one. */
-  kind: string;
-  icon: string;
-  /** A token holding this step's hue; only colours our own token set already ships. */
-  hue: string;
-  title: string;
-  /** The mechanism in one line, from the README's five-layer table. */
-  mechanism: string;
-};
-
-const STEPS: PipelineStep[] = [
-  {
-    id: "sql",
-    x: 0.5,
-    kind: "input",
-    icon: "bot",
-    hue: "var(--caution-500)",
-    title: "The model writes SQL",
-    mechanism:
-      "Layer 1 bound the tenant from the verified JWT by closure - it is never in this SQL.",
-  },
-  {
-    id: "validate",
-    x: 0.42,
-    kind: "layer 2",
-    icon: "filter",
-    hue: "var(--chart-1)",
-    title: "Validation",
-    mechanism: "sqlglot parse plus an allowlist: one SELECT over employees, and nothing else.",
-  },
-  {
-    id: "authorizer",
-    x: 0.58,
-    kind: "layer 2.5",
-    icon: "database",
-    hue: "var(--chart-5)",
-    title: "Engine authorizer",
-    mechanism:
-      "SQLite set_authorizer re-applies that allowlist in the engine, on a file opened mode=ro.",
-  },
-  {
-    id: "scope",
-    x: 0.42,
-    kind: "layer 3",
-    icon: "git-branch",
-    hue: "var(--chart-6)",
-    title: "Scoped execution",
-    mechanism:
-      "Every employees reference becomes a tenant-scoped subquery, the tenant bound, never interpolated.",
-  },
-  {
-    id: "egress",
-    x: 0.58,
-    kind: "layer 4",
-    icon: "check",
-    hue: "var(--chart-7)",
-    title: "Egress check",
-    mechanism:
-      "Proven structurally before the query runs, every returned tenant_id re-checked after. Fail closed.",
-  },
-  {
-    id: "rows",
-    x: 0.5,
-    kind: "result",
-    icon: "users",
-    hue: "var(--positive-500)",
-    title: "Only the caller's rows",
-    mechanism: "Each layer above refuses on its own, so nothing foreign can reach the answer.",
-  },
-];
-
 /** The pipeline is a chain, so the edges are the consecutive pairs of it. */
-const EDGES = STEPS.slice(1).map((step, index) => ({ from: STEPS[index].id, to: step.id }));
+const EDGES = PIPELINE_STEPS.slice(1).map((step, index) => ({
+  from: PIPELINE_STEPS[index].id,
+  to: step.id,
+}));
 
 const LEAD =
   "Every question that reaches the data runs down this path, in this order, server-side. Select a step to light what it connects to - or drag a card.";
@@ -265,7 +199,7 @@ export function PipelineCanvas() {
             );
           })}
         </svg>
-        {STEPS.map((step) => {
+        {PIPELINE_STEPS.map((step) => {
           const offset = offsets[step.id];
           const active = selected === step.id;
           return (
