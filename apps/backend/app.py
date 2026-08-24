@@ -576,7 +576,7 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        """Liveness for the demo runbook and compose health checks; open by design."""
+        """Liveness for the pre-call check and compose health checks; open by design."""
         return {"status": "ok", "version": API_VERSION}
 
     @app.post("/login")

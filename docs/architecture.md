@@ -113,7 +113,7 @@ own-tenant sample rows; retrieval over `notes` is the RAG component
 
 | Assignment requirement | Where satisfied |
 |---|---|
-| Public GitHub repo, README | repo root; README lands in M6 |
+| Public GitHub repo, README | repo root; [README.md](../README.md) |
 | Python 3.10+, open-source libs, Ollama local LLM | backend is Python 3.12; Ollama endpoint via `OLLAMA_BASE_URL` |
 | Commit history showing iteration | branch → PR → merge per milestone, small commits, issue-linked |
 | RLS: LLM never accesses unauthorized rows | the four layers above + adversarial tests + eval suite |
