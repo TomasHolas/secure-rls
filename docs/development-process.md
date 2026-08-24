@@ -21,7 +21,7 @@ This repo was built by AI agents (Claude Code), design-first.
   amendments carry the real decisions. Index: [INDEX.md](INDEX.md).
 - **A GitHub issue queue as the work plan.** Epics #2-#7 track the first
   implementation issues #13-#32, and the later waves filed their own — the queue
-  has run to #135. Each issue names its preflight reading and its **binding
+  has run past #140. Each issue names its preflight reading and its **binding
   contracts** — signatures and data shapes that are law for parallel work.
   Changing one means amending the ADR and the issue text first, then the code.
 - **Branch to PR to merge, per issue, with CI gating.** No commits to `main`.
@@ -50,9 +50,12 @@ Network-free, key-free, no Ollama — the deterministic layers are testable
 without any model, which is the whole point of
 [ADR 0004](decisions/0004-testing-and-eval-strategy.md).
 
+This page is the one place the totals are stated, so no other doc can drift from
+them:
+
 ```bash
-cd apps/backend && uv run pytest -q     # 1026 tests
-cd apps/frontend && npm test            # 310 tests, 20 files
+cd apps/backend && uv run pytest -q     # 1038 tests
+cd apps/frontend && npm test            # 342 tests, 21 files
 ```
 
 The backend suite is weighted toward the boundary: 272 tests on the SQL
@@ -109,11 +112,18 @@ Two results are worth stating plainly rather than burying:
 In the off position, the eight attacks that did not hold are all the same event
 and none is a leak: a multi-turn scenario grew past the 16384-token context bound
 and the endpoint refused the request, so the turn failed closed with zero foreign
-rows (issue #131).
+rows. That is now fixed — a thread too long for one call drops its oldest whole
+turns and reports `history_trimmed`, while the checkpointer keeps everything
+([issue #131](https://github.com/TomasHolas/secure-rls/issues/131),
+[ADR 0011](decisions/0011-agent-design.md) as amended) — so the off-position
+report predates the fix.
 
-Both reports carry a dataset caveat: they grade the dataset committed at the
-time, and [issue #89](https://github.com/TomasHolas/secure-rls/issues/89)
-regenerates that dataset, so they will be re-run once that lands.
+Each report grades the dataset committed when it ran, and the dataset was
+regenerated on 2026-08-22
+([issue #89](https://github.com/TomasHolas/secure-rls/issues/89), now closed):
+the off-position run is from after that and grades the committed CSV, while the
+guardrails-on run is from before it and has not been re-run. Its own caveat line
+says so.
 
 ### The model gate
 
@@ -155,9 +165,9 @@ pushes only, after all five CI jobs pass
 
 | Job | What it proves |
 |---|---|
-| `backend (ruff + pytest)` | Lint clean, 1026 tests green |
+| `backend (ruff + pytest)` | Lint clean, the whole backend suite green |
 | `dataset (regenerate + diff)` | `employees.csv` and `poisoned_manifest.json` are exactly what the seeded generator produces — nothing hand-edited |
-| `frontend (build)` | `tsc` + `vite build` succeed, 310 vitest tests green |
+| `frontend (build)` | `tsc` + `vite build` succeed, the vitest suite green |
 | `evals (mocked harness)` | The evaluation harness still runs: its ask list renders, then the full suite drives 171 turns through the real graph and layers on a scripted model, failing on any leak or any failed ask |
 | `images (compose build)` | Both Dockerfiles build |
 | `cd (publish images to GHCR)` | Backend and frontend images pushed to `ghcr.io/tomasholas/secure-rls-*`, tagged `latest` and the commit SHA |

@@ -52,9 +52,14 @@ patch — a catch-all that turns an unexpected tool failure into a retry, every
 one `done` frame — plus replaying the *text* of a partial turn so the transcript
 stops hiding what the graph still remembers
 ([#66](https://github.com/TomasHolas/secure-rls/issues/66), amending ADRs
-0010-0012). A related one: the session used to sign users out mid-demo, and the
-30-minute expiry turned out to be justified by nothing but a code sample in a
-tutorial ([#71](https://github.com/TomasHolas/secure-rls/issues/71)).
+0010-0012).
+
+**Session expiry (M4).** The session signed users out mid-demo, on a 30-minute
+expiry that turned out to be justified by nothing but a code sample in a
+tutorial. It became a sliding session with a sourced lifetime
+([#71](https://github.com/TomasHolas/secure-rls/issues/71),
+[ADR 0009](decisions/0009-auth-implementation.md)) — whose own limitation is
+below.
 
 **Model selection (M2/M5).** No local fallback exists — the dev laptop cannot run
 a useful model — so the endpoint is a second machine and the pick had to be
@@ -68,9 +73,6 @@ model, which is why the pre-call health check verifies **two** models rather tha
 one.
 
 ## Known limitations
-
-Stated plainly, because a case study that only lists strengths is not
-trustworthy.
 
 - **The sliding session is an idle timeout with no absolute cap.** A
   continuously used session renews indefinitely. A stateless token cannot be
@@ -92,16 +94,10 @@ trustworthy.
   another tenant's data. Recorded as a product judgment in
   [ADR 0012](decisions/0012-api-and-chat-ux.md), against OWASP's
   generic-error default.
-- **Replay restores the whole turn.** Reopening a thread brings back the
-  questions, the answers, the model's reasoning per round, every tool call with
-  the arguments it wrote, the executed SQL and result window, the retries with
-  their reasons, the refusals with the layer that fired, and the terminal frame
-  with the turn's cost and prompt-guardrail position — folded through the same
-  code the live stream goes through, so a past turn renders in the same bricks.
-  What a replayed turn cannot show is how long a thought took: that span is
-  measured in the browser, not sent. History is capped per turn and per thread,
-  and a turn the caps trimmed says so on a pill
-  ([ADR 0012](decisions/0012-api-and-chat-ux.md), issue #90).
+- **Replay is not the live turn, in two ways.** A replayed turn cannot show how
+  long a thought took — that span is measured in the browser, not sent — and
+  history is capped per turn and per thread, so a long turn replays trimmed and
+  says so on a pill ([ADR 0012](decisions/0012-api-and-chat-ux.md), issue #90).
 - **Groundedness is enforced by a nudge, not a proof.** The evaluation run
   caught a turn answering from conversation context without querying anything —
   nothing can leak that way, since whatever is in context is already the

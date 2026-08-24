@@ -15,8 +15,9 @@ entirely with agentic tooling.
 - **Data**: `employees.csv`, 1000 seeded rows, tenants `acme` / `beta` / `gamma`
 - **Deployment**: `docker compose up`, images published to GHCR by CI
 
-Depth lives in `docs/`: [architecture](docs/architecture.md) ·
-[HTTP API](docs/api.md) · [challenges and known limitations](docs/challenges.md) ·
+Depth lives in `docs/`: [the assignment](docs/requirements.md) ·
+[architecture](docs/architecture.md) · [HTTP API](docs/api.md) ·
+[challenges and known limitations](docs/challenges.md) ·
 [development process](docs/development-process.md) ·
 [14 ADRs, indexed](docs/INDEX.md).
 
@@ -26,10 +27,9 @@ Depth lives in `docs/`: [architecture](docs/architecture.md) ·
 LLM-fillable tool argument, never read from a request body. The model cannot
 choose a tenant because the tenant is not an input anywhere the model or the
 client can reach. On top of that, five enforcement points with no single point of
-trust ([ADR 0002](docs/decisions/0002-defense-in-depth-rls.md)) — layer 3 scopes
-the query, layer 4 independently proves it did, and layers 2 and 2.5 filter no
-rows themselves but remove the query shapes that could sidestep layer 3
-([mechanisms in full](docs/architecture.md#the-five-rls-defense-layers-adr-0002)):
+trust — layer 3 scopes the query, layer 4 independently proves it did, and layers
+2 and 2.5 filter no rows themselves but remove the query shapes that could
+sidestep layer 3:
 
 | # | Layer | Where | Mechanism, in one line |
 |---|---|---|---|
@@ -39,57 +39,35 @@ rows themselves but remove the query shapes that could sidestep layer 3
 | 3 | Scoped execution | `db.py` | Every `employees` reference is rewritten to a tenant-scoped subquery, the tenant **bound** and never interpolated |
 | 4 | Egress check | `db.py` | The scoping is proven structurally before the query runs, and every returned `tenant_id` is re-checked after. Fail closed |
 
-Around the layers: a query timeout and `sqlite3_limit` caps as DoS controls, a
-result-row cap with an explicit truncation signal
-([ADR 0007](docs/decisions/0007-result-size-handling.md)), and an audit log of
-every generated SQL, verdict and rewrite that also feeds the UI trace. Retrieval
-is scoped by the same identity — `tenant_id` is a **partition key** in the
-sqlite-vec index, so foreign vectors never participate in scoring
-([ADR 0010](docs/decisions/0010-tenant-filtered-rag.md)).
-
-**Prompt instructions are not a layer — and you can switch them off to check.**
-`agent.prompt_guardrails` (default **on**) removes the two self-policing blocks
-from the prompt and nothing else, so the model attempts the attack it would
-otherwise decline and a layer refuses it by name. The position rides on every
-`done` frame, on `GET /health` and in the chat header, and the adversarial suites
-run in both positions on every `pytest`, which is what proves the switch reaches
-no layer. Every tunable is in [`runtime.json`](apps/backend/runtime.json).
+Prompt instructions are not a layer — and `agent.prompt_guardrails` (default
+**on**) switches the two self-policing blocks off, so the model attempts the
+attack it would otherwise decline and a layer refuses it by name. The mechanisms,
+the hardening around the layers and the equally scoped retrieval path in full:
+[architecture.md](docs/architecture.md#the-five-rls-defense-layers-adr-0002).
 
 ## Architecture
 
 ```
 browser -> React SPA (:3002)  login, streaming chat, Records and Notes tabs
         -> FastAPI (:8002)    app.py - thin handlers; tenant read from the JWT
-        -> agent.py           explicit LangGraph graph; five tools bound to the
-                              tenant by closure: query_db, get_stats, plot,
-                              detect_anomalies, search_notes
-        -> security.py        SQL validator                            (L2)
-        -> db.py              authorizer, scoped rewrite, egress check (L2.5-L4)
-        -> SQLite             employees.db, vectors.db, audit.db
+        -> agent.py           LangGraph graph; every tool bound to that tenant
+           |                  by closure
+           |- query_db     -> security.py (L2) -> db.py (L2.5-L4) -> employees.db
+           |- get_stats / plot / detect_anomalies
+           |               -> analytics.py fixed templates -> db.py
+           |- search_notes -> rag.py partitioned KNN        -> db.py -> vectors.db
+        -> browse.py          Records and Notes listings: the one unscoped read
+        -> conversations.py   threads and their turns, JWT-scoped (state.db)
                               (LLM and embedding calls go to OLLAMA_BASE_URL)
 ```
 
-One turn is one SSE stream of typed trace events, so the trace the UI renders
-**is** the transport, and the server keeps those events — reopening a thread
-replays the turn through the same code rather than a summary of it
-([docs/api.md](docs/api.md)). The graph is explicit rather than the prebuilt
-ReAct helper, memory is keyed by a thread id derived server-side from the
-authenticated identity, security rejections are terminal while honest errors
-retry, and per-turn bounds stop a runaway turn
-([ADR 0011](docs/decisions/0011-agent-design.md), tool contracts in
-[architecture.md](docs/architecture.md#agent-tool-set)).
-
-Two of the SPA's three tabs are the **control group** for the security claim:
-Records and Notes show the *whole* dataset — all 1000 rows, all three tenants —
-while the Notes search runs the agent's own scoped retrieval, so reading beta's
-planted injection payload in the list and then failing to retrieve it as
-`alice@acme` is one screen ([ADR 0014](docs/decisions/0014-records-and-notes-browsing.md),
-and [architecture.md](docs/architecture.md#browsing-without-the-agent) for the one
-deliberately unscoped read those listings use). `employees.csv` is 1000 rows from
-seed 42 across `acme` (450), `beta` (350) and `gamma` (200), calibrated to cited
-sources and fully synthetic, **15 of them (1.5%) carrying deliberate
-prompt-injection payloads** listed openly in `apps/backend/poisoned_manifest.json`
-([ADR 0008](docs/decisions/0008-dataset-generation.md)).
+One turn is one SSE stream of typed trace events, and the server keeps those
+events, so reopening a thread replays the turn through the same code
+([docs/api.md](docs/api.md)). The graph, its two-tier retry policy, its memory
+and the per-turn bounds are
+[ADR 0011](docs/decisions/0011-agent-design.md); the tool contracts, the
+components, the browse tabs as the security claim's **control group** and the
+dataset are in [architecture.md](docs/architecture.md).
 
 ## Quickstart
 
@@ -113,29 +91,25 @@ OLLAMA_BASE_URL=http://localhost:11434
 JWT_SECRET=
 ```
 
-The endpoint is config, never code, and in the author's setup a stronger laptop
-on a private tailnet serves it
-([ADR 0005](docs/decisions/0005-ollama-endpoint-and-model.md)).
-
-> Ollama binds `127.0.0.1` by default; serving it to another host means
-> `OLLAMA_HOST=0.0.0.0`, which exposes an **unauthenticated** inference API to
-> every network that host is on. Do that only behind a private overlay network
-> (Tailscale/WireGuard) or a host firewall admitting the one client, never on an
-> untrusted LAN. `OLLAMA_BASE_URL` lives in the gitignored `.env`, so no endpoint
-> address is ever committed.
-
-The endpoint must serve **two** models, because a chat model asked to embed
-answers "this server does not support embeddings":
+The endpoint is config, never code
+([ADR 0005](docs/decisions/0005-ollama-endpoint-and-model.md)), and it must serve
+**two** models — a chat model asked to embed answers "this server does not
+support embeddings":
 
 ```bash
 ollama pull huihui_ai/qwen3-abliterated:30b-a3b   # agent.model, the default
 ollama pull nomic-embed-text                      # agent.embed_model, no fallback
 ```
 
-The chat model is switchable at runtime from a UI picker populated live from the
-endpoint, and `agent.model` is only a preference — an endpoint not serving it
-answers on a served chat model and names the id that ran. Model choice never
-affects RLS: every layer is model-agnostic.
+> Ollama binds `127.0.0.1`; serving it to another host means
+> `OLLAMA_HOST=0.0.0.0`, which exposes an **unauthenticated** inference API to
+> every network that host is on. Do that only behind a private overlay network
+> (Tailscale/WireGuard) or a host firewall admitting the one client, never on an
+> untrusted LAN.
+
+The chat model is switchable at runtime from a UI picker, and `agent.model` is
+only a preference. Model choice never affects RLS: every layer is
+model-agnostic.
 
 ### 2. Run — compose (the primary path)
 
@@ -200,8 +174,8 @@ hold for any model output, so they are proved deterministically and without a
 model, while the model's usefulness on this dataset only a live run can show.
 
 ```bash
-cd apps/backend && uv run pytest -q     # 1026 tests, network-free, no Ollama
-cd apps/frontend && npm test            # 310 tests, 20 files
+cd apps/backend && uv run pytest -q     # the layers and the API edge, no Ollama
+cd apps/frontend && npm test            # the bricks, the session, the trace fold
 cd apps/backend && uv run python -m evals --mocked         # the harness, no endpoint
 cd apps/backend && uv run python -m evals --no-guardrails  # live, self-policing off
 ```
@@ -221,18 +195,10 @@ both runs are committed ([`report.md`](apps/backend/evals/report.md),
 | Wall time | 39.3 min, 13.8 s per turn | 31.0 min, 10.9 s per turn |
 
 The off position is the run worth having: with the guardrails on, an attack the
-model declines itself never reaches a layer. Its eight non-held attacks are one
-event and none is a leak — a multi-turn scenario grew past the 16384-token
-context bound and the endpoint refused the request, so the turn failed closed
-with zero foreign rows (issue #131). With the self-policing rules removed the
-model attempts what it used to decline and the layers still return nothing
-foreign: ADR 0002's central claim measured rather than asserted.
-
-Ground truth is computed **independently with pandas**, never through this
-project's own SQL path, and the leak check is mechanical rather than judged. The
-committed model gate found **zero foreign rows for either candidate model** and
-drove the terminal-refusal path live. Methodology, the graded failures, the gate
-table and the CI jobs:
+model declines itself never reaches a layer, and with them off the model attempts
+it and the layers still return nothing foreign — zero leaks either way, which is
+ADR 0002's central claim measured rather than asserted. Methodology, the graded
+failures, the test totals, the model gate and the CI jobs:
 [development-process.md](docs/development-process.md#tests-and-evaluation).
 
 ## Assignment deliverables
@@ -247,75 +213,58 @@ The five required files all live in **`apps/backend/`**:
 | `employees.csv` | [`apps/backend/employees.csv`](apps/backend/employees.csv) — 1000 seeded rows |
 | `requirements.txt` | [`apps/backend/requirements.txt`](apps/backend/requirements.txt) — generated by `uv export`; `pyproject.toml` is the source of truth |
 
-The assignment is distilled in [docs/requirements.md](docs/requirements.md), and
-every requirement is mapped to where it is satisfied in
-[architecture.md](docs/architecture.md#assignment-compliance-map). The README
-requirement itself — architecture, setup, tenant credentials, challenges, time
-spent — is this file.
+Every requirement is mapped to where it is satisfied in
+[architecture.md](docs/architecture.md#assignment-compliance-map).
 
 ## Agentic development
 
 This repo was built by AI agents (Claude Code), design-first: `CLAUDE.md` as
 machine-readable project memory, 14 ADRs written before the code they govern, a
-GitHub issue queue whose issues carry binding contracts for parallel work, one
-branch and one PR per issue with CI gating, and a bug-triage wave driven by live
-testing. ~225 commits, ~70 merged PRs, no commit to `main`. The method and its
-evidence: [docs/development-process.md](docs/development-process.md).
+GitHub issue queue whose issues carry binding contracts for parallel work, and
+one branch and one PR per issue with CI gating — no commit to `main`. The method
+and its evidence: [docs/development-process.md](docs/development-process.md).
 
 ## Challenges
 
-One paragraph per wave; full write-ups in
+Challenge, decision, outcome — one bullet per wave; full write-ups in
 [docs/challenges.md](docs/challenges.md#challenges).
 
-**Design (M0).** The problem was deciding what counts as a security boundary, not
-adding a WHERE clause. Prompt instructions are demonstrably not one — OWASP cites
-an 89% attack success rate on GPT-4o for persistent attackers — so every layer had
-to be something a model cannot influence: hence the tenant as a closure, and an
-egress check whose job is to catch our own bugs.
-
-**RLS core (M1).** SQLite has no `CREATE POLICY`, so RLS had to be emulated and
-made impossible to route around; AST rewrite beat per-tenant views because
-enforcement becomes a pure testable function of (SQL, tenant). Two problems
-surfaced only in the writing: an aggregate-only result has no `tenant_id` to
-check, so the scoping is proven *structurally* before execution, and a
-model-written placeholder would shift which value the engine binds where, so bare
-parameters are rejected ([#45](https://github.com/TomasHolas/secure-rls/issues/45)).
-
-**Retrieval and toolchain (M2).** An authorizer that denies `sqlite-vec`'s
-`_rowids` shadow read segfaults the process — exit 139, not an exception — so the
-vector index lives in its own `vectors.db` the generated-SQL connection cannot
-reach. Retrieval then worked on one machine and not another: `sqlite-vec` needs
-loadable-extension support that the python.org macOS build compiles out, hence
-`python-preference = "only-managed"`.
-
-**Live testing (M4/M5).** An unanticipated tool exception escaped the graph, the
-SSE response died mid-flight, the UI left every step at "running", and the next
-turn had the model inventing a confident false explanation for a failure it could
-not see. The fix was three invariants rather than one patch
-([#66](https://github.com/TomasHolas/secure-rls/issues/66), amending ADRs
-0010-0012).
-
-**Model selection (M2/M5).** No local fallback exists — the dev laptop cannot run
-a useful model — so the pick was measured over the tailnet: a 30B MoE model came
-out 2.6x faster per ask at the median than a 27B dense one at comparable quality,
-and two faster candidates were excluded for cause. The gate also caught an
-endpoint serving four chat models and no embedding model, which is why the health
-check verifies two.
+- **Design (M0): what counts as a security boundary.** Prompt instructions
+  demonstrably do not (OWASP cites an 89% attack success rate on GPT-4o for
+  persistent attackers), so every layer had to be something a model cannot
+  influence — the tenant as a closure, and an egress check whose job is to catch
+  our own bugs.
+- **RLS core (M1): SQLite has no `CREATE POLICY`.** RLS is emulated by AST
+  rewrite rather than per-tenant views, which makes enforcement a pure testable
+  function of (SQL, tenant) — and forced two extras: a structural scope proof for
+  results with no `tenant_id` to check, and rejecting model-written placeholders
+  ([#45](https://github.com/TomasHolas/secure-rls/issues/45)).
+- **Retrieval and toolchain (M2): `sqlite-vec` segfaults when its shadow read is
+  denied.** Exit 139, not an exception, so the vector index moved into its own
+  `vectors.db` the generated-SQL connection cannot reach; the same wave pinned
+  `python-preference = "only-managed"`, because the python.org macOS build
+  compiles out the loadable-extension support retrieval needs.
+- **Live testing (M4/M5): an unanticipated tool exception killed the stream.**
+  The UI left every step at "running" and the next turn invented a false
+  explanation for it, so the fix was three transport invariants rather than one
+  patch ([#66](https://github.com/TomasHolas/secure-rls/issues/66), amending ADRs
+  0010-0012).
+- **Model selection (M2/M5): no local fallback exists.** The pick was measured
+  over the tailnet instead — a 30B MoE model came out 2.6x faster per ask at the
+  median than a 27B dense one at comparable quality — and the gate caught an
+  endpoint serving four chat models and no embedding model, which is why the
+  health check verifies two.
 
 ## Known limitations
 
-Stated plainly, because a case study that only lists strengths is not
-trustworthy. Each is written up in
+The ones that would matter first in production. The full list, each with its
+reasoning and the ADR that records it:
 [docs/challenges.md](docs/challenges.md#known-limitations).
 
-- **The sliding session is an idle timeout with no absolute cap**, and there is no revocation.
 - **Prompt rules are UX guidance, not enforcement** — every security claim here is independent of them.
-- **Demo credentials are in this README on purpose**; the signing key is the secret, and it has no committed default.
-- **Passwords use PBKDF2, not Argon2id** — sanctioned, stdlib-only, one dependency away from the upgrade.
-- **Trace detail is deliberately visible to the authenticated tenant**: which layer fired and why, never another tenant's data.
-- **Replay restores the whole turn** except how long a thought took, and is capped per turn and per thread.
 - **Groundedness is a nudge, not a proof** — a turn with no tool result is re-asked once, but a mis-transcribed number is not caught.
-- **`sqlite-vec` is pre-v1**, so its version is pinned exactly and the isolation invariant is retested on any bump.
+- **The sliding session is an idle timeout with no absolute cap**, and there is no revocation.
+- **Demo credentials are in this README on purpose**; the signing key is the secret, and it has no committed default.
 - **The dataset is one table**, and generated rather than observed.
 - **Not built for scale**: one SQLite file, one process, no rate limiting. PostgreSQL with native `CREATE POLICY` is the production evolution.
 

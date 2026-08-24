@@ -13,31 +13,43 @@ product: no path exists from the LLM to another tenant's rows.
    browser ──────────────┬──────────────────────────────────┬─────────────
                          v                                  v
 React SPA (:3002)   POST /login                       POST /chat   (Bearer JWT)
-                         │                                  │
+   Chat / Records /      │                                  │
+   Notes tabs            v                                  v
 FastAPI (:8002)     auth.py                            app.py  (thin handler)
-                    PBKDF2 check                             │
-                    JWT {sub, tenant_id}                     │  tenant from JWT
-                                                             v
+                    PBKDF2 check                             │  tenant from JWT
+                    JWT {sub, tenant_id}                     v
                                              agent.py — explicit LangGraph graph
                                              reason -> validate -> execute_tool
                                                     -> audit -> respond
                                                              │  tools bound with
                                                              │  tenant_id by closure
-                                                             v
-                       query_db / get_stats / plot / detect_anomalies / search_notes
-                                                             │
-                                             security.py — SQL validator      (L2)
-                                                             │
-                                             db.py — scoped executor  (L2.5, L3, L4)
-                                               authorizer + mode=ro + limits
-                                               AST rewrite, tenant bound
-                                               structural scope proof
-                                               egress row check
-                                                             │
-                                          SQLite: employees.db   vectors.db   audit.db
-                                                             │
-  SSE stream of typed trace events  <────────────────────────┘
+          ┌──────────────────────┬───────────────────────────┴────────────┐
+          v                      v                                        v
+     query_db             get_stats / plot /                         search_notes
+     model-written SQL    detect_anomalies                           retrieval
+          │                      │                                        │
+  security.py (L2)         analytics.py                                rag.py
+  parse + allowlist        typed args into                       tenant-partitioned
+          │                fixed templates                        KNN, partition key
+          │                      │                                        │
+          └──────────────────────┴─────────────┬──────────────────────────┘
+                                               v
+                        db.py — the only module that opens a connection
+                          authorizer + mode=ro + limits            (L2.5)
+                          AST rewrite, tenant bound                (L3)
+                          structural scope proof + egress row check (L4)
+                                               │
+                        SQLite: employees.db   vectors.db   audit.db
+                                               │
+  SSE stream of typed trace events  <──────────┘
   token / node_start / tool_call / tool_result / security_event / retry / done
+
+  Paths that never reach the agent:
+  GET /records, /notes  ─> browse.py ─> db.execute_unscoped_browse ─> employees.db
+                           the control group: every tenant's rows, by design
+  GET /notes/search     ─> browse.py ─> rag.py — scoped, the agent's own path
+  /conversations        ─> conversations.py + turns.py + titles.py ─> state.db
+                           app state, JWT-scoped; never a tenant-data path
 
   agent LLM + embedding calls ───> Ollama endpoint (OLLAMA_BASE_URL)
 ```
@@ -48,9 +60,9 @@ keeps, so reopening the thread replays that turn through the same code rather
 than a summary of it. The frames, their two invariants and every route are in
 [api.md](api.md).
 
-`search_notes` is the one tool that does not pass the SQL validator: it takes the
-retrieval path instead — `rag.py`'s tenant-partitioned KNN, whose storage and
-queries still go through `db.py` (ADR 0010).
+`search_notes` is the one tool with no SQL for layer 2 to read: its storage and
+its queries still go through `db.py`, and its scoping is the partition key
+(ADR 0010).
 
 The eval harness (`evals/`) imports the same `agent.py` / `db.py` / `security.py`
 modules — there is no second code path to the data (lego-brick rule).
@@ -76,14 +88,12 @@ CTE shadowing `employees`, no bound parameter in generated SQL.
 Layer 4a is what makes 4b sound. An aggregate-only result (`SELECT AVG(salary)
 FROM employees`) has no `tenant_id` column, so the row check has nothing to
 compare and degrades to a no-op — silently absent on exactly the queries the
-agent asks most. Because 4a runs on every call, that no-op is safe: the scoping
-is proven structurally, from the AST that is about to execute, rather than
-assumed from the fact that the rewrite was called. The placeholder count is part
-of the proof (ADR 0002, "Declared filter parameters"): a `?` the model smuggled
-past layer 2 would shift which value the engine binds where, so an undeclared
-placeholder fails the count and the query never runs. A template that binds its
-own filter values must additionally keep them in the root WHERE clause, which
-SQL renders after the FROM that carries the tenant.
+agent asks most. The pre-check closes that gap: it proves the scoping from the
+AST that is about to execute rather than assuming it from the fact that the
+rewrite was called, and it counts the bound parameters, so SQL the model smuggled
+past layer 2 cannot shift which value the engine binds where. The exact
+conditions, including what a trusted template may declare, are in
+[ADR 0002](decisions/0002-defense-in-depth-rls.md).
 
 The retrieval path is scoped by the same five points: notes are embedded once at
 startup into a sqlite-vec `vec0` table whose `tenant_id` is a **partition key**,
@@ -113,18 +123,26 @@ tunable lives in [`apps/backend/runtime.json`](../apps/backend/runtime.json).
 
 ## Components
 
-| Component | Responsibility |
-|---|---|
-| `apps/backend/app.py` | FastAPI edge: `/login`, `/chat` (SSE stream of typed trace events, ADR 0012), `/conversations` (JWT-scoped list/create/replay/rename/delete), `/records` and `/notes` (the browse tabs, ADR 0014), `/models` (the endpoint's chat-capable models, ADR 0012), `/health`. Thin handlers, no logic. |
-| `apps/backend/auth.py` | Hardcoded demo users (one+ per tenant), password check, JWT issue/verify with `tenant_id` claim. |
-| `apps/backend/agent.py` | Explicit LangGraph graph: system prompt with schema card + per-tenant sample rows, tool definitions, retry policy, multi-turn checkpointer, trace collection, transcript replay from the checkpointer. |
-| `apps/backend/rag.py` | Note embedding (Ollama `/api/embed`) and tenant-partitioned vector search (ADR 0010); storage and queries go through `db.py`. |
-| `apps/backend/security.py` | The SQL validator brick (layer 2). Pure function: SQL text in, validated AST or a typed rejection out. |
-| `apps/backend/db.py` | CSV load, schema, the scoped executor (layers 3+4). The only module that opens a SQLite connection. |
-| `apps/backend/paths.py` | Where every state file lives: the data directory (`SECURE_RLS_DATA_DIR`, defaulting to the backend package so dev needs no variable) and the paths inside it. In the deployment that directory is a named volume, so a rebuild keeps the conversations, the memory, the audit trail and the embeddings (ADR 0013 as amended). |
-| `apps/backend/browse.py` | The Records and Notes tabs' two fixed templates (ADR 0014): allowlisted filters bound as parameters, allowlisted sorts, paging on the ADR 0007 row cap - all through `db.py`. The listings take the one deliberately unscoped read and show every tenant; the notes search stays scoped and delegates to `rag.py`. |
-| `apps/backend/evals/` | Correctness + adversarial suites over the same bricks, run per tenant, plus the M2 model gate; `harness.py` owns the plumbing they share and `report.md` is the committed scorecard (ADR 0004). |
-| `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, streaming chat with live reasoning/SQL trace (the generated and executed statement side by side, tenant scoping highlighted inside the one that ran), conversation history sidebar, tenant badge, charts, transparent security-refusal and truncation states (ADR 0012), and the Chat / Records / Notes tabs that make the isolation checkable without the agent (ADR 0014). |
+One module, one concern — the lego-brick rule, grouped by the layer each brick
+belongs to.
+
+| Layer | Component | Responsibility |
+|---|---|---|
+| Transport | `apps/backend/app.py` | FastAPI edge: `/login`, `/chat` (SSE stream of typed trace events), `/conversations`, `/records` and `/notes`, `/models`, `/health`. Thin handlers, no logic ([api.md](api.md)). |
+| Transport | `apps/backend/auth.py` | Hardcoded demo users, PBKDF2 password check, JWT issue/verify with the `tenant_id` claim (ADR 0009). |
+| Orchestration | `apps/backend/agent.py` | Explicit LangGraph graph: system prompt with schema card + per-tenant sample rows, tool definitions, retry policy, per-turn bounds, trace collection, transcript replay from the checkpointer (ADR 0011). |
+| Orchestration | `apps/backend/titles.py` | The model's few-word label for a thread, sanitized, with the fallback to the title it already has; called by `PATCH /conversations/{id}`, never from the stream. |
+| Data access | `apps/backend/security.py` | The SQL validator brick (layer 2). Pure function: SQL text in, validated AST or a typed rejection out. |
+| Data access | `apps/backend/db.py` | CSV load, schema, the scoped executor (layers 2.5-4), the audit log. The only module that opens a SQLite connection, and the owner of the one unscoped browse read. |
+| Data access | `apps/backend/analytics.py` | Aggregates, Tukey IQR anomalies and chart data: allowlisted arguments into fixed query templates through `db.py`, never generated SQL. |
+| Data access | `apps/backend/rag.py` | Note embedding (Ollama `/api/embed`) and tenant-partitioned vector search (ADR 0010); storage and queries go through `db.py`. |
+| Data access | `apps/backend/browse.py` | The Records and Notes templates (ADR 0014): allowlisted filters bound as parameters, allowlisted sorts, paging on the ADR 0007 row cap. The listings take the unscoped read; the notes search stays scoped and delegates to `rag.py`. |
+| State | `apps/backend/conversations.py` | The thread registry and its per-turn history in its own app-state store `state.db`, every access verified against the JWT identity (ADR 0012 as amended). |
+| State | `apps/backend/turns.py` | What one turn's trace events become in that store, and the caps on it: the same events the stream carries, reduced rather than described a second time. |
+| State | `apps/backend/paths.py` | Where every state file lives: the data directory (`SECURE_RLS_DATA_DIR`, defaulting to the backend package so dev needs no variable) and the paths inside it. In the deployment that directory is a named volume, so a rebuild keeps the conversations, the memory, the audit trail and the embeddings (ADR 0013 as amended). |
+| State | `apps/backend/runtime.py` | The typed view of [`runtime.json`](../apps/backend/runtime.json), where every tunable lives so none is a literal in code. |
+| Presentation | `apps/frontend/` | React SPA on the KB design system (ADR 0006): login, streaming chat with the live reasoning/SQL trace (generated and executed statement side by side, tenant scoping highlighted inside the one that ran), conversation rail, tenant badge, charts, transparent refusal and truncation states (ADR 0012), and the Chat / Records / Notes tabs (ADR 0014). |
+| Verification | `apps/backend/evals/` | Correctness + adversarial suites over the same bricks, run per tenant, plus the model gate; `harness.py` owns the plumbing they share and the reports are the committed scorecards (ADR 0004). |
 
 ## Data model
 
@@ -156,67 +174,43 @@ generator produces.
 | `detect_anomalies(column, group_by?)` | Tukey IQR fences (1.5 x IQR) per group, default department; chosen over z-scores because the salary distribution is lognormal by design (bonus). | Built on the scoped executor |
 | `search_notes(query)` | Semantic search over embedded `notes` (ADR 0010): sqlite-vec `vec0` table with `tenant_id` as partition key — the KNN pre-filter runs before any vector comparison; neutral "no matching notes found" on empty results. | L1 closure + partition-key pre-filter + egress check |
 
-Every tool receives `tenant_id` by closure at bind time. No tool exposes a tenant
-argument, so there is nothing for the model to fill in. `query_db` is the only
-tool that runs model-written SQL, and the trace shows the generated and the
-executed statement side by side with the tenant scoping marked inside the one
-that ran; `plot` fetches its own values and returns a `chart_spec`, so charted
-numbers never pass through the model; `search_notes` answers a miss with a
-neutral "no matching notes found", identical whether nothing matched or the match
-belongs to another tenant.
+**Every tool receives `tenant_id` by closure at bind time, and no tool exposes a
+tenant argument** — there is nothing there for the model to fill in, in any
+position of the prompt guardrails.
 
-The agent is an explicit LangGraph graph rather than the prebuilt ReAct helper,
-so the audit log and the retry counter are first-class graph nodes rather than
-callbacks around a black box (ADR 0011). Multi-turn memory is a SQLite
-checkpointer keyed by a `thread_id` derived server-side from the authenticated
-identity, so conversation state can never cross tenants and a login switch starts
-a fresh thread. Retries are two-tier: **security rejections are terminal** (a
-retry would let the agent probe the boundary), while honest errors and unexpected
-tool failures retry up to `agent.max_tool_retries` (3) with the reason fed back
-to the model. A runaway turn is stopped by the per-turn bounds — generation and
-context caps on the model client, a wall-clock deadline, a tool-round cap — and
-the grounding nudge re-asks a turn that would answer with no successful tool
-result of its own, reporting `grounded` on the `done` frame either way
-(ADR 0011). The system prompt embeds the schema card plus a few own-tenant sample
-rows; retrieval over `notes` is the RAG component (ADR 0010).
+The graph itself, the two-tier retry policy (security rejections terminal,
+honest failures retried), the memory keyed by a server-derived `thread_id`, the
+per-turn bounds and the grounding nudge are
+[ADR 0011](decisions/0011-agent-design.md); the retrieval path is
+[ADR 0010](decisions/0010-tenant-filtered-rag.md).
 
 ## Browsing without the agent
 
-The SPA has three tabs, and two of them are the **control group** for the
-security claim — they show the whole dataset so a human can check the agent
-rather than trust it (ADR 0014):
+The Records and Notes tabs are the **control group** for the security claim: they
+show the whole dataset, so a human can check the agent rather than trust it. The
+boundary runs *inside* those two tabs (ADR 0014):
 
-- **Chat** — the streaming turn: reasoning as it arrives, each tool call with its
-  arguments, the generated and the executed statement side by side with the
-  tenant rewrite highlighted inside the one that ran, result tables, charts,
-  retries, refusals, and what the turn cost in tokens.
-- **Records** — the **whole dataset**: all 1000 rows across all three tenants,
-  paged and filterable, with `tenant_id` a filter of the same kind as
-  `department`. Filter nothing and it says "1,000 rows · all tenants"; pick a
-  tenant and it says "450 rows · tenant acme".
-- **Notes** — the whole corpus the agent retrieves over, with a search box that
-  calls `rag.search_notes_scoped`: literally the same partition-filtered vector
-  search the `search_notes` tool uses, showing the distance it scored each note
-  by. The search is **scoped to your tenant while the list beside it is not**,
-  and that asymmetry is the demonstration: read beta's planted injection payload
-  in the list, search for its exact text as `alice@acme`, get nothing back. Notes
-  carrying a planted payload are badged from `poisoned_manifest.json` across
-  every tenant, so the second-order injection demo is one screen.
+- **Unscoped, deliberately** — the two listings. All 1000 rows across all three
+  tenants and the whole note corpus, with `tenant_id` a bound filter of the same
+  kind as `department`, poisoned notes badged from `poisoned_manifest.json`.
+- **Scoped, the agent's own path** — the notes search. It calls
+  `rag.search_notes_scoped`, the same partition-filtered vector search the
+  `search_notes` tool uses, and shows the distance it scored each hit by.
 
-The isolation you can see, in one session: the tabs show 1000 rows and the agent
-answers 450. Log in as `bob@beta` and the tabs show the same 1000 while the agent
-answers 350. The tabs are also the only place in the app that reads unscoped, and
-it is named as such: `db.execute_unscoped_browse`, called by nothing but the two
-listing templates in `browse.py`. It keeps the validator, the engine authorizer,
-the read-only connection, the limit caps, the query deadline, the row cap and the
-audit row — it drops only the tenant scoping, its structural proof and the tenant
-egress check, because returning every tenant is the point. Tests assert that no
-agent tool is closed over it and that no other module can reach it, so the claim
-being defended — the *agent* cannot leave its tenant — is untouched (ADR 0014).
-Every listing response also names the query parameters it did **not** read, with
-the server's own reason, so a stray parameter is reported rather than silently
-discarded — visible in `curl` or a network tab (`browse.ignored_params`, ADR 0014
-as amended; the box that used to type one on screen was removed on review).
+That asymmetry is the demonstration: read beta's planted injection payload in the
+list, search for its exact text as `alice@acme`, get nothing back — and the tabs
+show 1000 rows while the agent answers 450, or 350 as `bob@beta`.
+
+The unscoped read is named as such — `db.execute_unscoped_browse`, called by
+nothing but the two listing templates in `browse.py`. It keeps the validator, the
+engine authorizer, the read-only connection, the limit caps, the query deadline,
+the row cap and the audit row; it drops only the tenant scoping, its structural
+proof and the tenant egress check, because returning every tenant is the point.
+Tests assert that no agent tool is closed over it and that no other module can
+reach it, so the claim being defended — the *agent* cannot leave its tenant — is
+untouched. Every listing response also names the query parameters it did **not**
+read, so a stray parameter is reported rather than silently discarded
+(`browse.ignored_params`).
 
 ## Assignment compliance map
 
@@ -224,7 +218,7 @@ as amended; the box that used to type one on screen was removed on review).
 |---|---|
 | Public GitHub repo, README | repo root; [README.md](../README.md) |
 | Python 3.10+, open-source libs, Ollama local LLM | Python 3.12; FastAPI, LangGraph, sqlglot, sqlite-vec; endpoint via `OLLAMA_BASE_URL` |
-| Commit history showing iteration | ~225 commits, ~70 merged PRs, one branch per issue — [development-process.md](development-process.md) |
+| Commit history showing iteration | one branch and one PR per issue, no commit to `main` — [development-process.md](development-process.md) |
 | RLS: LLM never accesses unauthorized rows, incl. generated queries and tools | the five layers above + the adversarial suites + the eval runs |
 | Agentic tools used | the five RLS-enforced tools above, on an explicit LangGraph graph |
 | Agentic development tools used | built with Claude Code: `CLAUDE.md`, ADR-driven waves, an issue queue — [development-process.md](development-process.md) |
