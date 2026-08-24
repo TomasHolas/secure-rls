@@ -7,7 +7,7 @@ Status: accepted
 Until now the app was one screen. A reader could ask the agent "how many
 employees do I have?" and had to take both the answer and the isolation on
 faith: the only window onto the data was the model's account of it. The demo
-claim — four independent RLS layers, no tenant can reach another's rows — was
+claim — layered RLS enforcement, no tenant can reach another's rows — was
 therefore argued rather than shown.
 
 Two tabs beside the chat change that. **Records** lists the signed-in tenant's
@@ -23,7 +23,7 @@ The risk this creates is the whole reason the ADR exists. A browse UI wants
 exactly the things that break tenant isolation: a column name in `ORDER BY`, a
 substring in `LIKE`, a page window, eight optional filters. Each is a place
 where a value could become SQL. If the tabs grew their own query path, they
-would become the weakest link and the four layers behind the agent would prove
+would become the weakest link and the layers behind the agent would prove
 nothing.
 
 ## Decision

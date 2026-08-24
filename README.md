@@ -25,8 +25,11 @@ LLM-fillable tool argument and never read from a request body — the model cann
 choose a tenant, because the tenant is not an input anywhere the model or the
 client can reach.
 
-Five enforcement points, each independently sufficient to stop a cross-tenant
-read ([ADR 0002](docs/decisions/0002-defense-in-depth-rls.md)):
+Five enforcement points, no single point of trust
+([ADR 0002](docs/decisions/0002-defense-in-depth-rls.md)). Layer 3 is what scopes
+a query and layer 4 independently proves it did; layers 2 and 2.5 filter no rows
+themselves — `SELECT * FROM employees` is accepted by both — and exist to remove
+the query shapes that could sidestep layer 3 entirely:
 
 | # | Layer | Where | Mechanism | Survives |
 |---|---|---|---|---|
@@ -119,7 +122,7 @@ argument, so there is nothing for the model to fill in.
 |---|---|---|
 | `query_db` | `(sql)` | Model-generated SQL through layers 2, 2.5, 3 and 4; capped with an explicit truncation signal. Generated and executed SQL are shown side by side in the trace |
 | `get_stats` | `(metric, column, group_by?)` | Args checked against fixed allowlists; the tool builds a parameterized query — **zero generated SQL** |
-| `plot` | `(kind, column, metric?, group_by?, bins?)` | Fetches its own values through the scoped executor and returns `{chart_spec, data}` to the SPA — charted numbers never pass through the model |
+| `plot` | `(kind, column, metric?, group_by?, series_by?, bins?)` | Fetches its own values through the scoped executor and returns one `chart_spec` to the SPA — charted numbers never pass through the model |
 | `detect_anomalies` | `(column, group_by?)` | Tukey IQR fences (1.5 x IQR) within each group; chosen over z-scores because the salary distribution is lognormal by design |
 | `search_notes` | `(query)` | Tenant-partitioned KNN over embedded notes; partition-key pre-filter plus egress check. Neutral "no matching notes found" on empty results, identical whether nothing matched or the match belongs to another tenant |
 

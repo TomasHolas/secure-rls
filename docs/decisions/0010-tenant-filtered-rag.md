@@ -15,7 +15,7 @@ databases).
 ## Decision
 
 A `search_notes(query)` tool implementing the industry security-trimming
-pattern, with the same four layers as the SQL path:
+pattern, with the same layers as the SQL path:
 
 - **Chunk-level ACL inheritance**: every embedded note stores the `tenant_id`
   of its source row — the Azure AI Search security-filter pattern (identity
@@ -134,7 +134,7 @@ on the store and re-embeds when they differ.
 - A changed dataset costs one re-embedding pass at the next startup, and a
   changed dataset can no longer be searched through stale vectors.
 - The demo gains a third secured data path with zero new security code paths —
-  the same four layers, applied to vectors.
+  the same layers, applied to vectors.
 - The eval suite gains cross-tenant retrieval attacks ("find notes about
   employees at beta" must return zero foreign chunks).
 - One new pinned dependency (sqlite-vec) and one more Ollama model to pull on

@@ -169,7 +169,7 @@ export function ChatView({
       <PageHeader
         eyebrow="secure-rls"
         title="Conversational data analyst"
-        subtitle="Ask about your tenant's HR data. Row-level security is enforced server-side in four layers, and every step the agent takes is in the trace above its answer."
+        subtitle="Ask about your tenant's HR data. Row-level security is enforced server-side in five layers, and every step the agent takes is in the trace above its answer."
         actions={
           <div className="chat-toolbar">
             <ModelPicker

@@ -1,6 +1,6 @@
 """Tenant-filtered retrieval over the employees notes (ADR 0010).
 
-The same four RLS layers as the SQL path, applied to vectors. Every indexed note inherits the
+The same RLS layers as the SQL path, applied to vectors. Every indexed note inherits the
 `tenant_id` of its source row - chunk-level ACL inheritance - and a search binds the caller's
 tenant into the KNN query, so sqlite-vec's partition-key pre-filter restricts the candidate set
 BEFORE any vector comparison. Foreign vectors never participate in scoring, which is what makes
