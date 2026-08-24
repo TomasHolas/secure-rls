@@ -116,12 +116,16 @@ class ConversationsConfig:
     prose rather than a label, so it is rejected in favor of the first-message fallback.
     `title_timeout_s` bounds the titling call - it runs outside the turn, but not forever.
 
-    The two stored-result ceilings bound the tool evidence a thread accumulates for replay (ADR
-    0012 as amended): `max_stored_results_per_turn` payloads of one turn are kept - set to the
-    tool-round cap `agent.max_tool_iterations`, so a turn that spent its whole round budget still
-    replays every round - and only the newest `max_stored_result_turns` turns of a thread keep
-    theirs. The row window inside a payload is not a knob of its own: it is the executor's
-    `db.max_result_rows` cap (ADR 0007).
+    Four ceilings bound the turn history a thread accumulates for replay (ADR 0012 as amended),
+    since "persist the whole turn" is otherwise unbounded growth in a store served in one
+    response: `max_turn_events` is how many events of one turn are kept at all (the terminal
+    frame always is, so a capped turn still reports how it ended), `max_turn_payloads` how many
+    of that turn's tool results keep their data payload - set to the tool-round cap
+    `agent.max_tool_iterations`, so a turn that spent its whole round budget still replays every
+    round - `max_reasoning_chars` how much of one model round's thinking is kept, and
+    `max_history_turns` how many of a thread's newest turns keep their history. The row window
+    inside a payload is not a knob of its own: it is the executor's `db.max_result_rows` cap
+    (ADR 0007).
     """
 
     title_max_chars: int
@@ -129,8 +133,10 @@ class ConversationsConfig:
     generated_title_max_chars: int
     generated_title_reject_chars: int
     title_timeout_s: float
-    max_stored_results_per_turn: int
-    max_stored_result_turns: int
+    max_turn_events: int
+    max_turn_payloads: int
+    max_reasoning_chars: int
+    max_history_turns: int
 
 
 @dataclass(frozen=True)

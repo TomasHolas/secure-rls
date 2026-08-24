@@ -1,9 +1,10 @@
 /**
  * TracePanel — the trace of one assistant turn: what the model thought, what it called, what came
  * back, and anything that was retried or refused, in the order it happened. For a live turn the
- * panel IS the transport (ADR 0012) and each step appears as its event arrives; for a turn read
- * back from the server it holds the tool evidence that was stored (ADR 0012 as amended), which is
- * the same items minus the thinking.
+ * panel IS the transport (ADR 0012) and each step appears as its event arrives; a turn read back
+ * from the server holds the same items, folded from the same events the server stored for it
+ * (ADR 0012 as amended, issue #90). The one thing a replayed step cannot carry is how long its
+ * thinking took, because that was measured here rather than sent.
  *
  * The graph's own node transitions are not rows (ADR 0012 as amended after issue #87). Naming them
  * put "Validating the tool call" above the calls and "Running the tool" below them - faithful to
@@ -37,7 +38,11 @@ import type { CallItem, CallOutcome, ReasoningItem, TraceItem } from "../../lib/
 
 const REASONING_ICON = "sparkles";
 const REASONING_TITLE = "Thinking";
-const SETTLED_TITLE = "Thought for";
+const SETTLED_TITLE = "Thought";
+const FOR = "for";
+const TRUNCATED_LABEL = "thinking capped";
+const TRUNCATED_TITLE =
+  "The server kept this round's thinking up to its history character cap; what came after it is not stored.";
 
 const TOOL_ICONS: Record<string, string> = {
   query_db: "database",
@@ -109,22 +114,43 @@ function TraceItemStep({ item }: { item: TraceItem }) {
  * arriving, and folds itself away once it settles, leaving how long it took on the row - the
  * thinking-trace pattern from beautifului.dev, whose header swaps a live verb for a past-tense
  * summary carrying the cost. Which round it was is on the chip from the second one on.
+ *
+ * A replayed round claims no duration: the span was this client's own measurement of thinking
+ * arriving, and a round read back from the server never arrived here (ADR 0012 as amended). If the
+ * history cap kept only part of it, the chip says so rather than letting a cut thought read whole.
  */
 function ReasoningStep({ item }: { item: ReasoningItem }) {
-  const settled = item.endedAt;
+  const live = item.startedAt !== null && item.endedAt === null;
+  const span =
+    item.startedAt !== null && item.endedAt !== null ? item.endedAt - item.startedAt : null;
+  const round = item.round > FIRST_ROUND ? <Pill tone="neutral">round {item.round}</Pill> : null;
+  const capped = item.truncated ? (
+    <Pill tone="warn" title={TRUNCATED_TITLE}>
+      {TRUNCATED_LABEL}
+    </Pill>
+  ) : null;
   return (
     <TraceStep
       icon={REASONING_ICON}
       title={
-        settled === null ? (
+        live ? (
           <span className="trace-live">{REASONING_TITLE}</span>
+        ) : span === null ? (
+          SETTLED_TITLE
         ) : (
-          `${SETTLED_TITLE} ${formatSeconds(settled - item.startedAt)}`
+          `${SETTLED_TITLE} ${FOR} ${formatSeconds(span)}`
         )
       }
-      meta={item.round > FIRST_ROUND ? <Pill tone="neutral">round {item.round}</Pill> : undefined}
+      meta={
+        round || capped ? (
+          <>
+            {round}
+            {capped}
+          </>
+        ) : undefined
+      }
       tone="muted"
-      open={settled === null}
+      open={live}
     >
       <p className="trace-reasoning">{item.text}</p>
     </TraceStep>

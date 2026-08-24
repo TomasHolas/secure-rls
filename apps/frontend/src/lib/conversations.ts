@@ -16,11 +16,11 @@
  * keeps the first-message title it already had, which is a title, not an error to report.
  *
  * `replay` holds what the server remembers of the open thread, already folded into turns by
- * `lib/trace.ts`: the questions, the answers, and the tool evidence each turn produced - its
- * SQL pair, tables and charts (ADR 0012 as amended). The store folds it here, once, so the
- * chat view receives turns of the same shape whether they were streamed or reopened. What no
- * store holds is the thinking: the model's reasoning, the retries and the graph steps belong to
- * the turn that streamed them. `chatKey` changes on every switch: it is the signal the chat
+ * `lib/trace.ts`: the questions, the answers, and the whole trace each turn produced - its
+ * reasoning, its calls and their arguments, its SQL pairs, tables and charts, its retries and its
+ * refusals (ADR 0012 as amended, issue #90). The store folds it here, once, and through the same
+ * fold the live stream goes through, so the chat view receives turns of the same shape whether
+ * they were streamed or reopened. `chatKey` changes on every switch: it is the signal the chat
  * view resets its live turns on.
  */
 
@@ -108,7 +108,7 @@ export function useConversations(): ConversationsStore {
         .then((conversation) => {
           setOpen((previous) => ({
             activeId: conversation.thread_id,
-            replay: replayTurns(conversation.messages, conversation.tool_results),
+            replay: replayTurns(conversation.messages, conversation.turns),
             chatKey: previous.chatKey + 1,
           }));
         })

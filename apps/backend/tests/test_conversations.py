@@ -6,13 +6,16 @@ The rename write is held to the same two properties as every other access: it is
 output, the normalization it shares with `create_thread` is asserted here too - the cap, and
 control and formatting characters that must never reach the rail.
 
-The stored tool payloads (issue #70) are held to the same two properties in both directions: a
+The stored turn history (issues #70, #90) is held to the same two properties in both directions: a
 recording aimed at another identity's thread stores nothing, and a read of one returns nothing
-rather than data. What is asserted beyond scoping is what bounds them - the row window inside a
-payload, the number of payloads one turn may keep, and the turns a thread keeps them for - and
-that a thread's payloads are deleted with the thread.
+rather than data. What is asserted beyond scoping is this store's own share of the bounds - how
+many of a thread's turns keep their history - that a turn is rewritten as a whole, that a thread's
+history is deleted with the thread, and that a row which cannot be read raises rather than
+replaying a partial turn as a whole one. The caps on what one turn's history may hold belong to
+`test_turns.py`, which owns the reduction.
 """
 
+import json
 import sqlite3
 import unicodedata
 import uuid
@@ -21,7 +24,7 @@ from datetime import UTC, datetime
 import pytest
 
 from auth import Identity
-from conversations import ConversationRegistry, NotFound, Thread, ToolResult
+from conversations import ConversationRegistry, NotFound, Thread, TurnHistory
 from runtime import runtime
 
 ALICE = Identity(sub="alice@acme", tenant_id="acme")
@@ -45,15 +48,24 @@ QUERY_PAYLOAD = {
     "returned_count": 1,
     "truncated": False,
 }
-CHART_PAYLOAD = {
-    "chart_spec": {
-        "kind": "bar",
-        "title": "Headcount by department",
-        "x_label": "department",
-        "y_label": "headcount",
-        "data": [{"x": "Engineering", "y": 12}],
-    }
+DONE_EVENT = {
+    "type": "done",
+    "status": "ok",
+    "answer": "Engineering averages 91000.",
+    "grounded": True,
+    "model": "fake-model:1b",
+    "prompt_guardrails": True,
+    "input_tokens": 250,
+    "output_tokens": 28,
+    "duration_s": 1.75,
 }
+EVENTS = [
+    {"type": "node_start", "node": "reason"},
+    {"type": "reasoning", "text": "an average per department", "truncated": False},
+    {"type": "tool_call", "id": "c1", "tool": "query_db", "args": {"sql": GENERATED_SQL}},
+    {"type": "tool_result", "id": "c1", "tool": "query_db", "content": "", "data": QUERY_PAYLOAD},
+    DONE_EVENT,
+]
 
 
 @pytest.fixture
@@ -62,14 +74,9 @@ def registry(tmp_path):
     return ConversationRegistry(tmp_path / "state.db", clock=lambda: PINNED_NOW)
 
 
-def _chart(turn: int = 1) -> ToolResult:
-    """One turn's chart payload, fresh each time so a test cannot mutate the shared fixture."""
-    return ToolResult(turn, "plot", dict(CHART_PAYLOAD))
-
-
-def _query(turn: int = 1) -> ToolResult:
-    """One turn's query payload: the SQL pair, the columns and the row window it returned."""
-    return ToolResult(turn, "query_db", dict(QUERY_PAYLOAD))
+def _history(turn: int = 1, cut: int = 0) -> TurnHistory:
+    """One turn's history, fresh each time so a test cannot mutate the shared fixture."""
+    return TurnHistory(turn=turn, events=[dict(event) for event in EVENTS], cut=cut)
 
 
 def _raised(call) -> Exception:
@@ -223,166 +230,141 @@ def test_delete_thread_works_without_a_cleanup_callback(registry):
     assert registry.list_threads(ALICE) == []
 
 
-def test_tool_results_replay_in_turn_then_call_order(registry):
+def test_turn_history_replays_in_turn_order(registry):
     thread = registry.create_thread(ALICE, "charted")
-    registry.record_tool_results(
-        ALICE,
-        thread.thread_id,
-        [_query(1), _chart(1)],
-    )
-    registry.record_tool_results(ALICE, thread.thread_id, [_chart(2)])
+    registry.record_turn(ALICE, thread.thread_id, _history(1))
+    registry.record_turn(ALICE, thread.thread_id, _history(2, cut=3))
 
-    replayed = registry.thread_tool_results(ALICE, thread.thread_id)
+    replayed = registry.thread_turns(ALICE, thread.thread_id)
 
-    assert [(result.turn, result.tool) for result in replayed] == [
-        (1, "query_db"),
-        (1, "plot"),
-        (2, "plot"),
-    ]
-    assert replayed[0].data == QUERY_PAYLOAD
-    assert replayed[1].data == CHART_PAYLOAD
+    assert [(history.turn, history.cut) for history in replayed] == [(1, 0), (2, 3)]
+    assert replayed[0].events == EVENTS
 
 
-def test_tool_results_of_a_thread_that_ran_no_tool_are_empty(registry):
+def test_turn_history_of_a_thread_never_chatted_in_is_empty(registry):
     thread = registry.create_thread(ALICE, "just talk")
-    assert registry.thread_tool_results(ALICE, thread.thread_id) == []
+    assert registry.thread_turns(ALICE, thread.thread_id) == []
 
 
 def test_recording_nothing_writes_nothing(registry):
-    thread = registry.create_thread(ALICE, "no tools this turn")
-    registry.record_tool_results(ALICE, thread.thread_id, [])
-    assert registry.thread_tool_results(ALICE, thread.thread_id) == []
+    thread = registry.create_thread(ALICE, "no history this turn")
+    registry.record_turn(ALICE, thread.thread_id, TurnHistory(turn=1, events=[], cut=0))
+    assert registry.thread_turns(ALICE, thread.thread_id) == []
 
 
 def test_recording_on_another_identitys_thread_stores_nothing(registry):
     foreign = registry.create_thread(BOB, "other tenant")
     neighbour = registry.create_thread(DAVE, "same tenant, other user")
 
-    registry.record_tool_results(ALICE, foreign.thread_id, [_chart(1)])
-    registry.record_tool_results(
-        ALICE, neighbour.thread_id, [_chart(1)]
-    )
-    registry.record_tool_results(
-        ALICE, MISSING_THREAD_ID, [_chart(1)]
-    )
+    registry.record_turn(ALICE, foreign.thread_id, _history(1))
+    registry.record_turn(ALICE, neighbour.thread_id, _history(1))
+    registry.record_turn(ALICE, MISSING_THREAD_ID, _history(1))
 
-    assert registry.thread_tool_results(BOB, foreign.thread_id) == []
-    assert registry.thread_tool_results(DAVE, neighbour.thread_id) == []
+    assert registry.thread_turns(BOB, foreign.thread_id) == []
+    assert registry.thread_turns(DAVE, neighbour.thread_id) == []
 
 
-def test_tool_results_of_another_identitys_thread_read_as_empty(registry):
+def test_turn_history_of_another_identitys_thread_reads_as_empty(registry):
     foreign = registry.create_thread(BOB, "other tenant")
-    registry.record_tool_results(BOB, foreign.thread_id, [_chart(1)])
+    registry.record_turn(BOB, foreign.thread_id, _history(1))
 
-    assert registry.thread_tool_results(ALICE, foreign.thread_id) == []
-    assert registry.thread_tool_results(ALICE, MISSING_THREAD_ID) == []
-    assert len(registry.thread_tool_results(BOB, foreign.thread_id)) == 1
-
-
-def test_stored_row_window_is_cut_to_the_executors_result_cap(registry):
-    window = runtime().db.max_result_rows
-    thread = registry.create_thread(ALICE, "a wide result")
-    payload = {
-        "columns": ["user_id"],
-        "rows": [[index] for index in range(window + 25)],
-        "anomalies": [{"user_id": index} for index in range(window + 25)],
-    }
-
-    registry.record_tool_results(ALICE, thread.thread_id, [ToolResult(1, "query_db", payload)])
-
-    stored = registry.thread_tool_results(ALICE, thread.thread_id)[0].data
-    assert len(stored["rows"]) == window
-    assert len(stored["anomalies"]) == window
-    assert stored["rows"][-1] == [window - 1]
-    assert stored["columns"] == ["user_id"]
+    assert registry.thread_turns(ALICE, foreign.thread_id) == []
+    assert registry.thread_turns(ALICE, MISSING_THREAD_ID) == []
+    assert len(registry.thread_turns(BOB, foreign.thread_id)) == 1
 
 
-def test_only_the_capped_number_of_results_of_one_turn_is_kept(registry):
-    cap = runtime().conversations.max_stored_results_per_turn
-    thread = registry.create_thread(ALICE, "a busy turn")
-    tools = [f"tool_{index}" for index in range(cap + 3)]
-
-    registry.record_tool_results(
-        ALICE, thread.thread_id, [ToolResult(1, tool, {"columns": []}) for tool in tools]
-    )
-
-    kept = registry.thread_tool_results(ALICE, thread.thread_id)
-    assert [result.tool for result in kept] == tools[:cap]
-
-
-def test_turns_older_than_the_stored_turn_ceiling_are_dropped(registry):
-    ceiling = runtime().conversations.max_stored_result_turns
+def test_turns_older_than_the_history_ceiling_are_dropped(registry):
+    ceiling = runtime().conversations.max_history_turns
     thread = registry.create_thread(ALICE, "a long conversation")
     for turn in (1, 2, ceiling + 1):
-        registry.record_tool_results(
-            ALICE, thread.thread_id, [_chart(turn)]
-        )
+        registry.record_turn(ALICE, thread.thread_id, _history(turn))
 
-    kept = registry.thread_tool_results(ALICE, thread.thread_id)
+    kept = registry.thread_turns(ALICE, thread.thread_id)
 
-    assert [result.turn for result in kept] == [2, ceiling + 1]
+    assert [history.turn for history in kept] == [2, ceiling + 1]
 
 
 def test_recording_a_turn_again_replaces_what_it_stored(registry):
     thread = registry.create_thread(ALICE, "a retried turn")
-    registry.record_tool_results(
-        ALICE,
-        thread.thread_id,
-        [_query(1), _chart(1)],
+    registry.record_turn(ALICE, thread.thread_id, _history(1))
+
+    registry.record_turn(
+        ALICE, thread.thread_id, TurnHistory(turn=1, events=[dict(DONE_EVENT)], cut=1)
     )
 
-    registry.record_tool_results(
-        ALICE, thread.thread_id, [ToolResult(1, "get_stats", {"rows": []})]
-    )
-
-    kept = registry.thread_tool_results(ALICE, thread.thread_id)
-    assert [result.tool for result in kept] == ["get_stats"]
+    kept = registry.thread_turns(ALICE, thread.thread_id)
+    assert kept == [TurnHistory(turn=1, events=[DONE_EVENT], cut=1)]
 
 
-def test_deleting_a_thread_deletes_its_tool_results(registry):
+def test_deleting_a_thread_deletes_its_turn_history(registry):
     thread = registry.create_thread(ALICE, "to be deleted")
-    registry.record_tool_results(ALICE, thread.thread_id, [_chart(1)])
+    registry.record_turn(ALICE, thread.thread_id, _history(1))
 
     registry.delete_thread(ALICE, thread.thread_id)
 
-    assert registry.thread_tool_results(ALICE, thread.thread_id) == []
+    assert registry.thread_turns(ALICE, thread.thread_id) == []
 
 
-def test_a_foreign_delete_leaves_the_tool_results_alone(registry):
+def test_a_foreign_delete_leaves_the_turn_history_alone(registry):
     neighbour = registry.create_thread(DAVE, "same tenant, other user")
-    registry.record_tool_results(
-        DAVE, neighbour.thread_id, [_chart(1)]
-    )
+    registry.record_turn(DAVE, neighbour.thread_id, _history(1))
 
     with pytest.raises(NotFound):
         registry.delete_thread(ALICE, neighbour.thread_id)
 
-    assert len(registry.thread_tool_results(DAVE, neighbour.thread_id)) == 1
+    assert len(registry.thread_turns(DAVE, neighbour.thread_id)) == 1
 
 
-def test_stored_tool_result_row_carries_the_owning_identity(registry, tmp_path):
+def test_stored_turn_row_carries_the_owning_identity(registry, tmp_path):
     thread = registry.create_thread(ALICE, "owned")
-    registry.record_tool_results(ALICE, thread.thread_id, [_chart(3)])
+    registry.record_turn(ALICE, thread.thread_id, _history(3, cut=2))
 
     with sqlite3.connect(tmp_path / "state.db") as conn:
         row = conn.execute(
-            "SELECT sub, tenant_id, turn, position, tool, created FROM tool_results "
-            "WHERE thread_id = ?",
+            "SELECT sub, tenant_id, turn, cut, created FROM turn_history WHERE thread_id = ?",
             (thread.thread_id,),
         ).fetchone()
 
-    assert row == (ALICE.sub, ALICE.tenant_id, 3, 0, "plot", PINNED_NOW.isoformat())
+    assert row == (ALICE.sub, ALICE.tenant_id, 3, 2, PINNED_NOW.isoformat())
 
 
-def test_tool_results_persist_in_the_same_state_file(tmp_path):
+def test_turn_history_persists_in_the_same_state_file(tmp_path):
     state_db = tmp_path / "state.db"
     registry = ConversationRegistry(state_db, clock=lambda: PINNED_NOW)
     thread = registry.create_thread(ALICE, "kept")
-    registry.record_tool_results(ALICE, thread.thread_id, [_chart(1)])
+    registry.record_turn(ALICE, thread.thread_id, _history(1))
 
-    reopened = ConversationRegistry(state_db).thread_tool_results(ALICE, thread.thread_id)
+    reopened = ConversationRegistry(state_db).thread_turns(ALICE, thread.thread_id)
 
-    assert reopened == [ToolResult(1, "plot", CHART_PAYLOAD)]
+    assert reopened == [TurnHistory(turn=1, events=EVENTS, cut=0)]
+
+
+def test_a_history_row_that_cannot_be_read_raises_instead_of_replaying_a_partial_turn(
+    registry, tmp_path
+):
+    thread = registry.create_thread(ALICE, "damaged")
+    registry.record_turn(ALICE, thread.thread_id, _history(1))
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        conn.execute("UPDATE turn_history SET events = ?", ("{not json",))
+        conn.commit()
+
+    with pytest.raises(json.JSONDecodeError):
+        registry.thread_turns(ALICE, thread.thread_id)
+
+
+def test_the_superseded_payload_table_is_dropped_on_open(tmp_path):
+    state_db = tmp_path / "state.db"
+    with sqlite3.connect(state_db) as conn:
+        conn.execute("CREATE TABLE tool_results (thread_id TEXT, payload TEXT)")
+        conn.execute("INSERT INTO tool_results VALUES ('t1', 'a chart of beta rows')")
+        conn.commit()
+
+    ConversationRegistry(state_db)
+
+    with sqlite3.connect(state_db) as conn:
+        tables = {name for (name,) in conn.execute("SELECT name FROM sqlite_master")}
+    assert "tool_results" not in tables
+    assert "turn_history" in tables
 
 
 def test_registry_persists_in_its_own_state_file(tmp_path):

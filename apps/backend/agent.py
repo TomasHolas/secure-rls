@@ -118,8 +118,9 @@ event (ADR 0012 as amended).
 `reasoning` carries the model's own thinking as it arrives, from whichever channel the endpoint
 uses for it - the `reasoning_content` a thinking-capable model streams beside its answer, or a
 `<think>` region a smaller model writes into the text. Both are split out by the same filter, so
-reasoning is never part of the answer, never written to the history, and never replayed: it
-belongs to the live trace exactly like a tool call does.
+reasoning is never part of the answer and is never written to the graph's message history. It is
+trace content: the API layer keeps it, per model round, in the turn history a reopened thread
+replays (ADR 0012 as amended, issue #90), and this module streams it and nothing more.
 
 `done` closes the turn with what it cost: the accumulated `usage_metadata` of every model call
 this turn made (`stream_mode="custom"` means the raw chunks never leave this module, so usage is
@@ -154,11 +155,11 @@ lives here rather than in the API layer. What comes back is what the two partici
 the user's questions and the assistant's text, including the text of a turn that also asked for
 tools, so a partial or failed turn is visible in the transcript instead of vanishing from it.
 The tool calls and their arguments are left out of the transcript, as is an assistant message
-with no text at all. What a tool returned is not lost with them: the API layer keeps the
-server-produced payload of each `tool_result` in the conversation registry, keyed by turn, so a
-reopened thread can re-render its charts, SQL pair and tables (ADR 0012 as amended). What stays
-session-only is the thinking - the reasoning, the retries and the graph steps this module streams
-are the transport of the turn that produced them, and no store holds them.
+with no text at all. Nothing around them is lost with them: the API layer keeps each turn's whole
+trace - the reasoning per model round, every call with the arguments the model wrote, each call's
+one outcome, and the terminal frame - in the conversation registry, keyed by turn, so a reopened
+thread replays the conversation that happened rather than a tidied answer (ADR 0012 as amended,
+issue #90). This module streams those events and stores none of them itself.
 """
 
 import inspect
@@ -203,7 +204,13 @@ EXECUTE_TOOL = "execute_tool"
 AUDIT = "audit"
 RESPOND = "respond"
 
+EVENT_NODE_START = "node_start"
+EVENT_TOKEN = "token"
+EVENT_REASONING = "reasoning"
+EVENT_TOOL_CALL = "tool_call"
 EVENT_TOOL_RESULT = "tool_result"
+EVENT_SECURITY_EVENT = "security_event"
+EVENT_RETRY = "retry"
 EVENT_DONE = "done"
 
 STATUS_OK = "ok"

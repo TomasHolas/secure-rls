@@ -65,7 +65,33 @@ const REPLAY_CHART = {
   y_label: "avg salary",
   data: [{ x: "Engineering", y: 91000 }],
 };
-const REPLAY_RESULTS = [{ turn: 1, tool: "plot", data: { chart_spec: REPLAY_CHART } }];
+const REPLAY_TURNS = [
+  {
+    turn: 1,
+    cut: 0,
+    events: [
+      { type: "tool_call", id: "c1", tool: "plot", args: { kind: "bar", column: "department" } },
+      {
+        type: "tool_result",
+        id: "c1",
+        tool: "plot",
+        content: "",
+        data: { chart_spec: REPLAY_CHART },
+      },
+      {
+        type: "done",
+        status: "ok",
+        answer: "Engineering leads at 91000.",
+        grounded: true,
+        model: MODEL,
+        prompt_guardrails: true,
+        input_tokens: 250,
+        output_tokens: 28,
+        duration_s: 2,
+      },
+    ],
+  },
+];
 
 const RECORDS_PAGE = {
   columns: ["user_id", "tenant_id", "name"],
@@ -147,7 +173,7 @@ beforeEach(() => {
       ...OLDEST,
       thread_id: threadId,
       messages: REPLAY,
-      tool_results: REPLAY_RESULTS,
+      turns: REPLAY_TURNS,
     }),
   );
   api.createConversation.mockImplementation((title: string) => {
