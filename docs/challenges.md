@@ -54,9 +54,9 @@ stops hiding what the graph still remembers
 ([#66](https://github.com/TomasHolas/secure-rls/issues/66), amending ADRs
 0010-0012).
 
-**Session expiry (M4).** The session signed users out mid-demo, and the
-30-minute expiry it did that on turned out to be justified by nothing but a code
-sample in a tutorial. It became a sliding session with a sourced lifetime
+**Session expiry (M4).** The session signed users out mid-demo, on a 30-minute
+expiry that turned out to be justified by nothing but a code sample in a
+tutorial. It became a sliding session with a sourced lifetime
 ([#71](https://github.com/TomasHolas/secure-rls/issues/71),
 [ADR 0009](decisions/0009-auth-implementation.md)) — whose own limitation is
 below.
