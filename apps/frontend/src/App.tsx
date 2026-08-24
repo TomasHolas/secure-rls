@@ -1,11 +1,12 @@
 // App shell: logged out shows the login view, logged in the tabs over chat, records and notes.
 
-import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import { getSession, subscribe, type Session } from "./auth";
 import { AppLayout, Tabs } from "./components/layout";
 import type { Tab } from "./components/layout/Tabs";
 import { useConversations } from "./lib/conversations";
+import { clearLocation, pushLocation, replaceLocation, useLocation } from "./lib/location";
 import { ChatView } from "./views/ChatView";
 import { ConversationsSidebar } from "./views/ConversationsSidebar";
 import { LoginView } from "./views/LoginView";
@@ -26,6 +27,11 @@ const TABS: Tab[] = [
 export default function App() {
   const session = useSyncExternalStore(subscribe, getSession, getSession);
 
+  // Signed out - by logout or by a 401 - there is no location to be at, and none to show.
+  useEffect(() => {
+    if (!session) clearLocation();
+  }, [session]);
+
   if (!session) {
     return (
       <AppLayout>
@@ -44,15 +50,74 @@ export default function App() {
  * a search they ran; a tab they have never opened is not mounted at all, so nothing fetches
  * rows for a tab nobody asked for. The conversation rail belongs to the chat, so it is passed
  * to the shell only while the chat is the open tab.
+ *
+ * Where the reader is comes from the URL (`lib/location.ts`, issue #135), so a reload lands
+ * back there. The shell is the one that knows which tabs exist: a hash naming one that does not
+ * is the chat, and a thread id means something only under it. Two directions have to be kept
+ * agreeing, and each has exactly one owner here:
+ *
+ * - the URL moved (a reload, back, forward): `select` on the conversation store opens the thread
+ *   the hash names, through the very path a click in the rail takes, so what renders is what
+ *   clicking renders. A thread the registry will not hand over - deleted, or another identity's,
+ *   which are indistinguishable by design (ADR 0012) - leaves the store on the draft with its
+ *   own "could not open" message, and the hash is cleaned to `#/chat`. No retry.
+ * - the store moved on its own (the rail opened a thread, New chat, the draft a first question
+ *   registered): the URL follows it. `shown` is what the URL is already known to say, so a move
+ *   the URL made in the first place is never echoed back as a second one, and the store's own
+ *   `chatKey` - bumped on a thread switch and not on anything else - is what decides whether the
+ *   move was somewhere to come back to. A switch is pushed; a tab change and a draft becoming a
+ *   thread are restated in place, because neither is a new place.
  */
 function SignedIn({ session }: { session: Session }) {
   const conversations = useConversations();
-  const [tab, setTab] = useState(CHAT);
-  const [opened, setOpened] = useState<string[]>([CHAT]);
+  const location = useLocation();
+  const known = TABS.some((entry) => entry.id === location.tab);
+  const tab = known && location.tab ? location.tab : CHAT;
+  const wanted = known && tab === CHAT ? location.threadId : null;
+  const [opened, setOpened] = useState<string[]>([tab]);
+  const shown = useRef({ threadId: conversations.activeId, chatKey: conversations.chatKey });
+
+  useEffect(() => {
+    setOpened((previous) => (previous.includes(tab) ? previous : [...previous, tab]));
+  }, [tab]);
+
+  // A hash the shell is not showing is restated in place, so the URL never says something else.
+  useEffect(() => {
+    if (location.tab !== tab || location.threadId !== wanted) replaceLocation(tab, wanted);
+  }, [tab, wanted, location.tab, location.threadId]);
+
+  // Keyed on the hash alone: this effect answers navigation, never the store's own moves.
+  useEffect(() => {
+    if (tab !== CHAT) return;
+    if (!wanted) {
+      if (conversations.activeId) conversations.newChat();
+      return;
+    }
+    let live = true;
+    void conversations.select(wanted).then((openedId) => {
+      if (live && !openedId) replaceLocation(CHAT, null);
+    });
+    return () => {
+      live = false;
+    };
+  }, [tab, wanted]);
+
+  // The other direction: the store moved on its own and the URL has to follow it.
+  useEffect(() => {
+    if (tab !== CHAT) return;
+    const previous = shown.current;
+    const still =
+      conversations.activeId === previous.threadId && conversations.chatKey === previous.chatKey;
+    if (still) return;
+    shown.current = { threadId: conversations.activeId, chatKey: conversations.chatKey };
+    if (conversations.activeId === location.threadId) return;
+    // A switch is somewhere to come back to; a draft that just became a thread is not.
+    const move = conversations.chatKey === previous.chatKey ? replaceLocation : pushLocation;
+    move(CHAT, conversations.activeId);
+  }, [tab, conversations.activeId, conversations.chatKey, location.threadId]);
 
   function select(next: string): void {
-    setTab(next);
-    setOpened((previous) => (previous.includes(next) ? previous : [...previous, next]));
+    replaceLocation(next, next === CHAT ? conversations.activeId : null);
   }
 
   return (

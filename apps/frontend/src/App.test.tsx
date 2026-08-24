@@ -14,6 +14,13 @@
  * opened fetches nothing, that the conversation rail belongs to the chat alone, and above all
  * that switching away and back costs the reader nothing - the streamed turn is still there,
  * because a visited tab is hidden rather than unmounted.
+ *
+ * The third covers where the reader is being in the URL (issue #135, `lib/location.ts`): booting
+ * at a fragment restores the same thread and tab a click would have, a thread the registry will
+ * not hand over lands on the draft with its message and a cleaned hash - deleted and foreign are
+ * one case here, as the API makes them one - a hash echoing the open thread costs the live turn
+ * nothing, and signing out leaves no fragment behind. `mount` is the sign-in without the wait for
+ * the model list, because a tab that is not the chat has no model picker to wait for.
  */
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -39,7 +46,12 @@ const api = vi.hoisted(() => ({
 
 vi.mock("./lib/api", () => ({
   ApiError: class ApiError extends Error {
-    status = 500;
+    status: number;
+
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
   },
   ...api,
 }));
@@ -133,17 +145,40 @@ function sseResponse(events: unknown[]): Response {
   return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
 }
 
-/** Fresh module graph per test: auth.ts is a singleton store. */
-async function signIn(sub = "acme_analyst", tenant = "acme") {
+/** Fresh module graph per test: auth.ts and lib/location.ts are singleton stores. */
+async function mount(sub = "acme_analyst", tenant = "acme") {
   vi.resetModules();
   const auth = await import("./auth");
   const App = (await import("./App")).default;
   auth.startSession(tokenFor(sub, tenant));
-  const view = render(<App />);
+  return { auth, view: render(<App />) };
+}
+
+async function signIn(sub = "acme_analyst", tenant = "acme") {
+  const mounted = await mount(sub, tenant);
   await waitFor(() =>
     expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe(MODEL),
   );
-  return { auth, view };
+  return mounted;
+}
+
+/** A reload of a URL: the fragment is already there when the app boots. */
+async function reloadAt(hash: string) {
+  window.history.replaceState(null, "", hash);
+  return mount();
+}
+
+/** One jsdom window serves the whole file, so a fragment a test navigated to has to be dropped. */
+function resetLocation(): void {
+  window.history.replaceState(null, "", "/");
+}
+
+/** What the browser does when the reader goes back, forward, or edits the fragment by hand. */
+function navigate(hash: string): void {
+  act(() => {
+    window.history.replaceState(null, "", hash);
+    window.dispatchEvent(new Event("hashchange"));
+  });
 }
 
 function titles(container: HTMLElement): string[] {
@@ -178,6 +213,7 @@ function titleOf(threadId: string): string {
 beforeEach(() => {
   registered = "";
   window.sessionStorage.clear();
+  resetLocation();
   api.getHealth.mockResolvedValue({
     status: "ok",
     version: "1",
@@ -219,6 +255,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   window.sessionStorage.clear();
+  resetLocation();
 });
 
 describe("the conversation rail", () => {
@@ -547,5 +584,163 @@ describe("the section tabs", () => {
     const panels = Array.from(view.container.querySelectorAll(".tab-panel"));
     expect(panels.map((panel) => panel.getAttribute("aria-label"))).toEqual(["chat", "records"]);
     expect(panels.filter((panel) => !panel.hasAttribute("hidden"))).toHaveLength(1);
+  });
+});
+
+describe("the location in the URL", () => {
+  it("restores the thread the hash names, with the history the server replayed", async () => {
+    const { view } = await reloadAt(`#/chat/${OLDEST.thread_id}`);
+
+    expect(await screen.findByText("Engineering leads at 91000.")).toBeTruthy();
+    expect(api.getConversation).toHaveBeenCalledWith(OLDEST.thread_id);
+    expect(api.getConversation).toHaveBeenCalledTimes(1);
+    expect(activeTitle(view.container)).toBe(OLDEST.title);
+    expect(view.container.querySelector("svg")?.getAttribute("aria-label")).toBe(
+      REPLAY_CHART.title,
+    );
+    expect(window.location.hash).toBe(`#/chat/${OLDEST.thread_id}`);
+  });
+
+  it("restores the tab the hash names and leaves the other tabs unfetched", async () => {
+    await reloadAt("#/notes");
+
+    expect(await screen.findByText("shipped the compiler")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Notes" }).getAttribute("aria-selected")).toBe("true");
+    expect(api.browseRecords).not.toHaveBeenCalled();
+    expect(api.getConversation).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe("#/notes");
+  });
+
+  it("renders the draft with no hash at all, and states where that is", async () => {
+    await mount();
+
+    await screen.findByText(NEWEST.title);
+    expect(screen.getByText(/Ask a question to start/)).toBeTruthy();
+    expect(api.getConversation).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe("#/chat");
+  });
+
+  it("lands on the draft, says so once and cleans the hash for a thread it cannot open", async () => {
+    api.getConversation.mockRejectedValue(new Error("gone"));
+
+    await reloadAt("#/chat/6f1e2d3c4b5a69788796a5b4c3d2e1f0");
+
+    expect(await screen.findByText("Could not open that conversation.")).toBeTruthy();
+    expect(screen.getByText(/Ask a question to start/)).toBeTruthy();
+    await waitFor(() => expect(window.location.hash).toBe("#/chat"));
+    expect(api.getConversation).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Could not open that conversation.")).toBeTruthy();
+  });
+
+  it("passes on the registry's own 404, which reads the same for a foreign id", async () => {
+    const { ApiError } = await import("./lib/api");
+    api.getConversation.mockRejectedValue(new ApiError(404, "That conversation no longer exists."));
+
+    await reloadAt("#/chat/6f1e2d3c4b5a69788796a5b4c3d2e1f0");
+
+    expect(await screen.findByText("That conversation no longer exists.")).toBeTruthy();
+    await waitFor(() => expect(window.location.hash).toBe("#/chat"));
+  });
+
+  it("treats a tab it does not have as the chat, and the id under it as nothing", async () => {
+    await reloadAt(`#/nowhere/${OLDEST.thread_id}`);
+
+    await screen.findByText(NEWEST.title);
+    expect(screen.getByText(/Ask a question to start/)).toBeTruthy();
+    expect(api.getConversation).not.toHaveBeenCalled();
+    await waitFor(() => expect(window.location.hash).toBe("#/chat"));
+  });
+
+  it("keeps this session's turns when the hash echoes the thread already open", async () => {
+    const { view } = await signIn();
+    await screen.findByText(OLDEST.title);
+    openThread(OLDEST.title);
+    await screen.findByText("Engineering leads at 91000.");
+    expect(window.location.hash).toBe(`#/chat/${OLDEST.thread_id}`);
+    ask("how many people are there?");
+    await screen.findByText("There are 331 people.");
+
+    navigate(`#/chat/${OLDEST.thread_id}`);
+
+    expect(api.getConversation).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("There are 331 people.")).toBeTruthy();
+    expect(activeTitle(view.container)).toBe(OLDEST.title);
+  });
+
+  it("moves between threads and back to the draft as the hash moves", async () => {
+    const { view } = await signIn();
+    await screen.findByText(OLDEST.title);
+    openThread(OLDEST.title);
+    await screen.findByText("Engineering leads at 91000.");
+
+    navigate("#/chat");
+
+    expect(await screen.findByText(/Ask a question to start/)).toBeTruthy();
+    expect(activeTitle(view.container)).toBeNull();
+
+    navigate(`#/chat/${NEWEST.thread_id}`);
+
+    await waitFor(() => expect(activeTitle(view.container)).toBe(NEWEST.title));
+    expect(api.getConversation).toHaveBeenLastCalledWith(NEWEST.thread_id);
+    expect(window.location.hash).toBe(`#/chat/${NEWEST.thread_id}`);
+  });
+
+  it("makes an opened thread a history entry and a tab switch none", async () => {
+    await signIn();
+    await screen.findByText(OLDEST.title);
+    const entries = window.history.length;
+
+    openThread(OLDEST.title);
+    await screen.findByText("Engineering leads at 91000.");
+
+    expect(window.history.length).toBe(entries + 1);
+
+    openTab("Records");
+    await screen.findByText("Ada Lovelace");
+
+    expect(window.location.hash).toBe("#/records");
+    expect(window.history.length).toBe(entries + 1);
+
+    openTab("Chat");
+
+    expect(window.location.hash).toBe(`#/chat/${OLDEST.thread_id}`);
+    expect(window.history.length).toBe(entries + 1);
+  });
+
+  it("names the thread a draft registered without stacking an entry for it", async () => {
+    await signIn();
+    await screen.findByText(OLDEST.title);
+    const entries = window.history.length;
+
+    ask("how many people are there?");
+    await screen.findByText("There are 331 people.");
+
+    await waitFor(() => expect(window.location.hash).toBe(`#/chat/${REGISTERED.thread_id}`));
+    expect(window.history.length).toBe(entries);
+  });
+
+  it("stops naming a thread the reader deleted", async () => {
+    await signIn();
+    await screen.findByText(OLDEST.title);
+    openThread(OLDEST.title);
+    await screen.findByText("Engineering leads at 91000.");
+
+    fireEvent.click(screen.getByLabelText(`Delete conversation ${OLDEST.title}`));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(window.location.hash).toBe("#/chat"));
+    expect(screen.getByText(/Ask a question to start/)).toBeTruthy();
+  });
+
+  it("drops the fragment on sign out, so the login view carries no thread", async () => {
+    await signIn();
+    await screen.findByText(OLDEST.title);
+    openThread(OLDEST.title);
+    await screen.findByText("Engineering leads at 91000.");
+
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+
+    expect(await screen.findByLabelText("Username")).toBeTruthy();
+    expect(window.location.hash).toBe("");
   });
 });
