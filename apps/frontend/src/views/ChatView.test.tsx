@@ -505,6 +505,16 @@ describe("the chat view", () => {
     expect(screen.queryByText(/prompt guardrails/)).toBeNull();
   });
 
+  // The regression that matters: a server that does not carry the field must not make the UI
+  // announce the demo mode. `getHealth` reports null, and null draws nothing.
+  it("claims no position when the server answers without stating one", async () => {
+    api.getHealth.mockResolvedValue({ status: "ok", version: "1", prompt_guardrails: null });
+    await renderReady();
+
+    expect(screen.queryByText("prompt guardrails off")).toBeNull();
+    expect(screen.queryByText("prompt guardrails on")).toBeNull();
+  });
+
   it("marks the finished turn with the position that produced it", async () => {
     api.getHealth.mockResolvedValue({ status: "ok", version: "1", prompt_guardrails: false });
     api.openChatStream.mockImplementation(() =>

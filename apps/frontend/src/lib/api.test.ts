@@ -212,11 +212,31 @@ describe("health", () => {
     });
   });
 
-  it("never reads a body that does not say as guardrails on", async () => {
+  it("reports the on position when the server states it", async () => {
     const { api } = await load();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ status: "ok" })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ status: "ok", prompt_guardrails: true })),
+    );
 
-    await expect(api.getHealth()).resolves.toMatchObject({ prompt_guardrails: false });
+    await expect(api.getHealth()).resolves.toMatchObject({ prompt_guardrails: true });
+  });
+
+  // Unknown is its own state: reporting it as off would announce the demo mode to a reader
+  // behind an older backend or a body-rewriting proxy, which is a lie about provenance.
+  it.each([
+    ["absent", {}],
+    ["the string false", { prompt_guardrails: "false" }],
+    ["the number zero", { prompt_guardrails: 0 }],
+    ["null", { prompt_guardrails: null }],
+  ])("reports no position at all when the field is %s", async (_label, extra) => {
+    const { api } = await load();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ status: "ok", ...extra })),
+    );
+
+    await expect(api.getHealth()).resolves.toMatchObject({ prompt_guardrails: null });
   });
 
   it("raises an ApiError when the server cannot answer", async () => {
