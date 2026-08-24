@@ -283,9 +283,17 @@ the tenant row counts that used to hang off the options were what the owner obje
 `<select>` and its counts (six options, and the counts are the point of that picker), which means
 the department popup keeps the OS highlight — a separate call, left to the owner. The grid is six
 cells — three single filters (tenant, name, department) and three `FieldPair`s — because a bound pair that is one cell cannot be split across rows by the wrap, and
-six is a full grid at three, two and one column, so no cell is ever stranded beside dead space. The
-actions close the form on their own full-width row in the `[Reset] [Apply]` order a terminal action
-reads in. One `--control-height` custom property, declared once in `app.css` and matched by element
+six is a full grid at three, two and one column, so no cell is ever stranded beside dead space. **Every filter applies itself** (issue #152): a chip or a select on the change, a typed box once
+the reader has stopped typing for `FILTER_DEBOUNCE_MS` — 350ms, held once in
+`src/lib/debounce.ts`. The `Apply` button that used to gate all nine is gone, because it made a
+pressed chip a promise the table had not kept: the strip showed `acme` while the pill below it
+still said "1,000 matching rows · all tenants", and the Notes tab, whose one chip always applied on
+the click, disagreed with it. What is sent is unchanged — the same query parameters, only fired at a
+different moment. Reset stays and closes the form alone on its own full-width row: clearing nine
+boxes at once is one action, and it also cancels a keystroke still waiting, so nothing lands after
+it. A refusal the server earns on a half-typed value (`hired_from=2020-0`) is held while the
+interval is open and painted only once the value has settled and is genuinely refused, so the
+banner never flashes over the table between two keystrokes. One `--control-height` custom property, declared once in `app.css` and matched by element
 rather than by class inside a `control-row`, puts every input, select and button on one baseline;
 `styles/controls.test.ts` asserts it against the real stylesheet in jsdom. The date filters are ISO
 text rather than native date inputs: the native control brings a calendar popover and keyboard
@@ -295,9 +303,10 @@ laptop and disagrees with the ISO dates in the cells below it, in the executed s
 the server's own refusal. Nothing is validated client-side: a bad date reaches the server and comes
 back as its own 400, which a blocking HTML `pattern` would have swallowed.
 
-The Notes tab carries one filter of its own, the same tenant chip row, applying on the click
-(picking a chip is one deliberate action; a text box would fire a request per keystroke). Without
-it, reaching another tenant's planted note means paging 40 pages, and the demonstration the tab
+The Notes tab carries one filter of its own, the same tenant chip row, applying on the click —
+which is now what both tabs do. Its search box keeps its button: a retrieval over the note corpus
+is an embedding of the reader's query, not a filter narrowing rows, and a request per pause of a
+typed question would spend the model on drafts nobody asked about. Without the filter, reaching another tenant's planted note means paging 40 pages, and the demonstration the tab
 exists for would depend on patience.
 
 ## Consequences
@@ -377,6 +386,9 @@ exists for would depend on patience.
 - JSON:API, *Implementation-Specific Query Parameters* — the stricter alternative this ADR
   deviates from: a server "MUST return 400 Bad Request" for a query parameter it does not know how
   to process: https://jsonapi.org/format/
+- Nielsen Norman Group, *Response Times: The 3 Important Limits* — the 1-second ceiling for
+  keeping a reader's flow of thought uninterrupted, which the filter debounce sits inside:
+  https://www.nngroup.com/articles/response-times-3-important-limits/
 - ADR 0002 (the layers, and the declared-filter-parameter amendment this path relies on), ADR 0007
   (the row cap and truncation honesty), ADR 0010 (the retrieval path the search reuses, unchanged),
   ADR 0012 (identity from the token, thin handlers), ADR 0006 (the design system the views
@@ -388,5 +400,7 @@ guidance addresses a demo's control group); which nine filters to allowlist; sho
 SQL under the table, labelling it as unscoped, and putting it behind one click with the fact stated
 in front of it; surfacing the committed poison manifest for every tenant; keeping a visited tab
 mounted rather than unmounting it; answering an unread parameter with a 200 plus a report rather
-than a 400, and the wording of that report; and serving that report from the API only, with no
-control on screen for producing one.
+than a 400, and the wording of that report; serving that report from the API only, with no
+control on screen for producing one; and the 350ms debounce interval — no source names a number for
+a filter box, so it is a judgment bounded by the source that does exist: well inside the 1-second
+limit above, and long enough to swallow a burst of typing.
