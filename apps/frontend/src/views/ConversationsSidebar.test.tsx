@@ -1,20 +1,18 @@
 /**
  * The conversation rail's own mechanisms (issue #114), driven by a hand-made store so nothing
- * here needs the API: the collapse that clips instead of re-laying out, the identity menu, the
- * inline search and the one gliding highlight. `App.test.tsx` keeps the shell-level promises
+ * here needs the API: the collapse that clips instead of re-laying out, the inline search and
+ * the one gliding highlight. `App.test.tsx` keeps the shell-level promises
  * (threads listed, one open, delete behind a confirm) and this file the rail's behaviour.
  *
  * The claim each block pins is the one a screenshot cannot: that the collapsed rail leaves no
  * focusable control behind its own edge, that the column inside it is laid out at one width in
- * both states - which is why its icons cannot move sideways - and that Escape gets a reader out
- * of the search and the menu.
+ * both states - which is why its icons cannot move sideways - and that Escape closes the search.
  */
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ConversationsSidebar } from "./ConversationsSidebar";
-import { getSession, startSession } from "../auth";
 import type { ConversationsStore } from "../lib/conversations";
 import { reducedMotionStyle } from "../test/styles";
 
@@ -23,19 +21,6 @@ const OLDEST = { thread_id: "t1", title: "average salary per department", create
 
 const SEARCH = "Search conversations";
 const CLOSE_SEARCH = "Close search conversations";
-const IDENTITY = "Signed in as acme_analyst, tenant acme";
-
-function token(): string {
-  const encode = (value: unknown) =>
-    btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  const claims = {
-    sub: "acme_analyst",
-    tenant_id: "acme",
-    exp: Math.floor(Date.now() / 1000) + 1800,
-  };
-  return `${encode({ alg: "HS256", typ: "JWT" })}.${encode(claims)}.signature`;
-}
-
 function store(overrides: Partial<ConversationsStore> = {}): ConversationsStore {
   return {
     threads: [NEWEST, OLDEST],
@@ -78,14 +63,8 @@ function tabbableWhenClipped(container: HTMLElement): string[] {
     .map((control) => control.className);
 }
 
-beforeEach(() => {
-  window.sessionStorage.clear();
-  startSession(token());
-});
-
 afterEach(() => {
   cleanup();
-  window.sessionStorage.clear();
 });
 
 describe("collapsing the rail", () => {
@@ -112,20 +91,18 @@ describe("collapsing the rail", () => {
     expect(getComputedStyle(container.querySelector(".sidebar")!).overflow).toBe("clip");
   });
 
-  // The other defect a screenshot found: the clip cut the copy mid-word. It fades instead, and
-  // the identity chip's own spans are part of that list, so this is also what catches a rename
-  // inside TenantPill breaking the collapsed rail.
+  // The other defect a screenshot found: the clip cut the copy mid-word, so it fades instead.
   it("fades the copy the clip would otherwise cut off mid-word", () => {
     const container = rail();
     const faded = () =>
-      [".sidebar-title", ".sidebar-body", ".rail-search", ".tenant-pill-user"].map(
+      [".sidebar-title", ".sidebar-body", ".rail-search"].map(
         (selector) => getComputedStyle(container.querySelector(selector)!).opacity,
       );
-    expect(faded()).toEqual(["1", "1", "1", "1"]);
+    expect(faded()).toEqual(["1", "1", "1"]);
 
     collapse();
 
-    expect(faded()).toEqual(["0", "0", "0", "0"]);
+    expect(faded()).toEqual(["0", "0", "0"]);
   });
 
   it("stops travelling under reduced motion, in the one block that owns that", () => {
@@ -154,7 +131,6 @@ describe("collapsing the rail", () => {
     collapse();
 
     expect(screen.getByRole("button", { name: /new chat/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: IDENTITY })).toBeTruthy();
     expect(screen.getByLabelText("Show conversations").getAttribute("aria-expanded")).toBe("false");
   });
 
@@ -243,40 +219,11 @@ describe("the inline search", () => {
   });
 });
 
-describe("the identity menu", () => {
-  it("opens on the identity chip and signs the session out", () => {
-    rail();
-    const trigger = screen.getByRole("button", { name: IDENTITY });
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+describe("the rail chrome", () => {
+  it("does not duplicate the session identity from the persistent header", () => {
+    const container = rail();
 
-    fireEvent.click(trigger);
-
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    fireEvent.click(screen.getByRole("menuitem", { name: /sign out/i }));
-
-    expect(getSession()).toBeNull();
-    expect(screen.queryByRole("menu")).toBeNull();
-  });
-
-  it("closes on Escape and hands focus back to the chip", () => {
-    rail();
-    const trigger = screen.getByRole("button", { name: IDENTITY });
-    fireEvent.click(trigger);
-
-    fireEvent.keyDown(document, { key: "Escape" });
-
-    expect(screen.queryByRole("menu")).toBeNull();
-    expect(document.activeElement).toBe(trigger);
-    expect(getSession()).not.toBeNull();
-  });
-
-  it("closes on a pointerdown outside it", () => {
-    rail();
-    fireEvent.click(screen.getByRole("button", { name: IDENTITY }));
-
-    fireEvent.pointerDown(document.body);
-
-    expect(screen.queryByRole("menu")).toBeNull();
+    expect(container.querySelector(".tenant-pill")).toBeNull();
   });
 });
 

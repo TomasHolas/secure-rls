@@ -20,25 +20,22 @@
  * It is also the row's `title`, so a truncated thread reads in full on hover.
  *
  * The rail's shape is the beautifului.dev sidebar's, reimplemented on our tokens (issue #114,
- * `docs/ui-pattern-review.md`): identity at the top, a collapse that clips instead of re-laying
- * out, one gliding hover highlight, and the search growing out of its own icon.
+ * `docs/ui-pattern-review.md`): a collapse that clips instead of re-laying out, one gliding hover
+ * highlight, and the search growing out of its own icon.
  */
 
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 
-import { clearSession, getSession, subscribe } from "../auth";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Button } from "../components/Button";
 import { GlideList } from "../components/GlideList";
 import { Icon } from "../components/Icon";
-import { IdentityMenu } from "../components/IdentityMenu";
 import { InlineSearch } from "../components/InlineSearch";
 import { Sidebar, useSidebarCollapsed } from "../components/layout";
 import type { ConversationsStore } from "../lib/conversations";
 import type { Thread } from "../lib/api";
 
 export function ConversationsSidebar({ store }: { store: ConversationsStore }) {
-  const session = useSyncExternalStore(subscribe, getSession, getSession);
   const [pendingDelete, setPendingDelete] = useState<Thread | null>(null);
   const [query, setQuery] = useState("");
 
@@ -51,15 +48,6 @@ export function ConversationsSidebar({ store }: { store: ConversationsStore }) {
     <>
       <Sidebar
         title="Conversations"
-        identity={
-          session ? (
-            <IdentityMenu
-              tenant={session.tenantId}
-              username={session.username}
-              onSignOut={clearSession}
-            />
-          ) : null
-        }
         search={<RailSearch value={query} onChange={setQuery} />}
         actions={
           <Button variant="ghost" className="side-add" onClick={store.newChat}>
