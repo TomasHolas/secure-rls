@@ -111,6 +111,10 @@ _REASONING_KEY = "reasoning_content"
 _LEAK = "/Users/demo/state/vectors.db line 372"
 # The knob no enforcement module may name: the switch is prompt text only (ADR 0002).
 _GUARDRAIL_KNOB = "prompt_guardrails"
+# A per-reply cap small enough that the tiny fixture dataset overflows it (issue #142).
+_SMALL_CAP = 200
+# More rows than any cap below can hold, so a cut is certain rather than incidental.
+_MANY_ROWS = 400
 
 
 class ScriptedLLM(BaseChatModel):
@@ -397,6 +401,7 @@ def tuned(monkeypatch):
         max_tool_retries=None,
         max_result_rows=None,
         max_tool_iterations=None,
+        max_tool_reply_chars=None,
         turn_deadline_s=None,
     ):
         config = runtime()
@@ -406,6 +411,9 @@ def tuned(monkeypatch):
                 config.agent,
                 max_tool_retries=max_tool_retries or config.agent.max_tool_retries,
                 max_tool_iterations=max_tool_iterations or config.agent.max_tool_iterations,
+                max_tool_reply_chars=(
+                    max_tool_reply_chars or config.agent.max_tool_reply_chars
+                ),
                 turn_deadline_s=turn_deadline_s or config.agent.turn_deadline_s,
             ),
             db=replace(
@@ -774,6 +782,126 @@ def test_a_capped_result_carries_the_truncation_message(build, tuned):
     assert result["content"].endswith(
         f"showing 2 of {_ACME_ROWS} rows - refine with WHERE or use an aggregate query"
     )
+    assert result["withheld"] == 0
+
+
+def test_a_reply_inside_the_cap_is_handed_to_the_model_whole():
+    """Under the cap nothing happens at all: the bound cuts what overflows, not what fits."""
+    body = "\n".join(["a | b", "1 | 2", "3 | 4"])
+
+    reply = agent._fit_reply(body)
+
+    assert reply.content == body
+    assert reply.withheld == 0
+
+
+def test_a_reply_past_the_cap_keeps_whole_rows_and_says_how_much_it_lost(tuned):
+    """The model reads the header and the rows that fit, then how much of the result that was."""
+    tuned(max_tool_reply_chars=_SMALL_CAP)
+    rows = [f"{index} | value-{index}" for index in range(_MANY_ROWS)]
+    body = "\n".join(["id | value", *rows])
+
+    reply = agent._fit_reply(body)
+
+    lines = reply.content.split("\n")
+    kept = lines[:-1]
+    assert kept[0] == "id | value"
+    assert all(line in body.split("\n") for line in kept)
+    assert reply.withheld == _MANY_ROWS + 1 - len(kept)
+    assert lines[-1] == (
+        f"[showing you {len(kept)} of {_MANY_ROWS + 1} lines of this result so it fits your "
+        f"context window; the user was shown all {_MANY_ROWS + 1} - refine with WHERE or use an "
+        "aggregate query]"
+    )
+
+
+@pytest.mark.parametrize("cap", [200, 500, 1000, 4000])
+@pytest.mark.parametrize("width", [1, 40, 400])
+def test_no_capped_reply_is_longer_than_the_cap(tuned, cap, width):
+    """The bound is the promise the send budget rests on, so it holds at every row width."""
+    tuned(max_tool_reply_chars=cap)
+    body = "\n".join(["header", *[f"{index}" * width for index in range(_MANY_ROWS)]])
+
+    reply = agent._fit_reply(body)
+
+    assert len(reply.content) <= cap
+    assert (reply.withheld > 0) is (len(body) > cap)
+
+
+def test_a_row_wider_than_the_cap_is_withheld_rather_than_sliced(tuned):
+    """A row is the unit: one that cannot fit is counted as withheld, never handed over halved."""
+    tuned(max_tool_reply_chars=_SMALL_CAP)
+    row = "x" * (_SMALL_CAP * 2)
+    body = "\n".join(["header", row])
+
+    reply = agent._fit_reply(body)
+
+    assert row not in reply.content
+    assert reply.content == f"header\n{agent._REPLY_CAPPED.format(kept=1, total=2)}"
+    assert reply.withheld == 1
+
+
+def test_a_cut_reply_reaches_the_model_cut_and_the_reader_whole(build, tuned):
+    """The two copies of one result diverge on purpose, and the event states where (issue #142)."""
+    tuned(max_tool_reply_chars=_SMALL_CAP)
+    graph, llm = build(
+        _tool_call("query_db", sql="SELECT * FROM employees"),
+        AIMessage(content="here is a summary of what I could read"),
+    )
+    events = list(run_turn(graph, "list everything", _THREAD))
+
+    result = _one(events, "tool_result")
+    assert result["withheld"] > 0
+    assert len(result["content"]) <= _SMALL_CAP
+    assert len(result["data"]["rows"]) == _ACME_ROWS
+    assert result["data"]["truncated"] is False
+    sent = [message for message in llm.seen[-1] if isinstance(message, ToolMessage)]
+    assert [message.content for message in sent] == [result["content"]]
+
+
+def test_the_reply_cap_is_a_runtime_knob(build, tuned):
+    """How much of a result the model reads is configuration, never a constant in the graph."""
+
+    def withheld(cap):
+        tuned(max_tool_reply_chars=cap)
+        graph, _ = build(
+            _tool_call("query_db", sql="SELECT * FROM employees"),
+            AIMessage(content="an answer"),
+        )
+        return _one(list(run_turn(graph, "list everything", _THREAD)), "tool_result")["withheld"]
+
+    assert withheld(_SMALL_CAP) > withheld(_SMALL_CAP * 4) == 0
+
+
+def test_the_shipped_cap_lets_the_floors_turns_fit_what_one_call_may_send(db_path):
+    """The two bounds compose: `min_history_turns` maximal replies still fit the send budget.
+
+    This is the arithmetic of issue #142 measured rather than asserted in prose. The overflow was
+    one 200-row `SELECT *` rendered for the model - 51,910 characters against a 16,384-token
+    window - and `_fit_history` could not reach it, because the floor exists to keep the current
+    turn. So the cap is derived from the same budget: a turn made entirely of maximal replies, as
+    many as the floor keeps, is still a request the endpoint will accept.
+    """
+    bounds = runtime().agent
+    budget = bounds.context_window - bounds.max_output_tokens - bounds.history_headroom_tokens
+    tools = agent._build_tools(ACME, FakeEmbed(), db_path)
+    fixed = agent._tool_tokens(tools.values())
+    system = SystemMessage(content=agent._system_prompt(ACME, db_path, guardrails=True))
+    turn = [
+        HumanMessage(content="list everything"),
+        _tool_call("query_db", sql="SELECT * FROM employees"),
+        ToolMessage(
+            content="r" * bounds.max_tool_reply_chars, tool_call_id=_CALL_ID, name="query_db"
+        ),
+        AIMessage(content="here is what the rows say" * 20),
+    ]
+    history = turn * bounds.min_history_turns
+
+    fitted = agent._fit_history(system, history, fixed)
+    estimated = fixed + agent._estimate(system) + sum(agent._estimate(m) for m in history)
+
+    assert fitted.dropped == 0
+    assert estimated < budget
 
 
 @pytest.mark.parametrize(

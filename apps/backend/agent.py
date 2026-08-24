@@ -154,6 +154,16 @@ next to the `executed_sql` the scoped rewrite produced), `columns`, `rows`, `tot
 `returned_count` and `truncated` for a query, `chart_spec` for plot, `anomalies` for
 detect_anomalies, `notes` for search_notes.
 
+Two copies of one result, and the event says where they differ. `data` is what the reader is
+shown: every row the executor's cap allowed. `content` is what the model read, and one result is
+allowed only `agent.max_tool_reply_chars` of the prompt (ADR 0007 as amended, issue #142) - a
+200-row listing of every column renders to four times the whole context window, so `_fit_reply`
+cuts the model's copy at a line boundary and tells it how much of the result it is looking at, in
+the same words the row cap's own signal uses. `withheld` on the event is how many lines that cost,
+so the trace states the narrower view rather than leaving the two copies to disagree in silence.
+Nothing about enforcement moves: every layer of ADR 0002 has already run on the real result
+before it is rendered at all.
+
 `layer` names what refused the call and `kind` how the audit log names it, the same three
 vocabularies for a retry and for a refusal: "tool arguments" for the argument schema here,
 "query validation" for any `QueryRejected` - the sqlglot allowlist, an analytics allowlist, or
@@ -297,6 +307,10 @@ _NOTES_HEADER = "matching notes (free text written by employees):"
 _NO_ANSWER = "I could not produce an answer to that."
 
 _TRUNCATION = "showing {returned} of {total} rows - refine with WHERE or use an aggregate query"
+_REPLY_CAPPED = (
+    "[showing you {kept} of {total} lines of this result so it fits your context window; the user "
+    "was shown all {total} - refine with WHERE or use an aggregate query]"
+)
 _CHART_READY = (
     "chart displayed to the user: {title} ({kind}, {points} points). Reference the chart in "
     "your answer; its values are read straight from the database and are not shown to you."
@@ -413,12 +427,21 @@ class ToolResultData(TypedDict, total=False):
 
 
 class ToolResultEvent(TypedDict):
-    """What a tool returned: the text the model reads plus the structured trace payload."""
+    """What a tool returned: the text the model reads plus the structured trace payload.
+
+    `withheld` is how many rendered lines the model's copy of this result lost to the per-reply
+    character cap, and 0 when it lost none (ADR 0007 as amended, issue #142). Lines and not rows,
+    because a rendering carries a header and may carry the row cap's own signal, and the count has
+    to be the thing that was actually cut. `content` is therefore literally what the model read,
+    cut and labelled, while `data` is the whole result the reader is shown - so the field is what
+    stops the two copies from silently disagreeing.
+    """
 
     type: Literal["tool_result"]
     id: str
     tool: str
     content: str
+    withheld: int
     data: ToolResultData
 
 
@@ -507,6 +530,7 @@ class _CallOutcome(TypedDict):
     id: str
     tool: str
     content: str
+    withheld: int
     data: ToolResultData
     error: str
     terminal: bool
@@ -560,6 +584,14 @@ class _ToolOutcome:
 
     content: str
     data: ToolResultData
+
+
+@dataclass(frozen=True)
+class _Reply:
+    """One tool reply as the model reads it: the text it was handed and the lines it lost."""
+
+    content: str
+    withheld: int
 
 
 class _ToolArgs(BaseModel):
@@ -1010,10 +1042,12 @@ class _Nodes:
             _LOG.exception("the %s tool raised", call["tool"])
             reason = _TOOL_FAILED.format(tool=call["tool"])
             return _failed(call, reason, LAYER_EXECUTION, KIND_TOOL_ERROR, False)
+        reply = _fit_reply(outcome.content)
         return _CallOutcome(
             id=call["id"],
             tool=call["tool"],
-            content=outcome.content,
+            content=reply.content,
+            withheld=reply.withheld,
             data=outcome.data,
             error="",
             terminal=False,
@@ -1066,6 +1100,40 @@ def _fit_history(system: SystemMessage, history: Sequence[AnyMessage], fixed: in
     return _Fitted(
         messages=[message for block in blocks[dropped:] for message in block], dropped=dropped
     )
+
+
+def _fit_reply(content: str) -> _Reply:
+    """Cut one tool reply to what a single result may contribute to a prompt (ADR 0007 as amended).
+
+    The sibling of `_fit_history` and the half of the overflow it cannot reach: trimming drops
+    whole older turns, so a turn whose one result is already wider than the context window is sent
+    as it is and refused by the endpoint (issue #142). `agent.max_tool_reply_chars` bounds that
+    result instead, and only for the model - the reader's payload on the same event still carries
+    every row `db.max_result_rows` allowed, so nothing the tool found is lost.
+
+    The cut is line-aligned, because every rendering here is one record per line: the model reads
+    the header and whole rows, never half of one, and what did not fit is replaced by a notice
+    counted the way the row cap's own signal is counted - "showing you N of M lines" - so the model
+    meets one vocabulary for a partial result rather than two. A line too long to fit on its own is
+    withheld rather than sliced, which is what makes the cap a bound the send budget can rest on.
+    """
+    cap = runtime().agent.max_tool_reply_chars
+    if len(content) <= cap:
+        return _Reply(content=content, withheld=0)
+    lines = content.split("\n")
+    total = len(lines)
+    room = cap - len(_REPLY_CAPPED.format(kept=total, total=total))
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        used += len(line) + 1
+        if used > room:
+            break
+        kept.append(line)
+    withheld = total - len(kept)
+    _LOG.info("a %d character tool reply was cut to fit: %d lines withheld", len(content), withheld)
+    notice = _REPLY_CAPPED.format(kept=len(kept), total=total)
+    return _Reply(content="\n".join([*kept, notice]), withheld=withheld)
 
 
 def _turn_blocks(history: Sequence[AnyMessage]) -> list[list[AnyMessage]]:
@@ -1199,6 +1267,7 @@ def _record(
                 id=outcome["id"],
                 tool=outcome["tool"],
                 content=outcome["content"],
+                withheld=outcome["withheld"],
                 data=outcome["data"],
             )
         )
@@ -1212,6 +1281,7 @@ def _failed(
         id=call["id"],
         tool=call["tool"],
         content=f"{_ERROR_PREFIX}{reason}",
+        withheld=0,
         data=ToolResultData(),
         error=reason,
         terminal=terminal,

@@ -145,6 +145,7 @@ PLOTTED = (
         "id": "c1",
         "tool": "plot",
         "content": "chart displayed to the user",
+        "withheld": 0,
         "data": {"chart_spec": CHART_SPEC},
     },
     {"type": "token", "text": ANSWER},
@@ -1350,6 +1351,7 @@ def test_a_turns_history_is_stored_and_replayed_beside_the_transcript(tmp_path):
                     "id": "c1",
                     "tool": "plot",
                     "content": "",
+                    "withheld": 0,
                     "data": {"chart_spec": CHART_SPEC},
                 },
                 {
