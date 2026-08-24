@@ -3,7 +3,11 @@
 Status: accepted (rewritten 2026-08-24 per issue #117, an owner correction. The original decision
 — that these tabs list "the tenant's own data" — is reversed, not amended: the listings show every
 tenant's rows and `tenant_id` is a filter of the same kind as `department`. The reversal is
-recorded in Context below, because why it happened is part of the decision.)
+recorded in Context below, because why it happened is part of the decision. Amended the same day
+per issue #139, an owner review of how these two tabs read: the note card, the presentation of the
+executed statement, the tenant filter, and the deletion of the reader-facing parameter probe. What
+the endpoints do is untouched by that amendment — including the ignored-parameter report, which is
+still in every listing response.)
 
 ## Context
 
@@ -178,9 +182,18 @@ A number is only evidence if it says what it is a number of. Every total states 
 the pager. The filter pickers obey the same rule: `GET /records/tenants` gives the tenant options
 with their row counts — 450/350/200, the control group in one line — and `GET /records/departments`
 takes the applied tenant filter, so a department count counts the rows the reader is actually
-looking at. The executed-SQL card is labelled *"executed without tenant scoping — this listing is
-the whole dataset"*, because a label promising a rewrite the statement does not carry would be a
-worse lie than showing no statement at all.
+looking at.
+
+The executed statement is under the table as **a stated fact plus the evidence for it**, amended
+per issue #139. The fact is a caption beside the pager — *"this listing is the whole dataset,
+unscoped by design (the agent's queries never are)"* — and the statement itself is one click
+behind a closed `Disclosure` labelled *"show the SQL this page ran"*, still carrying
+*"executed without tenant scoping"* on the block a reader copies out. What it replaced was an
+always-open card under an all-caps section head, which led the tab with the least readable thing
+on it and shouted the same absent-rewrite label twice. The statement is **never removed**: a claim
+about what ran is only checkable against what ran. One click is the cost of not having a block of
+monospace be the first thing the tab says; a label promising a rewrite the statement does not
+carry would still be the worse lie.
 
 ### 8. What a listing did not read, it says (issue #107, retained and repointed)
 
@@ -200,15 +213,20 @@ softened. It was true of a scoped listing and is false of this one. A misspelled
 generic report, which names `tenant_id` among the accepted parameters and therefore answers the
 reader's actual next question.
 
-**The interactive affordance stays a raw parameter box, repointed.** Issue #107 rejected a "reach
-another tenant" button, and that rejection still holds for the chat path: a control named after
-another tenant frames layer 1 as a policy that could be relaxed rather than an input that does not
-exist, and an outcome a button hard-codes is indistinguishable from a canned message. The
-`ParamProbe` box therefore remains — a reader appends a parameter of their own and reads back what
-the server ignored — but it now claims only what is still true of this surface (a request gets the
-parameters the endpoint declares, and is told about the rest) and points the tenant claim where it
-holds: the agent's tenant comes from the verified token and reaches its tools by closure. Leaving
-a control on screen asserting something false would have cost more than the control is worth.
+**The reader-facing probe box is gone; the report is not** (issue #139). Issue #107 answered the
+silent-parameter problem with two things at once: the server naming what it ignored, and a box on
+both tabs for a reader to type a parameter into. The server half is the decision and it stands —
+every listing response still carries `ignored`, checkable with `curl` or the browser's network
+tab, and asserted by the backend suite. The box was the owner's to keep or drop, and on review
+they dropped it: a control whose whole subject is an HTTP property explained no data, took a
+section of its own above the rows on the two tabs that exist to show data, and was the panel they
+pointed at twice. Nothing about the API changed, so nothing that was checkable stopped being
+checkable — it is checked one layer down instead of on screen.
+
+A "reach another tenant" button remains rejected, for issue #107's original reason: a control
+named after another tenant frames layer 1 as a policy that could be relaxed rather than an input
+that does not exist, and an outcome a button hard-codes is indistinguishable from a canned
+message.
 
 ### 9. Endpoints
 
@@ -227,7 +245,17 @@ A verification surface that omits the field a reader would verify against defeat
   `department`, their `performance_score`, the `tenant_id` of the row, and the `distance` when
   retrieval produced one. The score earns its place from ADR 0008 — the notes are composed from
   clause pools disjoint across score bands, so tone against number is a coherence a reader can
-  falsify at a glance. The tenant earns its place from point 5.6 above.
+  falsify at a glance. The tenant earns its place from point 5.6 above, and per issue #139 it is a
+  `Pill` beside the name rather than corner microtext: on a list that spans every tenant it is the
+  most load-bearing word on the card.
+- **A rank is a fact about a ranking** (issue #139). `#user_id` is shown with the `distance`, on a
+  search hit, where together they are the nearest-first order a reader checks. On the corpus
+  listing there is no distance and the `#N` was row position presented as data, so it is not
+  shown.
+- **The prose is capped at a measure, not at the card.** ~80 rendered characters
+  (`--note-measure`), the ceiling WCAG 1.4.8 names for a block of text; the card keeps the width
+  of the region it sits in. A 1600px line of notes on a demo screen was unreadable at exactly the
+  moment a reader was being asked to read it.
 - **`salary` and `hire_date` are deliberately absent.** Neither helps decide whether a text hit is
   the right one, and a verification surface that shows everything verifies nothing in particular.
   The omission is stated in `browse.py` beside the column tuple.
@@ -241,14 +269,20 @@ the conversation rail belongs to the chat and is passed to the shell only while 
 tab the reader has opened stays **mounted and hidden** rather than unmounted, so switching away and
 back cannot cost them a streamed transcript, a typed filter or a search they ran; a tab never
 opened is not mounted. The views compose existing bricks (`DataTable`, `Pill`, `CodeBlock`,
-`EmptyState`, `NoteList`, `ParamProbe`, the form kit) and the catalogue in
+`EmptyState`, `NoteList`, `Disclosure`, the form kit including `ChipRow`) and the catalogue in
 `src/components/README.md` carries them. Sorting and paging are server-side: a header click is a
 request, never an in-browser reorder of one page — which is the only honest thing a table holding
 page 3 of 40 can do.
 
 The filter block is laid out per issue #115 and the tenant control that shipped disabled there is
-now live. The grid is six cells — three single filters (tenant, name, department) and three
-`FieldPair`s — because a bound pair that is one cell cannot be split across rows by the wrap, and
+now live. It is **a row of chips rather than a select** (issue #139): three tenants and an `All`
+all fit on one line, and a native `<select>`'s popup is drawn by the OS, so its selected row
+arrives in the system accent — a colour no stylesheet here can reach. The chips carry no counts;
+the tenant row counts that used to hang off the options were what the owner objected to, and
+`GET /records/tenants` still serves them for whoever else asks. The department filter keeps its
+`<select>` and its counts (six options, and the counts are the point of that picker), which means
+the department popup keeps the OS highlight — a separate call, left to the owner. The grid is six
+cells — three single filters (tenant, name, department) and three `FieldPair`s — because a bound pair that is one cell cannot be split across rows by the wrap, and
 six is a full grid at three, two and one column, so no cell is ever stranded beside dead space. The
 actions close the form on their own full-width row in the `[Reset] [Apply]` order a terminal action
 reads in. One `--control-height` custom property, declared once in `app.css` and matched by element
@@ -261,10 +295,10 @@ laptop and disagrees with the ISO dates in the cells below it, in the executed s
 the server's own refusal. Nothing is validated client-side: a bad date reaches the server and comes
 back as its own 400, which a blocking HTML `pattern` would have swallowed.
 
-The Notes tab carries one filter of its own, a tenant select applying on change (a select is one
-deliberate action; a text box would fire a request per keystroke). Without it, reaching another
-tenant's planted note means paging 40 pages, and the demonstration the tab exists for would depend
-on patience.
+The Notes tab carries one filter of its own, the same tenant chip row, applying on the click
+(picking a chip is one deliberate action; a text box would fire a request per keystroke). Without
+it, reaching another tenant's planted note means paging 40 pages, and the demonstration the tab
+exists for would depend on patience.
 
 ## Consequences
 
@@ -351,7 +385,8 @@ on patience.
 The judgment calls, labelled as such because no external source settles them: that an auditor
 surface showing every tenant is worth one named unscoped read (the central one — no published
 guidance addresses a demo's control group); which nine filters to allowlist; showing the executed
-SQL under the table and labelling it as unscoped; surfacing the committed poison manifest for every
-tenant; keeping a visited tab mounted rather than unmounting it; answering an unread parameter with
-a 200 plus a report rather than a 400, and the wording of that report; and repointing the parameter
-box rather than removing it once its original claim stopped being true here.
+SQL under the table, labelling it as unscoped, and putting it behind one click with the fact stated
+in front of it; surfacing the committed poison manifest for every tenant; keeping a visited tab
+mounted rather than unmounting it; answering an unread parameter with a 200 plus a report rather
+than a 400, and the wording of that report; and serving that report from the API only, with no
+control on screen for producing one.
