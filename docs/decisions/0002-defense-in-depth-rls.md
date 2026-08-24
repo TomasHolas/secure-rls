@@ -1,6 +1,9 @@
 # ADR 0002 — Defense-in-depth RLS: layered enforcement, no single point of trust
 
-Status: accepted (amended 2026-08-21: engine authorizer, DoS controls, audit log — sourced hardening; amended 2026-08-24: retitled, and the "each sufficient alone" characterization corrected)
+Status: accepted (amended 2026-08-21: engine authorizer, DoS controls, audit log — sourced
+hardening; amended 2026-08-24: retitled, and the "each sufficient alone" characterization
+corrected; amended 2026-08-24: the prompt guardrails are switchable, so the central claim is
+demonstrated rather than asserted)
 
 ## Context
 
@@ -51,6 +54,39 @@ OWASP: prompt-level measures "should complement — not replace — deterministi
 controls" (LLM Prompt Injection Prevention Cheat Sheet, citing an 89% attack
 success rate on GPT-4o for persistent attackers), and by Microsoft: "Don't rely
 on the language model to propagate tenant information."
+
+## Demonstrating the claim (amended)
+
+"Prompt-level instructions are not a layer" was, until now, a sentence in this
+ADR. It is now a switch: `runtime.json`'s `agent.prompt_guardrails`, default on,
+whose off position omits the prompt's two self-policing blocks — the rule that
+note text and other data-borne instructions are never followed, and the closing
+tenant-scope paragraph — and changes nothing else (ADR 0011 as amended).
+
+Turning it off is what makes the four layers observable. With the rules rendered,
+the model usually declines a cross-tenant or override request itself: nothing is
+attempted, no layer fires, and a passing security suite cannot distinguish a
+layer that held from a model that never tried. With the rules gone the model
+attempts the request, the layers refuse what it wrote, and the refusal names the
+layer that produced it.
+
+Two properties make the switch admissible as evidence rather than a hole:
+
+- **It cannot reach enforcement.** `_system_prompt` is the only reader of the
+  knob; `security.py`, `db.py` and `auth.py` never name it, which is asserted by
+  a test over their source. The adversarial corpora of `tests/test_security.py`
+  and `tests/test_db.py` run in full in both positions, so identical refusals,
+  identical rewritten SQL, identical declared-parameter counts and identical
+  egress verdicts are a measured result rather than a claim.
+- **It cannot hide.** Every `done` frame carries the position of the turn that
+  produced it and `GET /health` reports the running position, so a trace can
+  always be read back to the prompt that produced it and an off-camera prompt
+  swap has nowhere to happen.
+
+The artifact worth having is therefore the adversarial eval suite run in the off
+position (`uv run python -m evals --no-guardrails`, ADR 0004 as amended): zero
+leaks with the model's self-policing disabled is the strongest form of the claim
+this ADR makes. The two positions write separate report files.
 
 ## Hardening (amended per sourced review)
 

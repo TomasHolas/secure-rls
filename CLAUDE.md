@@ -59,7 +59,9 @@ Five ideas drive everything (each has an ADR in `docs/decisions/`):
    parameter + read-only connection), egress layer (post-execution row check) —
    plus query timeouts, a result-row cap with truncation signaling (ADR 0007),
    and a persistent audit log. Prompt instructions exist but are UX guidance,
-   not a security boundary.
+   not a security boundary — and `agent.prompt_guardrails` can switch the
+   self-policing ones off, so the layers are watched holding on their own
+   (ADR 0002 as amended).
 3. **SQLite with emulated RLS** (ADR 0003). SQLite has no native RLS; we emulate
    it in the scoped executor in `db.py` — the only module allowed to open a
    database connection.
@@ -87,7 +89,10 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   nudge that keeps an answer tied to a tool call of its own turn and reports
   `grounded` when it is not (ADR 0011, answer quality rather than enforcement);
   tenant-filtered RAG via `rag.py` (ADR 0010); schema card + sample rows in
-  the prompt; empirical model pick (ADR 0005).
+  the prompt; the switchable prompt guardrails, whose off position drops the
+  two self-policing blocks so an attack is attempted and a layer refuses it
+  (ADR 0011 as amended, visible on `done` and `/health`); empirical model pick
+  (ADR 0005).
 - `[x]` **M3 — REST API + auth.** `app.py` (thin handlers: `/login`, `/chat` as
   an SSE stream of typed trace events, `/conversations` JWT-scoped CRUD,
   `/health`, `/models` proxying the endpoint's chat-capable model list — ADR 0012),
@@ -138,6 +143,7 @@ cd apps/frontend && npm test      # vitest + jsdom: bricks, session, HTTP client
 # Eval harness (M5+; live needs an Ollama model, --mocked and --dry-run need nothing):
 cd apps/backend && uv run python -m evals            # writes evals/report.md
 cd apps/backend && uv run python -m evals --mocked   # scripted model, network-free (what CI runs)
+cd apps/backend && uv run python -m evals --no-guardrails   # writes evals/report-no-guardrails.md
 
 # Model gate (M2+; needs a live Ollama model, --dry-run needs nothing):
 cd apps/backend && uv run python -m evals.model_gate --model <id>
@@ -159,10 +165,10 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | SQL validation (allowlist) | `apps/backend/security.py` |
 | Records/Notes browsing (allowlisted filters, sorts, paging, the poison manifest) | `apps/backend/browse.py` — fixed templates with bound filter values through `db.py`; sort and direction are allowlisted words, never bound values; the notes search delegates to `rag.py`, and `annotate_note_hits` joins each hit's tenant, department and score off its row so a retrieval claim is checkable. `ignored_params` reports the parameters a listing did not read — names only, `tenant_id`/`tenant` with the layer-1 reason no request can name a tenant — so a discarded parameter is stated rather than swallowed (ADR 0014 as amended) |
 | Structured analytics (aggregates, Tukey IQR anomalies, chart data) | `apps/backend/analytics.py` — allowlisted args into fixed query templates through `db.py`; never generated SQL |
-| Agent, tools, prompts, retry policy, memory, transcript replay | `apps/backend/agent.py` (`thread_messages` reads the checkpointer back; the API layer never parses checkpoints itself) |
+| Agent, tools, prompts, retry policy, memory, transcript replay | `apps/backend/agent.py` (`thread_messages` reads the checkpointer back; the API layer never parses checkpoints itself). `_system_prompt` is the ONLY place the prompt is composed and the only reader of `agent.prompt_guardrails`; no enforcement module may name that knob (ADR 0011 as amended) |
 | Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`). `ensure_index` stamps the store with a digest of the corpus it embedded, so a regenerated dataset re-embeds instead of being searched through stale vectors (ADR 0010 as amended) |
 | Dataset generator | `apps/backend/scripts/generate_dataset.py` — truncated-lognormal salaries by rejection (never clipped) and compositional notes whose clause pools are disjoint per score band (ADR 0008 as amended) |
-| Eval harness | `apps/backend/evals/` — `harness.py` owns the shared bricks (workspace, trace collection, leak check, markdown) that `correctness.py`, `adversarial.py` and `model_gate.py` all import |
+| Eval harness | `apps/backend/evals/` — `harness.py` owns the shared bricks (workspace, trace collection, leak check, markdown) that `correctness.py`, `adversarial.py` and `model_gate.py` all import. `--no-guardrails` grades the off position and writes its own report file, so neither position overwrites the other's numbers (ADR 0004 as amended) |
 | Tests | `apps/backend/tests/` (pytest), `apps/frontend/src/**/*.test.tsx` (vitest) |
 | Tunable knob | `apps/backend/runtime.json` (typed view in `runtime.py`) — no magic values in code |
 | Frontend UI | `apps/frontend/src/` — compose the design bricks (catalogue: `src/components/README.md`); never hand-roll a table/pill/button |
