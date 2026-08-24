@@ -13,6 +13,12 @@ the isolation structural rather than a filter applied to results.
 - layer 4: `_verify_tenant` re-checks every returned chunk's own `tenant_id` and raises
   `db.SecurityViolation` on a mismatch, so a store built or mutated wrongly cannot leak.
 
+`search_notes_unscoped` is the same path for an identity whose verified token grants every tenant
+(ADR 0010 as amended): the same embedding, the same fixed KNN shape without its partition
+predicate, and layer 4 inapplicable rather than skipped, exactly as it is for the unscoped SQL
+read. Which of the two the agent's `search_notes` tool calls is decided when the tools are built,
+from the token alone.
+
 No match is an empty list, identical whether nothing was close or the only close note belongs to
 another tenant; the tool layer words the neutral message. Storage and queries go through `db.py`,
 the only module that opens a connection; this module owns embedding and orchestration.
@@ -121,19 +127,57 @@ def search_notes_scoped(
     db_path: Path, embedder: EmbedClient, query: str, tenant_id: str, k: int | None = None
 ) -> list[dict[str, object]]:
     """The notes closest to query inside tenant_id's partition; an empty list when none match."""
-    (vector,) = embedder.embed([query])
+    vector = _embed_query(embedder, query)
     try:
-        matches = db.search_vectors(
-            db_path, vector, tenant_id, runtime().rag.top_k if k is None else k
-        )
+        matches = db.search_vectors(db_path, vector, tenant_id, _wanted(k))
     except FileNotFoundError as missing:
         raise RetrievalUnavailable(_UNAVAILABLE) from missing
     _verify_tenant(matches, tenant_id)
-    return [
-        {"user_id": match.user_id, "name": match.name, "note": match.note,
-         "distance": match.distance}
-        for match in matches
-    ]
+    return [_hit(match) for match in matches]
+
+
+def search_notes_unscoped(
+    db_path: Path, embedder: EmbedClient, query: str, k: int | None = None
+) -> list[dict[str, object]]:
+    """The notes closest to query across every partition: retrieval for an all-tenant scope.
+
+    The retrieval sibling of `db.execute_unscoped`, and reached the same way: the agent binds it
+    into `search_notes` only for an identity whose verified token grants every tenant (ADR 0010 as
+    amended). Layers 1 and 2 are unchanged - the scope still comes from the token and there is
+    still no generated SQL - and the partition filter of layer 3 is absent because every partition
+    is what was asked for. Layer 4's tenant comparison is inapplicable rather than weakened, for
+    the same reason it is on the unscoped browse read (ADR 0014): the hits are supposed to carry
+    other tenants, so a check against one tenant has no meaning to make. Which is why these hits
+    carry `tenant_id` and the scoped ones do not - a mixed result has to say which tenant each
+    note came from, while a scoped result would only be restating the caller's own.
+    """
+    vector = _embed_query(embedder, query)
+    try:
+        matches = db.search_vectors_unscoped(db_path, vector, _wanted(k))
+    except FileNotFoundError as missing:
+        raise RetrievalUnavailable(_UNAVAILABLE) from missing
+    return [{"tenant_id": match.tenant_id, **_hit(match)} for match in matches]
+
+
+def _embed_query(embedder: EmbedClient, query: str) -> list[float]:
+    """The query's one embedding vector."""
+    (vector,) = embedder.embed([query])
+    return vector
+
+
+def _wanted(k: int | None) -> int:
+    """How many hits one search asks for: the caller's number, or the configured default."""
+    return runtime().rag.top_k if k is None else k
+
+
+def _hit(match: db.VectorMatch) -> dict[str, object]:
+    """One retrieved note as the tool layer and the Notes tab read it."""
+    return {
+        "user_id": match.user_id,
+        "name": match.name,
+        "note": match.note,
+        "distance": match.distance,
+    }
 
 
 def _verify_tenant(matches: list[db.VectorMatch], tenant_id: str) -> None:

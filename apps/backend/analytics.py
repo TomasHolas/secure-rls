@@ -5,9 +5,17 @@ a typed value checked against an allowlist defined in this module before anythin
 query, so a model can name a metric, a numeric column, a grouping dimension or a chart kind
 and nothing else. The queries themselves are two fixed shapes built from the sqlglot AST -
 an aggregate and a row scan - never a string this module concatenates, and both run through
-`db.execute_scoped`, which validates, scopes, caps and audits them like any other query.
+`db.py`'s executor, which validates, scopes, caps and audits them like any other query.
 This module opens no connection and reads no tenant from its own arguments beyond the
 `tenant_id` its caller took from the verified JWT.
+
+Scope (ADR 0002 as amended). The same two templates serve a one-tenant and an all-tenant
+identity; what differs is which executor they run through, `db.execute_scoped` or
+`db.execute_unscoped`, and `all_tenants` is the caller's verified scope saying which. It is
+keyword-only and defaults to the narrow reading, so a caller that says nothing gets one tenant.
+Every argument the model can write is still checked against the allowlists above, and none of
+them is this one: the agent closes over it at build time from the token (`agent._build_tools`),
+so no tool argument reaches it.
 
 An invalid argument raises `QueryRejected(retryable=True)`: an honest error the agent can
 correct on the next attempt (ADR 0011), never a silent fallback to a default.
@@ -74,7 +82,7 @@ from typing import NotRequired, TypedDict
 import numpy as np
 from sqlglot import exp
 
-from db import QueryResult, execute_scoped
+from db import QueryResult, execute_scoped, execute_unscoped
 from paths import DB_PATH
 from runtime import runtime
 from security import ALLOWED_TABLE, QueryRejected, require_allowed
@@ -166,6 +174,15 @@ class Anomaly:
     upper_fence: float
 
 
+def _execute(
+    sql: str, tenant_id: str, all_tenants: bool, db_path: Path
+) -> QueryResult:
+    """Run one template through the executor the caller's verified scope selects."""
+    if all_tenants:
+        return execute_unscoped(sql, tenant_id, db_path=db_path)
+    return execute_scoped(sql, tenant_id, db_path=db_path)
+
+
 def get_stats(
     metric: str,
     column: str,
@@ -173,14 +190,16 @@ def get_stats(
     tenant_id: str,
     *,
     db_path: Path = DB_PATH,
+    all_tenants: bool = False,
 ) -> QueryResult:
-    """One aggregate over the tenant's rows, optionally per group, from a fixed query template."""
+    """One aggregate over the rows in scope, optionally per group, from a fixed query template."""
     require_allowed(metric, METRICS, "metric")
     require_allowed(column, NUMERIC_COLUMNS, "column")
-    if group_by is None:
-        return execute_scoped(_stats_sql(metric, column, ()), tenant_id, db_path=db_path)
-    require_allowed(group_by, GROUP_BY_COLUMNS, "group_by")
-    return execute_scoped(_stats_sql(metric, column, (group_by,)), tenant_id, db_path=db_path)
+    dimensions = ()
+    if group_by is not None:
+        require_allowed(group_by, GROUP_BY_COLUMNS, "group_by")
+        dimensions = (group_by,)
+    return _execute(_stats_sql(metric, column, dimensions), tenant_id, all_tenants, db_path)
 
 
 def detect_anomalies(
@@ -189,8 +208,9 @@ def detect_anomalies(
     group_by: str = DEFAULT_GROUP_BY,
     *,
     db_path: Path = DB_PATH,
+    all_tenants: bool = False,
 ) -> list[Anomaly]:
-    """The tenant's rows lying beyond 1.5 x IQR from their own group's quartiles (Tukey fences)."""
+    """The rows in scope lying beyond 1.5 x IQR from their own group's quartiles (Tukey fences)."""
     require_allowed(column, NUMERIC_COLUMNS, "column")
     require_allowed(group_by, GROUP_BY_COLUMNS, "group_by")
     selections = (
@@ -199,7 +219,7 @@ def detect_anomalies(
         exp.column(column),
     )
     groups: dict[str, list[tuple[int, str, float]]] = defaultdict(list)
-    for user_id, name, group, value in _scan(selections, tenant_id, db_path):
+    for user_id, name, group, value in _scan(selections, tenant_id, all_tenants, db_path):
         groups[group].append((user_id, name, float(value)))
     flagged = [anomaly for group in sorted(groups) for anomaly in _flag(group, groups[group])]
     return sorted(flagged, key=lambda anomaly: (anomaly.group, anomaly.value))
@@ -215,27 +235,30 @@ def plot_data(
     bins: int | None = None,
     *,
     db_path: Path = DB_PATH,
+    all_tenants: bool = False,
 ) -> ChartSpec:
     """The ChartSpec for one chart, its values fetched here so no number passes through a model."""
     require_allowed(kind, CHART_KINDS, "kind")
     require_allowed(column, NUMERIC_COLUMNS, "column")
     if kind == _HISTOGRAM:
         _refuse_unused(kind, metric=metric, group_by=group_by, series_by=series_by)
-        return _histogram(column, tenant_id, bins, db_path)
+        return _histogram(column, tenant_id, bins, all_tenants, db_path)
     if kind == _SCATTER:
         _refuse_unused(kind, metric=metric, group_by=group_by, series_by=series_by, bins=bins)
-        return _scatter(column, tenant_id, db_path)
+        return _scatter(column, tenant_id, all_tenants, db_path)
     dimension = group_by if group_by is not None else _CHART_DIMENSIONS[kind]
     if kind == _BOX:
         _refuse_unused(kind, metric=metric, series_by=series_by, bins=bins)
-        return _box(column, dimension, tenant_id, db_path)
+        return _box(column, dimension, tenant_id, all_tenants, db_path)
     _refuse_unused(kind, bins=bins)
     metric = metric if metric is not None else _DEFAULT_METRIC
     if kind == _GROUPED_BAR:
         series = series_by if series_by is not None else _DEFAULT_SERIES_BY
-        return _grouped_bar(metric, column, dimension, series, tenant_id, db_path)
+        return _grouped_bar(metric, column, dimension, series, tenant_id, all_tenants, db_path)
     _refuse_unused(kind, series_by=series_by)
-    result = get_stats(metric, column, dimension, tenant_id, db_path=db_path)
+    result = get_stats(
+        metric, column, dimension, tenant_id, db_path=db_path, all_tenants=all_tenants
+    )
     return ChartSpec(
         kind=kind,
         title=f"{metric} {_label(column)} by {_label(dimension)}",
@@ -284,22 +307,22 @@ def _scan_sql(selections: tuple[exp.Expression, ...], limit: int, offset: int) -
 
 
 def _scan(
-    selections: tuple[exp.Expression, ...], tenant_id: str, db_path: Path
+    selections: tuple[exp.Expression, ...], tenant_id: str, all_tenants: bool, db_path: Path
 ) -> list[tuple[object, ...]]:
-    """Every scoped row for these selections, paged so no single query exceeds the row cap."""
+    """Every row in scope for these selections, paged so no single query exceeds the row cap."""
     config = runtime()
     page_size = config.db.max_result_rows
     rows: list[tuple[object, ...]] = []
     while True:
-        page = execute_scoped(
-            _scan_sql(selections, page_size, len(rows)), tenant_id, db_path=db_path
+        page = _execute(
+            _scan_sql(selections, page_size, len(rows)), tenant_id, all_tenants, db_path
         )
         rows.extend(page.rows)
         if page.returned_count < page_size:
             return rows
         if len(rows) >= config.analytics.max_scan_rows:
             raise QueryRejected(
-                f"the scoped rows exceed the {config.analytics.max_scan_rows}-row analytics "
+                f"the rows in scope exceed the {config.analytics.max_scan_rows}-row analytics "
                 "scan budget; aggregate the question instead",
                 retryable=False,
             )
@@ -327,8 +350,10 @@ def _flag(group: str, members: list[tuple[int, str, float]]) -> list[Anomaly]:
     ]
 
 
-def _histogram(column: str, tenant_id: str, bins: int | None, db_path: Path) -> ChartSpec:
-    """Equal-width bins over the tenant's values for this column, counted with numpy."""
+def _histogram(
+    column: str, tenant_id: str, bins: int | None, all_tenants: bool, db_path: Path
+) -> ChartSpec:
+    """Equal-width bins over the values in scope for this column, counted with numpy."""
     config = runtime().analytics
     count = config.histogram_bins if bins is None else bins
     whole = isinstance(count, int) and not isinstance(count, bool)
@@ -337,7 +362,10 @@ def _histogram(column: str, tenant_id: str, bins: int | None, db_path: Path) -> 
             f"bins must be a whole number between 1 and {config.max_histogram_bins}, not {bins!r}",
             retryable=True,
         )
-    values = [float(value) for (value,) in _scan((exp.column(column),), tenant_id, db_path)]
+    values = [
+        float(value)
+        for (value,) in _scan((exp.column(column),), tenant_id, all_tenants, db_path)
+    ]
     counts, edges = np.histogram(values, bins=count)
     return ChartSpec(
         kind=_HISTOGRAM,
@@ -352,7 +380,13 @@ def _histogram(column: str, tenant_id: str, bins: int | None, db_path: Path) -> 
 
 
 def _grouped_bar(
-    metric: str, column: str, group_by: str, series_by: str, tenant_id: str, db_path: Path
+    metric: str,
+    column: str,
+    group_by: str,
+    series_by: str,
+    tenant_id: str,
+    all_tenants: bool,
+    db_path: Path,
 ) -> ChartSpec:
     """One aggregate over two allowlisted dimensions at once: a bar per series within each group."""
     require_allowed(metric, METRICS, "metric")
@@ -364,7 +398,7 @@ def _grouped_bar(
             retryable=True,
         )
     sql = _stats_sql(metric, column, (group_by, series_by))
-    result = execute_scoped(sql, tenant_id, db_path=db_path)
+    result = _execute(sql, tenant_id, all_tenants, db_path)
     return ChartSpec(
         kind=_GROUPED_BAR,
         title=f"{metric} {_label(column)} by {_label(group_by)} and {_label(series_by)}",
@@ -378,8 +412,8 @@ def _grouped_bar(
     )
 
 
-def _scatter(column: str, tenant_id: str, db_path: Path) -> ChartSpec:
-    """One point per scoped row: the named numeric column against the schema's other one."""
+def _scatter(column: str, tenant_id: str, all_tenants: bool, db_path: Path) -> ChartSpec:
+    """One point per row in scope: the named numeric column against the schema's other one."""
     x_column = _SCATTER_AXES[column]
     selections = (exp.column(_NAME_COLUMN), exp.column(x_column), exp.column(column))
     return ChartSpec(
@@ -389,17 +423,19 @@ def _scatter(column: str, tenant_id: str, db_path: Path) -> ChartSpec:
         y_label=_label(column),
         data=[
             ChartPoint(x=str(name), x_value=float(x_value), y=float(value))
-            for name, x_value, value in _scan(selections, tenant_id, db_path)
+            for name, x_value, value in _scan(selections, tenant_id, all_tenants, db_path)
         ],
     )
 
 
-def _box(column: str, group_by: str, tenant_id: str, db_path: Path) -> ChartSpec:
+def _box(
+    column: str, group_by: str, tenant_id: str, all_tenants: bool, db_path: Path
+) -> ChartSpec:
     """Each group's quartiles and whiskers: the spread detect_anomalies judges its outliers by."""
     require_allowed(group_by, GROUP_BY_COLUMNS, "group_by")
     selections = (_dimension(group_by), exp.column(column))
     groups: dict[str, list[float]] = defaultdict(list)
-    for group, value in _scan(selections, tenant_id, db_path):
+    for group, value in _scan(selections, tenant_id, all_tenants, db_path):
         groups[str(group)].append(float(value))
     return ChartSpec(
         kind=_BOX,
