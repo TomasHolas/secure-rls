@@ -13,7 +13,18 @@ docs in the same change.
 ## Architecture
 
 - [architecture.md](architecture.md) — system overview, the five RLS defense
-  layers, request flow, data model, agent tool set, assignment compliance map.
+  layers, request flow, data model, agent tool set, the browse tabs as the
+  control group, assignment compliance map.
+- [api.md](api.md) — the HTTP surface: every route, the chat stream's typed
+  events and its two invariants, the sliding session.
+
+## Process
+
+- [development-process.md](development-process.md) — how the repo is built:
+  agentic development with Claude Code, the ADR and issue queue method, the test
+  suite's shape, the CI/CD jobs.
+- [challenges.md](challenges.md) — what was hard, per wave, and the known
+  limitations stated plainly.
 
 ## Reviews
 
