@@ -26,6 +26,7 @@ const api = vi.hoisted(() => ({
   browseRecords: vi.fn(),
   browseNotes: vi.fn(),
   listDepartments: vi.fn(),
+  listTenants: vi.fn(),
   listFlaggedNotes: vi.fn(),
   searchNotes: vi.fn(),
   listConversations: vi.fn(),
@@ -100,12 +101,12 @@ const REPLAY_TURNS = [
 const RECORDS_PAGE = {
   columns: ["user_id", "tenant_id", "name"],
   rows: [[1, "acme", "Ada Lovelace"]],
-  total: 450,
+  total: 1000,
   page: 1,
   page_size: 25,
   sort: "user_id",
   direction: "asc",
-  executed_sql: "SELECT user_id FROM (SELECT * FROM employees WHERE employees.tenant_id = ?)",
+  executed_sql: "SELECT user_id FROM employees ORDER BY user_id LIMIT 25",
 };
 const NOTES_PAGE = {
   ...RECORDS_PAGE,
@@ -208,7 +209,8 @@ beforeEach(() => {
   api.openChatStream.mockImplementation(() => Promise.resolve(sseResponse(TURN)));
   api.browseRecords.mockResolvedValue(RECORDS_PAGE);
   api.browseNotes.mockResolvedValue(NOTES_PAGE);
-  api.listDepartments.mockResolvedValue([{ department: "Engineering", employees: 95 }]);
+  api.listDepartments.mockResolvedValue([{ value: "Engineering", employees: 206 }]);
+  api.listTenants.mockResolvedValue([{ value: "acme", employees: 450 }]);
   api.listFlaggedNotes.mockResolvedValue({ user_ids: [], kinds: {} });
   api.searchNotes.mockResolvedValue({ query: "", k: 5, hits: [] });
 });
@@ -485,14 +487,14 @@ describe("the section tabs", () => {
     expect(api.browseNotes).not.toHaveBeenCalled();
   });
 
-  it("shows the tenant's rows on the Records tab and hides the conversation rail", async () => {
+  it("shows the whole dataset on the Records tab and hides the conversation rail", async () => {
     const { view } = await signIn();
     await screen.findByText(NEWEST.title);
 
     openTab("Records");
 
     expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
-    expect(screen.getByText(/450 matching rows/)).toBeTruthy();
+    expect(screen.getByText(/1,000 matching rows · all tenants/)).toBeTruthy();
     expect(titles(view.container)).toEqual([]);
     expect(screen.queryByRole("button", { name: /new chat/i })).toBeNull();
   });

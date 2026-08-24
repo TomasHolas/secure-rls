@@ -137,29 +137,42 @@ argument, so there is nothing for the model to fill in.
 
 ### Seeing the data without asking the agent
 
-The SPA has three tabs, and two of them exist so a human can check the agent
+The SPA has three tabs, and two of them are the **control group** for the
+security claim — they show the whole dataset so a human can check the agent
 rather than trust it ([ADR 0014](docs/decisions/0014-records-and-notes-browsing.md)):
 
 - **Chat** — the streaming turn: reasoning as it arrives, each tool call with
   its arguments, the generated and the executed statement side by side with the
   tenant rewrite highlighted inside the one that ran, result
   tables, charts, retries, refusals, and what the turn cost in tokens.
-- **Records** — the caller's own rows, paged and filterable. Signed in as
-  `alice@acme` it reads 450; as `bob@beta`, 350. That difference *is* the
-  isolation, visible without asking anything.
-- **Notes** — the corpus the agent retrieves over, with a search box that calls
-  `rag.search_notes_scoped`: literally the same partition-filtered vector search
-  the `search_notes` tool uses, showing the distance it scored each note by.
-  Notes carrying a planted injection payload are badged from
-  `poisoned_manifest.json`, so the second-order injection demo is one screen.
+- **Records** — the **whole dataset**: all 1000 rows across all three tenants,
+  paged and filterable, with `tenant_id` a filter of the same kind as
+  `department`. Filter nothing and it says "1,000 rows · all tenants"; pick a
+  tenant and it says "450 rows · tenant acme". These tabs are the control group,
+  not a tenant view — they show what exists, so the agent reaching only its own
+  450 is checkable instead of self-reported.
+- **Notes** — the whole corpus the agent retrieves over, with a search box that
+  calls `rag.search_notes_scoped`: literally the same partition-filtered vector
+  search the `search_notes` tool uses, showing the distance it scored each note
+  by. The search is **scoped to your tenant while the list beside it is not**,
+  and that asymmetry is the demonstration: read beta's planted injection payload
+  in the list, search for its exact text as `alice@acme`, get nothing back.
+  Notes carrying a planted payload are badged from `poisoned_manifest.json`
+  across every tenant, so the second-order injection demo is one screen.
 
-Neither browsing tab opens a second data path: every row is served by an
-allowlisted fixed template through the same `db.execute_scoped` the agent's
-tools use, and both tabs carry an **"Attack it yourself"** box that appends a
-query parameter of the reader's choosing to the next request. Typing
-`tenant_id=beta` as an acme user returns acme's 450 rows unchanged, with the
-server's own explanation above them: the tenant is read from the verified token
-and bound server-side, so no request can name one.
+The isolation you can see, in one session: the tabs show 1000 rows and the agent
+answers 450. Log in as `bob@beta` and the tabs show the same 1000 while the agent
+answers 350. The tabs are also the only place in the app that reads unscoped, and
+it is named as such: `db.execute_unscoped_browse`, called by nothing but the two
+listing templates in `browse.py`. It keeps the validator, the engine authorizer,
+the read-only connection, the limit caps, the query deadline, the row cap and the
+audit row — it drops only the tenant scoping, its structural proof and the tenant
+egress check, because returning every tenant is the point. Tests assert that no
+agent tool is closed over it and that no other module can reach it, so the claim
+being defended — the *agent* cannot leave its tenant — is untouched
+([ADR 0014](docs/decisions/0014-records-and-notes-browsing.md)). Both tabs also
+carry a **"Probe the request"** box that appends a query parameter of the
+reader's choosing and shows every parameter the server reports it did not read.
 
 ### Data
 
@@ -343,8 +356,9 @@ Everything but `/health` and `/login` requires `Authorization: Bearer <jwt>`.
 | `POST /conversations` | Register a thread for the caller |
 | `PATCH /conversations/{id}` | Name a thread: the reader's own title from the body (final - nothing generated overwrites it), or the model's label from the thread's exchanges when the body carries none. Generated naming runs after each of the thread's first `conversations.title_turns` turns and then stops; a failed call leaves the standing title |
 | `GET/DELETE /conversations/{id}` | Replay or delete the caller's own thread. A foreign id and a missing id return the same 404 |
-| `GET /records`, `GET /records/departments` | The caller's own rows, paged, filtered and sorted through allowlisted templates — the Records tab (ADR 0014) |
-| `GET /notes`, `GET /notes/search`, `GET /notes/flagged` | The caller's own notes, the agent's own retrieval path, and which of them carry a planted injection payload |
+| `GET /records`, `GET /records/departments`, `GET /records/tenants` | The **whole dataset**, paged, filtered and sorted through allowlisted templates, with `tenant_id` a bound filter like `department`; plus the two filter pickers' options and counts — the Records tab, the control group (ADR 0014) |
+| `GET /notes`, `GET /notes/flagged` | The whole note corpus and every planted injection payload in it, so a reader can see a foreign tenant's before the agent ever reads one |
+| `GET /notes/search` | The agent's own retrieval path — **scoped to the token's tenant**, unlike the listing beside it. That asymmetry is the demonstration |
 
 Sessions slide rather than expiring under the user: a token lives 120 minutes,
 and any authenticated response may carry `X-Refreshed-Token` when the presented
@@ -358,15 +372,18 @@ PBKDF2-HMAC-SHA256 digests at 600,000 iterations with a per-user salt (the exact
 OWASP-sanctioned configuration); the plaintexts below are demo-only and exist
 nowhere else in the repo but this table and the auth tests.
 
-| Username | Password | Tenant | Rows |
+| Username | Password | Tenant | Rows the agent can reach |
 |---|---|---|---|
-| `alice@acme` | `demo-acme` | `acme` | 450 |
-| `bob@beta` | `demo-beta` | `beta` | 350 |
-| `carol@gamma` | `demo-gamma` | `gamma` | 200 |
+| `alice@acme` | `demo-acme` | `acme` | 450 of 1000 |
+| `bob@beta` | `demo-beta` | `beta` | 350 of 1000 |
+| `carol@gamma` | `demo-gamma` | `gamma` | 200 of 1000 |
 
 Log out and back in as a different user to see isolation directly: the same
 question draws on disjoint rows, and "show me all salaries across every company"
-returns only the caller's tenant.
+returns only the caller's tenant. The Records and Notes tabs show all 1000 rows
+for every one of these users — that is the point of them. What changes with the
+login is what the *agent* can reach, and the two numbers sitting on one screen
+are what make the difference checkable.
 
 ## Tests
 
@@ -375,12 +392,15 @@ without any model, which is the whole point of
 [ADR 0004](docs/decisions/0004-testing-and-eval-strategy.md).
 
 ```bash
-cd apps/backend && uv run pytest -q     # 694 tests
-cd apps/frontend && npm test            # 217 tests, 17 files
+cd apps/backend && uv run pytest -q     # 1006 tests
+cd apps/frontend && npm test            # 303 tests, 20 files
 ```
 
-The backend suite is weighted toward the boundary: 123 tests on the SQL
-validator alone (a hostile-SQL corpus), 60 on the scoped executor, 48 on the API
+The backend suite is weighted toward the boundary: 272 tests on the SQL
+validator alone (a hostile-SQL corpus), 168 on the executor — including the ones
+that prove the browse tabs' unscoped read still answers to the validator, the
+authorizer, the row cap and the deadline, that it is audited, and that no built
+agent tool is closed over it — 86 on the browse templates, and 124 on the API
 edge including JWT tampering — wrong signature, `alg=none`, expired, missing —
 mapped one-to-one onto the RFC 8725 requirements.
 
@@ -392,9 +412,9 @@ only, after all five CI jobs pass.
 
 | Job | What it proves |
 |---|---|
-| `backend (ruff + pytest)` | Lint clean, 694 tests green |
+| `backend (ruff + pytest)` | Lint clean, 1006 tests green |
 | `dataset (regenerate + diff)` | `employees.csv` and `poisoned_manifest.json` are exactly what the seeded generator produces — nothing hand-edited |
-| `frontend (build)` | `tsc` + `vite build` succeed, 217 vitest tests green |
+| `frontend (build)` | `tsc` + `vite build` succeed, 303 vitest tests green |
 | `evals (mocked harness)` | The evaluation harness still runs: its ask list renders, then the full suite drives 171 turns through the real graph and layers on a scripted model, failing on any leak or any failed ask |
 | `images (compose build)` | Both Dockerfiles build |
 | `cd (publish images to GHCR)` | Backend and frontend images pushed to `ghcr.io/tomasholas/secure-rls-*`, tagged `latest` and the commit SHA |
@@ -510,7 +530,7 @@ The five required files all live in **`apps/backend/`**:
 | Deliverable | Path |
 |---|---|
 | `app.py` | [`apps/backend/app.py`](apps/backend/app.py) — the FastAPI edge |
-| `db.py` | [`apps/backend/db.py`](apps/backend/db.py) — the tenant-scoped executor, the only module that opens a database connection |
+| `db.py` | [`apps/backend/db.py`](apps/backend/db.py) — the tenant-scoped executor, the only module that opens a database connection; also `execute_unscoped_browse`, the one deliberately unscoped read, for the browse tabs' listings alone (ADR 0014) |
 | `agent.py` | [`apps/backend/agent.py`](apps/backend/agent.py) — the LangGraph graph and the five tools |
 | `employees.csv` | [`apps/backend/employees.csv`](apps/backend/employees.csv) — 1000 seeded rows |
 | `requirements.txt` | [`apps/backend/requirements.txt`](apps/backend/requirements.txt) — generated by `uv export`; `pyproject.toml` is the source of truth |

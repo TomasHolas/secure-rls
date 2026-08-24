@@ -194,8 +194,9 @@ describe("sliding session", () => {
 });
 
 describe("a browse request", () => {
-  // A filter the reader left alone is not a filter: the disabled tenant control (#117 enables it)
-  // therefore adds nothing to the URL the server parses, which is what keeps #115 a layout change.
+  // A filter the reader left alone is not a filter: "any tenant" is the absence of the parameter,
+  // not `tenant_id=`, so an unfiltered listing asks for the dataset rather than for the empty
+  // string. The tenant filter is otherwise an ordinary parameter (#117).
   it("sends only the filters that carry a value", async () => {
     const { api } = await load();
     const fetchMock = vi
@@ -210,6 +211,32 @@ describe("a browse request", () => {
     expect(url.searchParams.get("name")).toBe("ada");
     expect(url.searchParams.get("hired_from")).toBe("2020-01-31");
     expect(url.searchParams.get("page")).toBe("1");
+  });
+
+  it("sends the tenant filter when the reader picked one", async () => {
+    const { api } = await load();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ columns: [], rows: [], total: 0, ignored: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.browseRecords({ tenant_id: "beta" });
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]), "http://localhost");
+    expect(url.searchParams.get("tenant_id")).toBe("beta");
+  });
+
+  it("carries the tenant to the department options so their counts match the listing", async () => {
+    const { api } = await load();
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.listDepartments("acme");
+    await api.listDepartments();
+
+    const asked = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(asked[0]).toContain("/records/departments?tenant_id=acme");
+    expect(asked[1]).toBe(asked[1].replace(/\?.*/, ""));
   });
 });
 

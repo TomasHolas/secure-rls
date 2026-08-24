@@ -103,11 +103,15 @@ as GitHub issues (one per milestone); every change lands via branch → PR → m
   scoping highlighted inside the one that ran), conversation
   history sidebar, tenant badge, charts, transparent security-refusal and
   truncation states, cross-tenant isolation demo via login switch (ADR 0012).
-  Three shell tabs (ADR 0014): **Chat**, **Records** (the tenant's rows, filtered,
-  sorted and paged server-side, with the executed scoped SQL shown) and **Notes**
-  (the corpus the agent retrieves over, plus a search that runs the agent's own
-  retrieval path and shows the distances). The tabs make the isolation checkable
-  without trusting the agent.
+  Three shell tabs (ADR 0014 as rewritten): **Chat**, **Records** (the whole
+  dataset — all 1000 rows, all three tenants — filtered, sorted and paged
+  server-side with `tenant_id` a filter like any other, and the executed
+  statement shown and labelled as unscoped) and **Notes** (the whole corpus,
+  poisoned badges across every tenant, plus a search that runs the agent's own
+  SCOPED retrieval path and shows the distances). The tabs are the control
+  group: they show what exists, so the agent reaching only its own tenant is
+  checkable rather than self-reported. Reading beta's planted payload in the
+  list and then failing to retrieve it as acme is the demonstration.
 - `[x]` **M5 — Evaluation harness.** `evals/`: 25 correctness questions vs
   pandas ground truth (1% tolerance) + 20 single-turn and 5 multi-turn
   adversarial cases + retrieval/poisoned-notes attacks, every suite run for
@@ -172,9 +176,9 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | What a turn's history keeps, and the caps on it | `apps/backend/turns.py` — `TurnLog` reduces the live trace events to the stored record: reasoning concatenated per model round, every call with the arguments the model wrote, each call's one outcome, the terminal frame always; tokens and the model-facing result text dropped. Owns all four per-turn caps and counts every piece they refuse, and is the one place a storage failure is logged and swallowed (the answer has already streamed) |
 | Generated thread titles | `apps/backend/titles.py` — the model's few-word label for a thread, sanitized, falling back to the title the thread already has (the first message only while it is still unnamed); `should_title` is the window, so a thread is named again after each of its first `conversations.title_turns` turns and never after. Called by `PATCH /conversations/{id}`, never from the `/chat` stream (ADR 0012 as amended) |
 | Auth / JWT / tenant users | `apps/backend/auth.py` |
-| Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection. `init_db` loads the CSV (accepting `str` or `Path`) and `employee_rows` is how `create_app` tells a populated database from one that was never built (ADR 0003 as amended) |
+| Data load + tenant-scoped execution | `apps/backend/db.py` — the ONLY module that opens a SQLite connection. `init_db` loads the CSV (accepting `str` or `Path`) and `employee_rows` is how `create_app` tells a populated database from one that was never built (ADR 0003 as amended). `execute_unscoped_browse` is the one deliberately unscoped read, for `browse.py`'s listings only — see the hard rule below |
 | SQL validation (allowlist) | `apps/backend/security.py` |
-| Records/Notes browsing (allowlisted filters, sorts, paging, the poison manifest) | `apps/backend/browse.py` — fixed templates with bound filter values through `db.py`; sort and direction are allowlisted words, never bound values; the notes search delegates to `rag.py`, and `annotate_note_hits` joins each hit's tenant, department and score off its row so a retrieval claim is checkable. `ignored_params` reports the parameters a listing did not read — names only, `tenant_id`/`tenant` with the layer-1 reason no request can name a tenant — so a discarded parameter is stated rather than swallowed (ADR 0014 as amended) |
+| Records/Notes browsing (allowlisted filters, sorts, paging, filter options, the poison manifest) | `apps/backend/browse.py` — fixed templates with bound filter values. The LISTINGS run through `db.execute_unscoped_browse` and show the whole dataset, with `tenant_id` a bound filter and a sortable column like `department` (ADR 0014 as rewritten); the notes SEARCH stays scoped, delegating to `rag.py`, and `annotate_note_hits` joins each hit's tenant, department and score off its row through `db.execute_scoped` so a retrieval claim is checkable. Sort, direction and an options column are allowlisted words, never bound values. `filter_options` serves the tenant and department pickers from the same read, so no count describes a set nobody asked for. `ignored_params` reports the parameters a listing did not read — names only — so a discarded parameter is stated rather than swallowed |
 | Structured analytics (aggregates, Tukey IQR anomalies, chart data) | `apps/backend/analytics.py` — allowlisted args into fixed query templates through `db.py`; never generated SQL |
 | Agent, tools, prompts, retry policy, memory, transcript replay | `apps/backend/agent.py` (`thread_messages` reads the checkpointer back; the API layer never parses checkpoints itself). `_system_prompt` is the ONLY place the system prompt is composed and the only reader of `agent.prompt_guardrails`; no enforcement module may name that knob. A tool docstring in `_build_tools` is bound as the tool's `description` and reaches the model in BOTH guardrail positions, so it states what the tool does and never a rule the model is asked to follow (ADR 0011 as amended) |
 | Note embedding + tenant-partitioned vector search | `apps/backend/rag.py` (storage/queries via `db.py`). `ensure_index` stamps the store with a digest of the corpus it embedded, so a regenerated dataset re-embeds instead of being searched through stale vectors (ADR 0010 as amended) |
@@ -187,7 +191,7 @@ cd apps/backend && uv run python scripts/generate_dataset.py
 | Frontend session (token, display-only JWT claims, logout) | `apps/frontend/src/auth.ts` |
 | Frontend HTTP calls (Bearer header, `X-Refreshed-Token` adoption, 401 -> login) | `apps/frontend/src/lib/api.ts` — the only module that calls `fetch` |
 | Frontend chat stream (SSE frames -> typed trace events -> one turn's state) | `apps/frontend/src/lib/sse.ts` + `lib/trace.ts`; rendered by `views/ChatView.tsx` over the `components/chat/` bricks. `lib/trace.ts` is the ONE fold: `replayTurns` runs a reopened thread's stored events through `applyEvent` itself, so a past turn is the same `Turn` object — and therefore the same bricks — as a live one. The only differences a replayed turn carries are the two it cannot have: no token-by-token arrival, and no measured thinking span (that clock is this browser's) |
-| Frontend Records / Notes tabs | `apps/frontend/src/views/RecordsView.tsx`, `views/NotesView.tsx` — filters, sorts and pages are query parameters, never in-browser reordering; the tab strip is the `layout/Tabs` brick in the shell header and a visited tab stays mounted; the `ParamProbe` brick is the one control that is not a filter — the reader appends a parameter of their own and reads what the server ignored (ADR 0014 as amended) |
+| Frontend Records / Notes tabs | `apps/frontend/src/views/RecordsView.tsx`, `views/NotesView.tsx` — the whole dataset, with `tenant_id` a filter like any other and every total naming what it counts ("1,000 rows · all tenants", "450 · tenant acme"); filters, sorts and pages are query parameters, never in-browser reordering; the tab strip is the `layout/Tabs` brick in the shell header and a visited tab stays mounted; the `ParamProbe` brick is the one control that is not a filter — the reader appends a parameter of their own and reads what the server ignored (ADR 0014 as rewritten) |
 | Frontend conversation state (thread list, which thread is open, its replay) | `apps/frontend/src/lib/conversations.ts` — the one owner the rail (`views/ConversationsSidebar.tsx`) and the chat view share; `replay` is the open thread's past turns, already folded |
 | The conversation rail itself (collapse, identity menu, inline search, hover glide) | `apps/frontend/src/views/ConversationsSidebar.tsx` over the `components/layout/Sidebar` collapse mechanism plus the `IdentityMenu`, `InlineSearch` and `GlideList` bricks; every metric and duration is a custom property in the rail's block in `styles/app.css` (issue #114, `docs/ui-pattern-review.md`). The aside clips (`overflow: clip`) while the column inside it stays at the expanded width — that is what keeps its icons from moving — so a slot with clipped controls reads `useSidebarCollapsed()` and takes them out of the Tab order rather than being unmounted |
 | Number formatting a reader sees (axis ticks, bin edges, table cells, elapsed seconds, singularized counts) | `apps/frontend/src/lib/format.ts` — the only formatter; the backend emits raw numbers and never a locale-specific string |
@@ -215,8 +219,19 @@ evals → the same service modules                   (no second code path)
   tenant parameter the model could fill; no endpoint accepts one in the body.
 - **All data access through `db.py`'s scoped executor.** No other module —
   agent, evals, tests included — opens a SQLite connection or bypasses the
-  validator + scoping + egress check (exception: `conversations.py` owns the
-  separate app-state store `state.db`).
+  validator + scoping + egress check. Exactly two exceptions, both named here
+  because a rule that contradicts the code is worse than no rule:
+  1. `conversations.py` owns the separate app-state store `state.db`, which
+     holds no tenant rows.
+  2. `db.execute_unscoped_browse` — the ONE deliberately unscoped read, used
+     only by `browse.py`'s Records/Notes listings, which are the demo's control
+     group and show the whole dataset (ADR 0014 as rewritten). It keeps the
+     validator, the engine authorizer, the read-only connection, the limit caps,
+     the query deadline, the row cap and the audit row; it drops only the
+     tenant scoping, the structural proof of it, and the tenant egress
+     comparison, because returning every tenant is its purpose. No agent tool
+     is closed over it and no other module may call it — both are asserted in
+     `tests/test_db.py`, and the agent's reach is unchanged.
 - **Never commit to `main` directly.** Every change lands via branch → commit →
   push → PR → merge (`feat/<issue>-<slug>`, `fix/<slug>`, `docs/<slug>`).
 - **Everything is a lego brick — frontend and backend alike.** One concern = one

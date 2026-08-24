@@ -14,11 +14,12 @@ Endpoints:
 - `POST /login`             credentials for a token, or 401.
 - `GET  /models`            the endpoint's live chat-capable models plus the default it resolves.
 - `POST /chat`              one turn as an SSE stream of ADR 0012 trace events.
-- `GET  /records`           one filtered, sorted page of the caller's own employee rows.
-- `GET  /records/departments` the caller's departments and headcounts, for the filter's options.
-- `GET  /notes`             one page of the caller's note corpus.
-- `GET  /notes/search`      the agent's own retrieval path, run for a reader's query.
-- `GET  /notes/flagged`     which of the caller's rows the committed poison manifest plants.
+- `GET  /records`           one filtered, sorted page of the dataset's employee rows, all tenants.
+- `GET  /records/departments` the departments the listing holds and their counts.
+- `GET  /records/tenants`   the dataset's tenants and their row counts, for the tenant filter.
+- `GET  /notes`             one page of the whole note corpus.
+- `GET  /notes/search`      the agent's own retrieval path, run for a reader's query - scoped.
+- `GET  /notes/flagged`     which rows the committed poison manifest plants a payload in.
 - `GET  /conversations`     the caller's threads, newest first.
 - `POST /conversations`     a new thread; the title is the first user message, truncated.
 - `GET  /conversations/{id}` the caller's own thread row, its transcript and its turn history.
@@ -69,18 +70,25 @@ reaches the reader - the answer already streamed, and losing a replayable trace 
 failing a turn over. The read path is the strict one: a history that cannot be reconstructed
 raises rather than replaying a partial turn as a whole one.
 
-Browsing the data itself (ADR 0014). The Records and Notes tabs read through `browse.py`, whose
-two allowlisted templates go down the same `db.execute_scoped` path the agent's tools do, and
-the notes search delegates to `rag.search_notes_scoped`, the retrieval path the `search_notes`
-tool uses. So these handlers stay what every other one here is - one call into the module that
-owns the logic - and the tenant reaches them the only way it ever does, from the verified token.
-The filter values arrive as query parameters typed by `browse.Filters`, which is the allowlist:
-a parameter the client invents is not in it and is dropped, exactly as a body field would be -
-and, since issue #107, is named in the response rather than dropped in silence. Both listings
-pass the request's raw parameter names to `browse.ignored_params`, which reports what it did not
-read and gives `tenant_id`/`tenant` the reason no request can name a tenant (ADR 0002, layer 1).
-A stray parameter is still a 200 with the caller's own rows: a page must not break over one, and
-a known filter with a value the allowlist refuses is still the same 400.
+Browsing the data itself (ADR 0014 as rewritten). The Records and Notes tabs are the demo's
+control group, so their listings show the WHOLE dataset - all three tenants - with `tenant_id` a
+filter of the same kind as `department`. They read through `browse.py`'s allowlisted templates
+down `db.execute_unscoped_browse`, the one deliberately unscoped read in the repo: validator,
+engine authorizer, limit caps, deadline, row cap and audit row all still apply, and only the
+tenant scoping and its egress comparison are absent, because returning every tenant is the point.
+The notes SEARCH is the opposite and stays that way: it delegates to `rag.search_notes_scoped`,
+the `search_notes` tool's own path, for the token's tenant alone. A reader can therefore read
+another tenant's planted payload in the list and watch their own search fail to retrieve it.
+
+Nothing about identity moves. The token is still required on every one of these routes, and the
+tenant it carries is what the audit row records and what the search is scoped to; it is simply not
+what narrows a listing. The filter values arrive as query parameters typed by `browse.Filters`,
+which is the allowlist, and each is a bound parameter - the tenant filter included, so a reader's
+selection is compared as a value and never rendered as SQL. A parameter that is not one of its
+fields is not read, and since issue #107 is named in the response rather than dropped in silence:
+both listings pass the request's raw parameter names to `browse.ignored_params`. A stray parameter
+is still a 200 with the page it could serve, and a known filter with a value the allowlist refuses
+is still the same 400.
 
 Three exception handlers turn a refused browse into an honest status without narrating the
 server: `QueryRejected` is a 400 carrying its own reason (a sort outside the allowlist, a date
@@ -214,10 +222,11 @@ from browse import (
     BrowsePage,
     Filters,
     Flagged,
+    OptionCount,
     annotate_note_hits,
     browse_notes,
     browse_records,
-    departments,
+    filter_options,
     flagged_user_ids,
 )
 from conversations import ConversationRegistry, NotFound, Thread, TurnHistory
@@ -686,19 +695,20 @@ def create_app(
         page: int = 1,
         page_size: int | None = None,
     ) -> BrowsePage:
-        """One page of the caller's own employee rows: the Records tab (ADR 0014).
+        """One page of the DATASET's employee rows, every tenant: the Records tab (ADR 0014).
 
-        The tenant is the token's, so there is nothing to authorize here beyond having a token:
-        the same query for two identities reads two disjoint sets of rows because the executor
-        binds a different tenant into it, not because this handler chose differently.
+        This listing is the control group, not a tenant view: a reader sees all 1000 rows and can
+        narrow to one tenant with `tenant_id`, a filter of the same kind as `department`, so the
+        agent's own 450 can be compared against what exists. The token is still required and its
+        tenant is still what the audit row records; it is not what narrows the page.
 
         The raw parameter names travel with the request so `browse.py` can report the ones it
         does not read (issue #107) - the names only, never their values. A parameter this
-        handler has no field for is still not read, exactly as before; what changes is that the
-        page says so rather than leaving a reader to guess whether it was refused or honored.
+        handler has no field for is still not read; what the page adds is saying so, rather than
+        leaving a reader to guess whether it was refused or honored.
         """
         return browse_records(
-            identity.tenant_id,
+            reader_tenant=identity.tenant_id,
             filters=filters,
             sort=sort,
             direction=direction,
@@ -711,9 +721,25 @@ def create_app(
     @app.get("/records/departments")
     def record_departments(
         identity: Annotated[Identity, Depends(_identity)],
-    ) -> list[dict[str, object]]:
-        """The caller's departments and headcounts, so the filter offers only values it has."""
-        return departments(identity.tenant_id, db_path=db_path)
+        tenant_id: str | None = None,
+    ) -> list[OptionCount]:
+        """The departments the listing holds and their counts, so the filter offers real values.
+
+        It takes the tenant filter the listing took, so the count beside an option is a count of
+        the rows the reader is actually looking at rather than of a set they did not ask for.
+        """
+        return filter_options(
+            "department", reader_tenant=identity.tenant_id, tenant_id=tenant_id, db_path=db_path
+        )
+
+    @app.get("/records/tenants")
+    def record_tenants(identity: Annotated[Identity, Depends(_identity)]) -> list[OptionCount]:
+        """The dataset's tenants and their row counts: the tenant filter's options (ADR 0014).
+
+        Never narrowed by the tenant filter itself - the picker's whole job is to state that the
+        dataset holds 450, 350 and 200 rows, which is the control group in one line.
+        """
+        return filter_options("tenant_id", reader_tenant=identity.tenant_id, db_path=db_path)
 
     @app.get("/notes")
     def notes(
@@ -725,13 +751,14 @@ def create_app(
         page: int = 1,
         page_size: int | None = None,
     ) -> BrowsePage:
-        """One page of the caller's note corpus - the text the agent retrieves over (ADR 0014).
+        """One page of the whole note corpus - the text the agent retrieves over (ADR 0014).
 
-        Same listing contract as `/records`, including the report of the parameters it did not
-        read: the corpus takes the same filters, so it owes a reader the same honesty about them.
+        Same listing contract as `/records`, filters and ignored-parameter report included, and
+        unscoped for the same reason: a reader has to be able to see another tenant's planted
+        payload here before finding that `/notes/search` cannot retrieve it for them.
         """
         return browse_notes(
-            identity.tenant_id,
+            reader_tenant=identity.tenant_id,
             filters=filters,
             sort=sort,
             direction=direction,
@@ -753,6 +780,10 @@ def create_app(
         the hits and their distances are what the model would have been handed for that query.
         Each hit is then annotated with its row's department and score through the scoped
         executor, so a reader can check a retrieval claim against the data (ADR 0014).
+
+        This is the one thing on the Notes tab that stays scoped to the token's tenant while the
+        corpus listing beside it shows every tenant's. That asymmetry is the demonstration: the
+        payload a reader can read in the list is one their own search will never return.
         """
         wanted = _hit_count(k)
         return NoteHits(
@@ -765,10 +796,14 @@ def create_app(
             ),
         )
 
-    @app.get("/notes/flagged")
-    def flagged_notes(identity: Annotated[Identity, Depends(_identity)]) -> Flagged:
-        """Which of the caller's rows the committed poison manifest plants a payload in."""
-        return flagged_user_ids(identity.tenant_id)
+    @app.get("/notes/flagged", dependencies=[Depends(_identity)])
+    def flagged_notes() -> Flagged:
+        """Which rows the committed poison manifest plants a payload in, across every tenant.
+
+        Repo metadata the README already points at, and now every tenant's, because the corpus
+        listing shows every tenant's notes. A token is still required to read it.
+        """
+        return flagged_user_ids()
 
     @app.get("/conversations")
     def list_conversations(identity: Annotated[Identity, Depends(_identity)]) -> list[Thread]:

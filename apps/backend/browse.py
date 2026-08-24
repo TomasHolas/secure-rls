@@ -1,50 +1,63 @@
-"""Browsing what the signed-in tenant can see: the Records and Notes tabs' data path (ADR 0014).
+"""Browsing the whole dataset: the Records and Notes tabs' data path (ADR 0014 as rewritten).
 
-The tabs exist so a reader can check the isolation without trusting the agent: sign in as one
-tenant, see its rows and its note corpus, sign in as another and see entirely different ones.
-That only proves something if the tabs are not a second way to reach the data, so this module
-adds no data path at all. Every row it serves comes from one of the fixed templates below, built
-from the sqlglot AST over these allowlists and executed by `db.execute_scoped` - the same
-validator, scoping rewrite, engine controls, egress check, row cap and audit log the agent's own
-tools go through (ADRs 0002, 0003, 0007). Nothing here concatenates SQL a reader typed,
-interpolates a column name, or opens a connection.
+The tabs are the control group for the isolation claim, not a tenant view. They list every row
+of the dataset - all three tenants - so a reader can see exactly what exists, and then watch the
+agent in the same app reach only the tenant its token names. Showing 450 with nothing saying
+that 1000 exist throws that comparison away and makes the number look like a bug. So the
+listings are deliberately unscoped, and `tenant_id` is a filter of the same kind as
+`department`: pick one and the page is that tenant's, pick nothing and it is the dataset's.
+
+That is the ONE unscoped read in the repo, and it is named as one: the listings run through
+`db.execute_unscoped_browse`, which keeps layer 2's validator, layer 2.5's read-only connection,
+authorizer, limit caps and deadline, the row cap and the audit row, and drops only what showing
+every tenant makes meaningless (the scoping rewrite, the proof of it, and the tenant egress
+comparison). The scoped executor is still what everything else here uses - the note-hit
+annotation below, every agent tool, every eval. Nothing in this module concatenates SQL a reader
+typed, interpolates a column name, or opens a connection.
 
 A reader's filter values travel as bound parameters, declared to the executor (ADR 0002 as
 amended), so a quote, a comment marker or a UNION typed into the name box is compared as text
-and never parsed as SQL. The name filter is `INSTR(LOWER(name), LOWER(?)) > 0` rather than a
-LIKE on purpose: a substring search is what the box promises, and LIKE would silently give a
-typed `%` or `_` a meaning the reader did not ask for. Sort column and direction are never
-values - they are words checked against an allowlist by `security.require_allowed` before they
-become AST nodes, terminally, because no model is there to correct a query string.
+and never parsed as SQL - and the tenant filter is bound exactly like the rest, because it is a
+reader's UI control on an auditor surface and not a tenant the request gets to assert. The name
+filter is `INSTR(LOWER(name), LOWER(?)) > 0` rather than a LIKE on purpose: a substring search is
+what the box promises, and LIKE would silently give a typed `%` or `_` a meaning the reader did
+not ask for. Sort column and direction are never values - they are words checked against an
+allowlist by `security.require_allowed` before they become AST nodes, terminally, because no
+model is there to correct a query string.
 
-Both templates select `tenant_id` itself. It costs nothing, it puts the egress check (layer 4b)
-on this path too, and it is the demo's point made visible: every row a reader sees carries the
-tenant it came from.
+Both templates select `tenant_id` itself, and it now earns its place twice: a mixed listing has
+to say which tenant each row belongs to, and the login-switch comparison is visible in the data
+rather than only in the header badge.
 
 Paging. The page ceiling IS the executor's row cap (`db.max_result_rows`, ADR 0007), because a
 larger page could not be served whole; a request beyond it is clamped and the response states
 the page size it actually used, so a clamp is reported rather than silent. The true total is a
-COUNT over the same filters through the same executor - one extra scoped query, which is what
-makes "450 rows" a fact about the tenant's data rather than about the page in hand.
+COUNT over the same filters through the same read, which is what makes "1000 rows" a fact about
+the dataset - and "450 rows, tenant acme" a fact about the filter - rather than about the page
+in hand.
 
 What a listing does not read, it says so about. `Filters` is the query-parameter allowlist, so a
-`?tenant_id=beta` a client invents was never read - but silence about it is indistinguishable
-from having honored it, which is the one ambiguity this surface exists to remove (issue #107).
-`ignored_params` reports every name a request carried that the listing does not read, `tenant_id`
-and `tenant` with the reason they can never be parameters at all, so the page states what it
-ignored instead of only what it served. It changes no behaviour: the rows, the total and the
-400 a known filter with a bad value earns are exactly what they were.
+name that is not one of its fields was never read - but silence about it is indistinguishable
+from having honored it, which is the ambiguity this surface exists to remove (issue #107).
+`ignored_params` reports every such name back beside the page it did not change. `tenant_id` is
+no longer one of them: it is a filter here now, and the sentence about no request being able to
+name a tenant was retired with the design it described - it remains true of the chat path, where
+the tenant reaches the tools by closure and no argument can name one, and that is where it is
+said (ADR 0002, layer 1).
 
 Notes. The corpus listing is the second template over the same table, since a note is a column
-of its employee's row. The search is not a template at all: it delegates to
-`rag.search_notes_scoped`, the agent's own retrieval path (ADR 0010), so what the reader sees -
-the same hits, in the same order, with the same distances - is literally what the `search_notes`
-tool would have returned for that query. `annotate_note_hits` then reads each hit's own row for
-the fields a claim is checked against, because a name and a paragraph cannot settle whether a
-retrieval was right: the note's tone is composed coherent with the score (ADR 0008), so seeing
-both at once is what makes a hit verifiable. `flagged_user_ids` reads the committed poison
-manifest so the tab can mark the planted injection payloads: it is repo metadata rather than
-tenant data, and it is filtered to the caller's tenant anyway.
+of its employee's row, and it spans tenants for the same reason Records does. The search does
+NOT: it delegates to `rag.search_notes_scoped`, the agent's own retrieval path (ADR 0010), so
+what the reader sees - the same hits, in the same order, with the same distances - is literally
+what the `search_notes` tool would have returned for that query, for their tenant alone. Seeing
+another tenant's planted payload in the list and then searching for it and getting nothing back
+IS the demonstration, so the list is unscoped and the search is not. `annotate_note_hits` reads
+each hit's own row through the SCOPED executor for the fields a claim is checked against,
+because a name and a paragraph cannot settle whether a retrieval was right: the note's tone is
+composed coherent with the score (ADR 0008), so seeing both at once is what makes a hit
+verifiable. `flagged_user_ids` reads the committed poison manifest so the tab can mark the
+planted injection payloads, every tenant's, because the listing shows every tenant's: it is repo
+metadata the README already points at rather than tenant data.
 """
 
 import json
@@ -55,8 +68,7 @@ from pathlib import Path
 
 from sqlglot import exp
 
-from analytics import DEFAULT_GROUP_BY, get_stats
-from db import execute_scoped
+from db import execute_scoped, execute_unscoped_browse
 from paths import DB_PATH
 from runtime import runtime
 from security import ALLOWED_TABLE, QueryRejected, require_allowed
@@ -77,8 +89,10 @@ NOTE_COLUMNS = ("user_id", "tenant_id", "name", "department", "performance_score
 # The same fields, read for the rows a retrieval named rather than for a page of the corpus.
 HIT_CONTEXT_COLUMNS = ("user_id", "tenant_id", "department", "performance_score")
 SORT_COLUMNS = frozenset(
-    {"user_id", "name", "department", "salary", "performance_score", "hire_date"}
+    {"user_id", "tenant_id", "name", "department", "salary", "performance_score", "hire_date"}
 )
+# The categorical filters whose options are read off the data rather than typed by the reader.
+FILTER_OPTION_COLUMNS = frozenset({"tenant_id", "department"})
 DIRECTIONS = frozenset({"asc", "desc"})
 DEFAULT_SORT = "user_id"
 DEFAULT_DIRECTION = "asc"
@@ -88,9 +102,8 @@ _DIALECT = "sqlite"
 _TIE_BREAK = "user_id"
 _DESCENDING = "desc"
 _FIRST_PAGE = 1
-_TEXT_FILTERS = frozenset({"name", "department"})
+_TEXT_FILTERS = frozenset({"tenant_id", "name", "department"})
 _DATE_FILTERS = frozenset({"hired_from", "hired_to"})
-_MANIFEST_TENANT = "tenant_id"
 _MANIFEST_USER = "user_id"
 _MANIFEST_KIND = "payload_kind"
 _HIT_KEY = "user_id"
@@ -98,8 +111,15 @@ _HIT_KEY = "user_id"
 
 @dataclass(frozen=True)
 class Filters:
-    """What a reader may narrow a listing by: this allowlist of comparisons and nothing else."""
+    """What a reader may narrow a listing by: this allowlist of comparisons and nothing else.
 
+    `tenant_id` is one of them, of the same kind as `department`, because these listings are the
+    dataset's and not one tenant's (ADR 0014 as rewritten). It narrows what a READER is shown; it
+    can never widen what the agent is shown, which is bound from the verified token by closure
+    and takes no argument at all.
+    """
+
+    tenant_id: str | None = None
     name: str | None = None
     department: str | None = None
     salary_min: int | None = None
@@ -116,12 +136,6 @@ LISTING_PARAMS = frozenset(Filters.__dataclass_fields__) | {
     "page",
     "page_size",
 }
-TENANT_PARAMS = frozenset({"tenant_id", "tenant"})
-_TENANT_REASON = (
-    "the tenant is not a parameter of this request: it is read from your verified token and "
-    "bound into the query server-side (ADR 0002, layer 1), so no request can name one. The "
-    "listing below and its total are your own tenant's, unchanged."
-)
 _UNKNOWN_REASON = "not a parameter this listing reads; it reads {accepted}"
 
 
@@ -134,8 +148,16 @@ class Ignored:
 
 
 @dataclass(frozen=True)
+class OptionCount:
+    """One value a categorical filter can be set to, and how many rows the listing holds for it."""
+
+    value: str
+    employees: int
+
+
+@dataclass(frozen=True)
 class BrowsePage:
-    """One page of a tenant's rows, with the true total the same executor counted."""
+    """One page of the dataset's rows, with the true total the same read counted."""
 
     columns: tuple[str, ...]
     rows: list[tuple[object, ...]]
@@ -150,15 +172,15 @@ class BrowsePage:
 
 @dataclass(frozen=True)
 class Flagged:
-    """The tenant's rows the committed poison manifest plants an injection payload in."""
+    """The dataset's rows the committed poison manifest plants an injection payload in."""
 
     user_ids: list[int]
     kinds: dict[str, str]
 
 
 def browse_records(
-    tenant_id: str,
     *,
+    reader_tenant: str,
     filters: Filters | None = None,
     sort: str = DEFAULT_SORT,
     direction: str = DEFAULT_DIRECTION,
@@ -167,15 +189,28 @@ def browse_records(
     requested: Iterable[str] = (),
     db_path: Path = DB_PATH,
 ) -> BrowsePage:
-    """One sorted, filtered page of the tenant's employee rows, plus how many match in all."""
+    """One sorted, filtered page of the dataset's employee rows, plus how many match in all.
+
+    Every argument is keyword-only, and `reader_tenant` says what it is for: the audit identity of
+    whoever browsed. It does not narrow the page - `filters.tenant_id` is what does that, and
+    leaving it unset is what shows all three tenants (ADR 0014 as rewritten).
+    """
     return _page(
-        RECORD_COLUMNS, tenant_id, filters, sort, direction, page, page_size, requested, db_path
+        RECORD_COLUMNS,
+        reader_tenant,
+        filters,
+        sort,
+        direction,
+        page,
+        page_size,
+        requested,
+        db_path,
     )
 
 
 def browse_notes(
-    tenant_id: str,
     *,
+    reader_tenant: str,
     filters: Filters | None = None,
     sort: str = DEFAULT_SORT,
     direction: str = DEFAULT_DIRECTION,
@@ -186,7 +221,15 @@ def browse_notes(
 ) -> BrowsePage:
     """The same page over the note corpus: a note is a column of the employee row that owns it."""
     return _page(
-        NOTE_COLUMNS, tenant_id, filters, sort, direction, page, page_size, requested, db_path
+        NOTE_COLUMNS,
+        reader_tenant,
+        filters,
+        sort,
+        direction,
+        page,
+        page_size,
+        requested,
+        db_path,
     )
 
 
@@ -196,55 +239,65 @@ def ignored_params(
     """The parameters a request carried that this listing does not read, each with its reason.
 
     A stray query parameter must not break a page, so it is ignored - but ignoring it in silence
-    leaves a reader unable to tell a refusal from a coincidence (issue #107): as `acme`,
-    `?tenant_id=beta` answers with acme's rows whether the parameter was refused or another
-    tenant simply held the same ones. So every name a request carried that the listing does not
-    read is reported back beside the page it did not change, the way a known filter with a bad
-    value is already refused by name.
+    leaves a reader unable to tell a refusal from a coincidence (issue #107). So every name a
+    request carried that the listing does not read is reported back beside the page it did not
+    change, the way a known filter with a bad value is already refused by name.
 
-    Only names are reported, never the values they carried: a response that echoed the value
-    would put a tenant name the server never accepted into the server's own output.
+    Only names are reported, never the values they carried: a response that echoed a value would
+    put text the server never accepted into the server's own output.
 
-    `tenant_id` and `tenant` get their own sentence rather than the generic one, because the
-    reason they are not parameters is the security claim itself - the tenant is read from the
-    verified token and reaches the query by closure, so there is no request that can name one
-    (ADR 0002, layer 1) - and this is where a reader gets to read it. The accepted set is matched
-    exactly, as the web framework matches a parameter name, so a differently cased `Name` counts
-    as unread because it *is* unread; the two tenant names are matched case-insensitively, since
-    no casing of either is accepted anywhere.
+    The accepted set is matched exactly, as the web framework matches a parameter name, so a
+    differently cased `Name` counts as unread because it *is* unread - and `tenant`, now that
+    `tenant_id` is a real filter, is reported generically with the accepted names listed, which
+    answers the reader's actual next question.
     """
     unknown = _UNKNOWN_REASON.format(accepted=", ".join(sorted(accepted)))
     return tuple(
-        Ignored(name=name, reason=_TENANT_REASON if name.lower() in TENANT_PARAMS else unknown)
+        Ignored(name=name, reason=unknown)
         for name in dict.fromkeys(names)
         if name not in accepted
     )
 
 
-def departments(tenant_id: str, *, db_path: Path = DB_PATH) -> list[dict[str, object]]:
-    """The tenant's departments and their headcounts, so the filter offers real values only.
+def filter_options(
+    column: str,
+    *,
+    reader_tenant: str,
+    tenant_id: str | None = None,
+    db_path: Path = DB_PATH,
+) -> list[OptionCount]:
+    """The values one categorical filter can take over the listing, each with its own row count.
 
-    The count comes from `analytics.get_stats`, the aggregate template the agent's own
-    `get_stats` tool uses - this module adds no third query shape for a list it already has.
+    A picker that offered a value the data does not hold, or a count of something other than what
+    the listing shows, would be a number attached to nothing. So the options come from the same
+    dataset and the same unscoped read the listing does, narrowed by the same bound tenant filter:
+    with no tenant picked the department counts sum to the whole dataset, with `acme` picked they
+    are acme's. `column` is a name a template will use, so it is allowlisted rather than bound.
     """
-    result = get_stats("count", "salary", DEFAULT_GROUP_BY, tenant_id, db_path=db_path)
-    return [{"department": str(name), "employees": int(count)} for name, count in result.rows]
+    require_allowed(column, FILTER_OPTION_COLUMNS, "column", retryable=False)
+    predicates, values = _bind(Filters(tenant_id=tenant_id))
+    result = execute_unscoped_browse(
+        _counts_sql(column, predicates), reader_tenant, params=values, db_path=db_path
+    )
+    return [OptionCount(value=str(value), employees=int(count)) for value, count in result.rows]
 
 
-def flagged_user_ids(tenant_id: str, *, manifest_path: Path = MANIFEST_PATH) -> Flagged:
-    """The tenant's planted-injection rows, from the committed manifest (repo metadata, not data).
+def flagged_user_ids(*, manifest_path: Path = MANIFEST_PATH) -> Flagged:
+    """Every planted-injection row of the manifest, all tenants (repo metadata, not tenant data).
 
-    The manifest is generated with the dataset and committed, so naming the poisoned rows tells
-    a reader nothing the repo does not already say out loud - and it lets the Notes tab point at
-    a payload before the agent reads it and refuses. A missing manifest flags nothing.
+    The manifest is generated with the dataset, committed, and pointed at by the README, so naming
+    the poisoned rows tells a reader nothing the repo does not already say out loud - and it lets
+    the Notes tab point at a payload before the agent reads it and refuses. It covers every tenant
+    because the corpus listing does: a reader seeing another tenant's planted payload and then
+    finding their own search cannot retrieve it is the demonstration. A missing manifest flags
+    nothing.
     """
     if not manifest_path.exists():
         return Flagged(user_ids=[], kinds={})
     records = json.loads(manifest_path.read_text()).get("records", [])
-    mine = [row for row in records if row.get(_MANIFEST_TENANT) == tenant_id]
     return Flagged(
-        user_ids=[int(row[_MANIFEST_USER]) for row in mine],
-        kinds={str(row[_MANIFEST_USER]): str(row.get(_MANIFEST_KIND, "")) for row in mine},
+        user_ids=[int(row[_MANIFEST_USER]) for row in records],
+        kinds={str(row[_MANIFEST_USER]): str(row.get(_MANIFEST_KIND, "")) for row in records},
     )
 
 
@@ -258,12 +311,13 @@ def annotate_note_hits(
 
     The vector store holds what was embedded plus the identity of its row (ADR 0010), so the
     fields a reader checks a hit against are read from the employees row itself - one fixed
-    template, the hit ids bound, through the same scoped executor, egress check and audit entry
-    every other read here gets. `tenant_id` travels with them for the same reason both listing
-    templates select it: a hit then carries the tenant it came from, on the surface built to show
-    that. The retrieval is untouched: the hits, their order and their distances stay exactly what
-    the `search_notes` tool returned. A hit whose row this tenant cannot see gains nothing, which
-    is the scoping doing its job rather than an error.
+    template, the hit ids bound, through `db.execute_scoped`: this is the search path, not the
+    listing, so it keeps every layer including the tenant scoping and the egress check. The
+    listings are the unscoped exception; nothing here is. `tenant_id` travels with the fields for
+    the same reason the listing templates select it: a hit carries the tenant it came from, on the
+    surface built to show that. The retrieval is untouched: the hits, their order and their
+    distances stay exactly what the `search_notes` tool returned. A hit whose row this tenant
+    cannot see gains nothing, which is the scoping doing its job rather than an error.
     """
     wanted = tuple(dict.fromkeys(int(hit[_HIT_KEY]) for hit in hits))
     if not wanted:
@@ -278,7 +332,7 @@ def annotate_note_hits(
 
 def _page(
     columns: tuple[str, ...],
-    tenant_id: str,
+    reader_tenant: str,
     filters: Filters | None,
     sort: str,
     direction: str,
@@ -287,16 +341,16 @@ def _page(
     requested: Iterable[str],
     db_path: Path,
 ) -> BrowsePage:
-    """Run the two scoped queries one listing needs: the page itself, and how many rows match."""
+    """Run the two reads one listing needs: the page itself, and how many rows match in all."""
     require_allowed(sort, SORT_COLUMNS, "sort", retryable=False)
     require_allowed(direction, DIRECTIONS, "direction", retryable=False)
     predicates, values = _bind(filters or Filters())
     size = _page_size(page_size)
     number = max(page, _FIRST_PAGE)
-    total = _total(predicates, values, tenant_id, db_path)
-    result = execute_scoped(
+    total = _total(predicates, values, reader_tenant, db_path)
+    result = execute_unscoped_browse(
         _page_sql(columns, predicates, sort, direction, size, (number - 1) * size),
-        tenant_id,
+        reader_tenant,
         params=values,
         db_path=db_path,
     )
@@ -316,12 +370,12 @@ def _page(
 def _total(
     predicates: list[exp.Expression],
     values: tuple[object, ...],
-    tenant_id: str,
+    reader_tenant: str,
     db_path: Path,
 ) -> int:
-    """How many of the tenant's rows match the filters at all, page or no page (ADR 0007)."""
-    result = execute_scoped(
-        _count_sql(predicates), tenant_id, params=values, db_path=db_path
+    """How many rows match the filters at all, page or no page (ADR 0007)."""
+    result = execute_unscoped_browse(
+        _count_sql(predicates), reader_tenant, params=values, db_path=db_path
     )
     ((total,),) = result.rows
     return int(total)
@@ -363,11 +417,22 @@ def _count_sql(predicates: list[exp.Expression]) -> str:
     return _select(exp.select(exp.func("COUNT", exp.Star())), predicates).sql(dialect=_DIALECT)
 
 
-def _select(selection: exp.Select, predicates: list[exp.Expression]) -> exp.Select:
-    """Both templates' shared trunk: the one table, narrowed by the bound filter predicates.
+def _counts_sql(column: str, predicates: list[exp.Expression]) -> str:
+    """The options template: one allowlisted categorical column, counted and ordered by itself."""
+    grouped = exp.select(exp.column(column), exp.func("COUNT", exp.Star()))
+    return (
+        _select(grouped, predicates)
+        .group_by(exp.column(column))
+        .order_by(exp.column(column))
+        .sql(dialect=_DIALECT)
+    )
 
-    Every placeholder ends up in the root WHERE, which is what layer 4a demands of a caller that
-    binds its own values: SQL renders a FROM before its WHERE, so the tenant is bound first.
+
+def _select(selection: exp.Select, predicates: list[exp.Expression]) -> exp.Select:
+    """Every template's shared trunk: the one table, narrowed by the bound filter predicates.
+
+    Each placeholder ends up in the root WHERE, in the order `_PREDICATES` renders them, which is
+    the order their values are bound in - the one thing every template here relies on.
     """
     query = selection.from_(exp.table_(ALLOWED_TABLE))
     for predicate in predicates:
@@ -459,6 +524,7 @@ def _at_most(column: str) -> exp.Expression:
 
 # Insertion order is the render order, which is the order the values are bound in.
 _PREDICATES: dict[str, Callable[[], exp.Expression]] = {
+    "tenant_id": lambda: _equals("tenant_id"),
     "name": lambda: _contains("name"),
     "department": lambda: _equals("department"),
     "salary_min": lambda: _at_least("salary"),
