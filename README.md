@@ -112,7 +112,8 @@ The ones that would matter first in production; the full list with reasoning:
 
 ## Time spent
 
-~10 h wall-clock across two days, as parallel agent work under review:
+~20 h wall-clock across three calendar days (2026-08-21 to 08-24, derived from
+the commit and PR history), as parallel agent work under review:
 
 | Phase | What landed | Time |
 |---|---|---|
@@ -120,8 +121,11 @@ The ones that would matter first in production; the full list with reasoning:
 | M1-M4 | Dataset + RLS core + analytics, agent + RAG, REST API + auth, React frontend | ~2.5 h |
 | M2 gate, M6 | Model shootout and gate runs, Docker + compose + GHCR, first bug wave | ~3 h |
 | Polish | Chart kinds, trace transparency, per-turn bounds, replay persistence, titles | ~1.5 h |
-| M5 | Evaluation harness, the live 171-turn run, trace rework | ~2 h |
-| **Total** | | **~10 h** |
+| M5 | Evaluation harness, the first live 171-turn run, trace rework | ~2 h |
+| Security proof | The corrected layer claim, switchable guardrails, the live off-position run (zero leaks) | ~3 h |
+| Durability | Full-turn history and replay, state on a named volume, history trimming | ~3 h |
+| Owner test wave | Full-dataset control group, sidebar/loader/SQL-card/chips/auto-apply UI, retitling, location restore, docs restructure | ~3.5 h |
+| **Total** | | **~20 h** |
 
 Built with AI agents (Claude Code), design-first: 14 ADRs written before the
 code they govern, an issue queue with binding contracts, one branch and PR per
