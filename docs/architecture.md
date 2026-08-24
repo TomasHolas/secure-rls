@@ -47,7 +47,7 @@ FastAPI (:8002)     auth.py                            app.py  (thin handler)
   Paths that never reach the agent:
   GET /records, /notes  ─> browse.py ─> db.execute_unscoped ─> employees.db
                            the control group: every tenant's rows, by design
-  GET /notes/search     ─> browse.py ─> rag.py — scoped, the agent's own path
+  GET /notes/search     ─> browse.py ─> rag.py — the agent's own path, token's scope
   /conversations        ─> conversations.py + turns.py + titles.py ─> state.db
                            app state, JWT-scoped; never a tenant-data path
 
@@ -139,7 +139,7 @@ belongs to.
 | Data access | `apps/backend/db.py` | CSV load, schema, the scoped executor (layers 2.5-4), the audit log. The only module that opens a SQLite connection, and the owner of the one unscoped browse read. |
 | Data access | `apps/backend/analytics.py` | Aggregates, Tukey IQR anomalies and chart data: allowlisted arguments into fixed query templates through `db.py`, never generated SQL. |
 | Data access | `apps/backend/rag.py` | Note embedding (Ollama `/api/embed`) and tenant-partitioned vector search (ADR 0010); storage and queries go through `db.py`. |
-| Data access | `apps/backend/browse.py` | The Records, Notes and Audit listings (ADR 0014): allowlisted filters bound as parameters, allowlisted sorts, paging on the ADR 0007 row cap. The listings take the unscoped read; the notes search stays scoped and delegates to `rag.py`; the audit listing pages `db.audit_window` and touches no dataset row. |
+| Data access | `apps/backend/browse.py` | The Records, Notes and Audit listings (ADR 0014): allowlisted filters bound as parameters, allowlisted sorts, paging on the ADR 0007 row cap. The listings take the unscoped read; the notes search delegates to `rag.py` and runs in the scope the token grants - scoped for a tenant identity, and for an all-tenant one the same partition-less retrieval its agent uses, with `annotate_note_hits` following it; the audit listing pages `db.audit_window` and touches no dataset row. |
 | State | `apps/backend/conversations.py` | The thread registry and its per-turn history in its own app-state store `state.db`, every access verified against the JWT identity (ADR 0012 as amended). |
 | State | `apps/backend/turns.py` | What one turn's trace events become in that store, and the caps on it: the same events the stream carries, reduced rather than described a second time. |
 | State | `apps/backend/paths.py` | Where every state file lives: the data directory (`SECURE_RLS_DATA_DIR`, defaulting to the backend package so dev needs no variable) and the paths inside it. In the deployment that directory is a named volume, so a rebuild keeps the conversations, the memory, the audit trail and the embeddings (ADR 0013 as amended). |

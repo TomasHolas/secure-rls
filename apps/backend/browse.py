@@ -11,9 +11,12 @@ That is the ONE unscoped read in the repo, and it is named as one: the listings 
 `db.execute_unscoped`, which keeps layer 2's validator, layer 2.5's read-only connection,
 authorizer, limit caps and deadline, the row cap and the audit row, and drops only what showing
 every tenant makes meaningless (the scoping rewrite, the proof of it, and the tenant egress
-comparison). The scoped executor is still what everything else here uses - the note-hit
-annotation below, every agent tool, every eval. Nothing in this module concatenates SQL a reader
-typed, interpolates a column name, or opens a connection.
+comparison). The scoped executor is what everything else here uses: the note-hit annotation
+below follows the caller's verified scope exactly as the retrieval it annotates does - scoped for
+a tenant identity, and only for an all-tenant one (ADR 0009 as amended) the same unscoped read the
+listings take, because a hit from another tenant cannot be described by a query bound to one.
+Nothing in this module concatenates SQL a reader typed, interpolates a column name, or opens a
+connection.
 
 A reader's filter values travel as bound parameters, declared to the executor (ADR 0002 as
 amended), so a quote, a comment marker or a UNION typed into the name box is compared as text
@@ -352,24 +355,33 @@ def annotate_note_hits(
     tenant_id: str,
     hits: list[dict[str, object]],
     *,
+    all_tenants: bool = False,
     db_path: Path = DB_PATH,
 ) -> list[dict[str, object]]:
     """The retrieval's own hits, each carrying the department and score of the row it came from.
 
     The vector store holds what was embedded plus the identity of its row (ADR 0010), so the
     fields a reader checks a hit against are read from the employees row itself - one fixed
-    template, the hit ids bound, through `db.execute_scoped`: this is the search path, not the
-    listing, so it keeps every layer including the tenant scoping and the egress check. The
-    listings are the unscoped exception; nothing here is. `tenant_id` travels with the fields for
-    the same reason the listing templates select it: a hit carries the tenant it came from, on the
-    surface built to show that. The retrieval is untouched: the hits, their order and their
-    distances stay exactly what the `search_notes` tool returned. A hit whose row this tenant
-    cannot see gains nothing, which is the scoping doing its job rather than an error.
+    template with the hit ids bound, run through the executor the caller's verified scope selects.
+    For a tenant identity that is `db.execute_scoped`, unchanged and unweakened: every layer
+    applies, and a hit naming another tenant's row gains nothing, which is the scoping doing its
+    job rather than an error. For an all-tenant identity (ADR 0009 as amended) it is
+    `db.execute_unscoped`, the same read its retrieval already took - annotating a cross-tenant
+    hit through a query bound to one tenant would describe nothing at all, and the honest path is
+    the one the listings use rather than a lookup that quietly returns blanks.
+
+    `all_tenants` is keyword-only and defaults to the narrow reading, and it comes from the
+    verified token by way of the endpoint - never from a query parameter, which is why a reader
+    cannot widen their own annotation. `tenant_id` travels with the fields for the same reason the
+    listing templates select it: a hit carries the tenant it came from, on the surface built to
+    show that. The retrieval is untouched either way: the hits, their order and their distances
+    stay exactly what the retrieval returned.
     """
     wanted = tuple(dict.fromkeys(int(hit[_HIT_KEY]) for hit in hits))
     if not wanted:
         return hits
-    result = execute_scoped(_context_sql(len(wanted)), tenant_id, params=wanted, db_path=db_path)
+    read = execute_unscoped if all_tenants else execute_scoped
+    result = read(_context_sql(len(wanted)), tenant_id, params=wanted, db_path=db_path)
     context = {
         int(user_id): {"tenant_id": tenant, "department": department, "performance_score": score}
         for user_id, tenant, department, score in result.rows

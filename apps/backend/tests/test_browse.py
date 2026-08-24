@@ -34,6 +34,7 @@ import csv
 
 import pytest
 
+import auth
 import browse
 import db
 from browse import (
@@ -437,14 +438,45 @@ def test_annotating_a_hit_cannot_describe_another_tenants_row(db_path):
 
 
 def test_the_hit_annotation_runs_the_scoped_executor_not_the_browse_read(db_path):
-    """Stated as a test because the two paths now differ: the annotation is scoped, the listing is
-    not, and a future edit that reached for the listing's read here would be a real leak."""
+    """Stated as a test because the two paths differ: a TENANT identity's annotation is scoped, the
+    listing is not, and a future edit that reached for the listing's read here would be a real
+    leak. An all-tenant identity is the one case that may take that read, and it has to ask for it
+    with the scope its token carries - which the two tests below cover, in both directions."""
     hits = [{"user_id": 1, "name": "Ada Lovelace", "note": "shipped the compiler", "distance": 0.2}]
 
     annotate_note_hits(ACME, hits, db_path=db_path)
 
     (entry,) = db.audit_entries(db_path)
     assert _SCOPED in (entry.executed_sql or "")
+
+
+def test_an_all_scope_annotation_describes_the_foreign_row_a_hit_names(db_path):
+    """The reason this exists: an all-scope retrieval returns foreign hits, and a lookup bound to
+    one tenant would describe none of them. The Notes tab would then show a hit with no department,
+    no score and no tenant - a blank card, which reads as a bug rather than as a scope."""
+    hits = [{"user_id": 6, "name": "Adalovelace Beta", "note": _BETA_SECRET, "distance": 0.1}]
+
+    (annotated,) = annotate_note_hits(
+        auth.ALL_TENANTS, hits, all_tenants=True, db_path=db_path
+    )
+
+    assert annotated["tenant_id"] == BETA
+    assert annotated["department"] == "Engineering"
+    assert annotated["performance_score"] == 5.0
+    assert annotated["distance"] == 0.1
+
+
+def test_the_all_scope_annotation_is_the_listings_read_and_the_audit_shows_it(db_path):
+    """It takes the one unscoped read, under the all-scope identity, and the trail says so: the
+    executed statement carries no scoping subquery, exactly as a listing's does not."""
+    hits = [{"user_id": 6, "name": "Adalovelace Beta", "note": _BETA_SECRET, "distance": 0.1}]
+
+    annotate_note_hits(auth.ALL_TENANTS, hits, all_tenants=True, db_path=db_path)
+
+    (entry,) = db.audit_entries(db_path)
+    assert _SCOPED not in (entry.executed_sql or "")
+    assert entry.tenant == auth.ALL_TENANTS
+    assert entry.verdict == db.VERDICT_APPROVED
 
 
 def test_annotating_no_hits_asks_the_database_nothing(db_path):
