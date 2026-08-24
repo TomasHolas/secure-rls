@@ -48,6 +48,13 @@ class AgentConfig:
     the retries of a single call and `max_tool_iterations` the number of tool rounds the turn may
     take at all; `turn_deadline_s` is its wall-clock budget; `max_output_tokens` and
     `context_window` are the model client's own generation bounds (`num_predict` / `num_ctx`).
+
+    `prompt_guardrails` is the one knob that changes prompt text and nothing else (ADR 0011 as
+    amended): on, the rendered system prompt carries the rules that ask the model to police
+    data-borne instructions and states the tenant scope; off, those blocks are omitted so the
+    four RLS layers are demonstrated refusing an attack the model actually attempted (ADR 0002).
+    It defaults to on because the rules improve answer quality; they were never a boundary, so
+    turning them off cannot change what any layer enforces.
     """
 
     model: str
@@ -59,6 +66,7 @@ class AgentConfig:
     turn_deadline_s: float
     thinking: bool
     duration_decimals: int
+    prompt_guardrails: bool
 
 
 @dataclass(frozen=True)
