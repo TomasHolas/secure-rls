@@ -8,7 +8,21 @@
 /* tokens.css is KB's verbatim copy (ADR 0006), so a metric KB does not define belongs here or
    the next sync would drop it. --control-height is the one height every control in a control
    row takes, so a control added to such a row cannot silently disagree (issue #115). */
-:root { --control-height: 48px; }
+/* The pixel-grid loader's metrics, rhythm and two opacities live here for the same reason
+   (issue #123). A 6px cell puts the inline grid at 22px across - it replaces a 14px glyph and has
+   to read from the back of a room - and `.loader-page` trades up to 41px where the loader stands
+   alone in an empty panel. --loader-cycle is deliberately shorter than the 510ms a front takes to
+   cross the grid (three --loader-step rings), which is what keeps a second front in flight before
+   the first one has left. */
+:root {
+  --control-height: 48px;
+  --loader-cell: 6px;
+  --loader-gap: 2px;
+  --loader-step: 170ms;
+  --loader-cycle: 480ms;
+  --loader-dim: 0.35;
+  --loader-lit: 1;
+}
 
 /* ============================ App shell ============================ */
 /* KB's shell grows with the document; a chat needs the opposite, so this one is exactly the
@@ -215,9 +229,6 @@
   color: var(--critical-500); font-size: var(--text-sm);
 }
 
-.loader-spin { animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
 /* ---------------- Section card (Apple-Settings style) ---------------- */
 /* Vertical stack of Section cards inside a Page (KB calls this ".settings"). */
 .section-stack { display: flex; flex-direction: column; gap: var(--space-6); }
@@ -237,6 +248,47 @@
 /* ---------------- Empty state ---------------- */
 .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--fg-4); padding: var(--space-16) var(--space-4); }
 .empty .ei { color: var(--fg-disabled); margin-bottom: var(--space-4); display: inline-flex; }
+
+/* ==================== Loader — the one "work is in flight" signal ==================== */
+/* The pixel-grid loader (issue #123), ported from beautifului.dev onto our tokens: one 3x3 grid
+   and one chevron wavefront, which is a front crossing the grid rather than nine cells blinking.
+   The cells take currentColor, so the loader is the colour of whatever row it sits in - fg-4 in
+   the trace header, the button's own foreground on a pending button - and needs no colour of its
+   own to keep in step with the palette. */
+.loader { display: inline-flex; align-items: center; gap: var(--space-2); }
+.loader-grid { display: grid; grid-template-columns: repeat(3, var(--loader-cell)); gap: var(--loader-gap); }
+.loader-cell {
+  width: var(--loader-cell); height: var(--loader-cell);
+  border-radius: var(--radius-xs);
+  background: currentColor; opacity: var(--loader-dim);
+  animation: loader-wave var(--loader-cycle) linear infinite;
+  animation-delay: calc(var(--loader-ring) * var(--loader-step));
+}
+/* The chevron: a cell's ring is its column plus how far its row is from the middle one, so the
+   middle row leads and the corners trail. The map lives here because the 3x3 does. */
+.loader-grid > :nth-child(4) { --loader-ring: 0; }
+.loader-grid > :nth-child(1), .loader-grid > :nth-child(5), .loader-grid > :nth-child(7) { --loader-ring: 1; }
+.loader-grid > :nth-child(2), .loader-grid > :nth-child(6), .loader-grid > :nth-child(8) { --loader-ring: 2; }
+.loader-grid > :nth-child(3), .loader-grid > :nth-child(9) { --loader-ring: 3; }
+/* Lit briefly and dim the rest of the cycle, so the front is a crest and not a plateau. */
+@keyframes loader-wave { 20% { opacity: var(--loader-lit); } }
+
+/* The label sweeps too, so a work-in-progress label reads as in progress rather than as a caption
+   - the thinking-display pattern the #91 review adopted, with this brick as its one owner. Real
+   text under a clipped gradient, so it stays selectable and a screen reader still has it. */
+.loader-label { background: linear-gradient(90deg, var(--fg-4) 35%, var(--fg-1) 50%, var(--fg-4) 65%) 0 0 / 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer-text 1.6s linear infinite; }
+@keyframes shimmer-text { to { background-position: -200% 0; } }
+.loader-elapsed { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--fg-4); }
+
+/* Standing alone in a panel with nothing in it yet, the loader takes the empty state's slot and
+   metrics - and a bigger cell, because at that distance from any other text it is the only thing
+   saying the panel is not simply broken. */
+.loader-page {
+  display: flex; flex-direction: column; width: 100%;
+  gap: var(--space-4); padding: var(--space-16) var(--space-4);
+  color: var(--fg-3); text-align: center;
+  --loader-cell: 11px; --loader-gap: var(--space-1);
+}
 
 /* ---------------- Charts ---------------- */
 /* SVG chart chrome ported from the KB (.chart, .chart-grid, .chart-axis); the marks reuse
@@ -422,13 +474,11 @@
 .trace-arg dd { margin: 0; }
 /* The model's own thinking: prose, not output, so it reads quieter than the answer above it. */
 .trace-reasoning { margin: 0; font-size: var(--text-sm); line-height: var(--leading-loose); color: var(--fg-3); white-space: pre-wrap; }
-/* A label whose work is still arriving: a sweep through the text itself, so a step that is
-   thinking is legible as thinking without a spinner competing with the panel's own. */
-.trace-live { background: linear-gradient(90deg, var(--fg-4) 35%, var(--fg-1) 50%, var(--fg-4) 65%) 0 0 / 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer-text 1.6s linear infinite; }
-@keyframes shimmer-text { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .trace-live { animation: none; background: none; color: var(--fg-2); }
-  .loader-spin { animation: none; }
+  .loader-label { animation: none; background: none; color: var(--fg-2); }
+  /* The grid freezes at its dim opacity. The elapsed time beside it keeps ticking: that is
+     information the reader asked for, not motion for its own sake (issue #123). */
+  .loader-cell { animation: none; }
 }
 .trace-text { margin: 0; padding: var(--space-3); background: var(--bg-surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-3); white-space: pre-wrap; overflow-x: auto; }
 

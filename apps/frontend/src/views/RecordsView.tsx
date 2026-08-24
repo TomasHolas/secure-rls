@@ -30,6 +30,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/Button";
 import { CodeBlock } from "../components/CodeBlock";
 import { DataTable } from "../components/DataTable";
+import { Loader } from "../components/Loader";
 import { ParamProbe } from "../components/ParamProbe";
 import { Pill } from "../components/Pill";
 import { FieldPair, SelectField, TextField } from "../components/forms";
@@ -272,7 +273,11 @@ export function RecordsView({ tenant }: { tenant: string }) {
       >
         {error ? <p className="form-error">{error}</p> : null}
         {rows === null ? (
-          <EmptyState icon="loader">{error ? "Nothing to show." : "Loading rows…"}</EmptyState>
+          error ? (
+            <EmptyState>Nothing to show.</EmptyState>
+          ) : (
+            <Loader scale="page" label="Loading rows…" />
+          )
         ) : (
           <>
             <DataTable

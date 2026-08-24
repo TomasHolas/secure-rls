@@ -82,8 +82,22 @@ function titles(container: HTMLElement): string[] {
 describe("the entries the panel renders", () => {
   it("reads thinking, tool card, thinking - and nothing else", () => {
     const { container } = panel(TWO_ROUNDS);
+    const rendered = titles(container);
 
-    expect(titles(container)).toEqual(["Thought for 3.0s", "query_db", "Thinking"]);
+    expect(rendered.slice(0, 2)).toEqual(["Thought for 3.0s", "query_db"]);
+    // The round still thinking counts up from the clock, so its title is the label plus that.
+    expect(rendered[2]).toMatch(/^Thinking[\d.]+s$/);
+    expect(rendered).toHaveLength(3);
+  });
+
+  it("counts up on the round still thinking and shows the pixel grid while the turn streams", () => {
+    const { container } = panel(TWO_ROUNDS, true);
+
+    const live = container.querySelector(".trace-step-muted:last-of-type .loader");
+    expect(live?.querySelectorAll(".loader-cell")).toHaveLength(9);
+    expect(live?.querySelector(".loader-label")?.textContent).toBe("Thinking");
+    expect(live?.querySelector(".loader-elapsed")?.textContent).toMatch(/^[\d.]+s$/);
+    expect(container.querySelector(".trace-head .loader")).not.toBeNull();
   });
 
   it("names no graph node anywhere in the rendered trace", () => {

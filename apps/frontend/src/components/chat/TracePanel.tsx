@@ -27,6 +27,7 @@
 import { useState } from "react";
 
 import { Icon } from "../Icon";
+import { Loader } from "../Loader";
 import { Pill } from "../Pill";
 import { CodeBlock } from "../CodeBlock";
 import { TraceStep } from "./TraceStep";
@@ -77,7 +78,7 @@ export function TracePanel({
         <Icon name={open ? "chevron-down" : "chevron-right"} size={16} />
         <span className="trace-head-label">Trace</span>
         <span className="trace-count">{items.length}</span>
-        {streaming ? <Icon name="loader" size={14} className="loader-spin" /> : null}
+        {streaming ? <Loader /> : null}
       </button>
       {open ? (
         <ul className="trace-body">
@@ -110,10 +111,11 @@ function TraceItemStep({ item }: { item: TraceItem }) {
 }
 
 /**
- * One model round's thinking. It is open and shimmering while the round's thinking is still
- * arriving, and folds itself away once it settles, leaving how long it took on the row - the
- * thinking-trace pattern from beautifului.dev, whose header swaps a live verb for a past-tense
- * summary carrying the cost. Which round it was is on the chip from the second one on.
+ * One model round's thinking. While the round's thinking is still arriving the step is open and
+ * its title is the `Loader` counting up from the moment the first chunk landed; once it settles it
+ * folds itself away, leaving that same span on the row as `Thought for 2.8s` - the thinking-trace
+ * pattern from beautifului.dev, whose header swaps a live verb for a past-tense summary carrying
+ * the cost. Which round it was is on the chip from the second one on.
  *
  * A replayed round claims no duration: the span was this client's own measurement of thinking
  * arriving, and a round read back from the server never arrived here (ADR 0012 as amended). If the
@@ -134,7 +136,7 @@ function ReasoningStep({ item }: { item: ReasoningItem }) {
       icon={REASONING_ICON}
       title={
         live ? (
-          <span className="trace-live">{REASONING_TITLE}</span>
+          <Loader label={REASONING_TITLE} since={item.startedAt} />
         ) : span === null ? (
           SETTLED_TITLE
         ) : (
