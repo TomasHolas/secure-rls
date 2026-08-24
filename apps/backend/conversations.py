@@ -78,8 +78,8 @@ CREATE TABLE IF NOT EXISTS turn_history (
 )
 """
 
-# The per-call payload table `turn_history` replaced: no code reads it, and it held tenant-derived
-# rows, so it is dropped rather than left behind unreachable (issue #90).
+# Discards the payloads issue #70 stored: turn history replaced them, no code reads them any more,
+# and leaving tenant-derived rows on disk unreachable is worse (owner-approved, issue #90).
 _SUPERSEDED_SCHEMA = "DROP TABLE IF EXISTS tool_results"
 
 _NOT_FOUND_MESSAGE = "conversation not found"

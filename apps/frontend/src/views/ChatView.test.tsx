@@ -392,6 +392,26 @@ describe("the chat view", () => {
     expect(view.container.querySelector("script")).toBeNull();
   });
 
+  it("says so when the server kept no history for a replayed turn at all", async () => {
+    const textOnly = replayTurns(
+      [
+        { role: "user", content: REPLAY_QUESTION },
+        { role: "assistant", content: "Engineering averages 91000." },
+      ],
+      [],
+    );
+
+    await renderReady({ threadId: "t7", replay: textOnly });
+
+    expect(screen.getByText("history not kept")).toBeTruthy();
+  });
+
+  it("says nothing about missing history for a turn that replayed its own frame", async () => {
+    await renderReady({ threadId: "t7", replay: replayed() });
+
+    expect(screen.queryByText("history not kept")).toBeNull();
+  });
+
   it("says on a replayed turn that the server's caps trimmed its history", async () => {
     const trimmed = replayed().map((turn) => ({ ...turn, cut: 3 }));
 

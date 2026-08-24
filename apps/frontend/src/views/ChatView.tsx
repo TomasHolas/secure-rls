@@ -19,8 +19,9 @@
  * refusals (ADR 0012 as amended, issue #90). A replayed turn goes through the same `TurnView` a
  * live one does, so there is one renderer and a reopened chart is the same brick as a fresh one.
  * The one thing it cannot show is how long a thought took, which this browser measured rather than
- * received, and a turn the server's caps trimmed says so on a pill of its own. Switching threads
- * (a new `chatKey`) drops the live turns with it.
+ * received. A turn whose history the caps trimmed says so on a pill of its own, and so does one the
+ * server kept no history for at all - a replayed turn must never read as complete when it is not.
+ * Switching threads (a new `chatKey`) drops the live turns with it.
  *
  * A turn reads top down in the order it happened: the trace of the steps first, then the answer
  * they produced, then what the turn cost beside the model that answered it. The reasoning inside
@@ -66,6 +67,17 @@ const PHASE_PILL = {
   cut_short: { tone: "warn", label: "stopped at its turn limit" },
   blocked: { tone: "danger", label: "blocked by a security layer" },
   failed: { tone: "danger", label: "failed before answering" },
+  /**
+   * A turn the server kept no terminal frame for - older than the retention ceiling, or from
+   * before turn history existed. Without this it renders like a turn that had nothing to show,
+   * which is a replayed turn looking complete when it is not.
+   */
+  replayed: {
+    tone: "warn",
+    label: "history not kept",
+    title:
+      "The server no longer holds this turn's trace: it is older than the retained-turns ceiling, or it predates turn history. What is shown is the transcript the conversation memory still has.",
+  },
 } as const;
 const UNGROUNDED_LABEL = "answered without querying the data";
 /** What a turn whose history the server's caps trimmed says about itself, rather than reading whole. */
@@ -304,7 +316,11 @@ function TurnView({
         footer={
           phase || ungrounded || turn.model || turn.guardrails !== null || turn.cut > 0 ? (
             <>
-              {phase ? <Pill tone={phase.tone}>{phase.label}</Pill> : null}
+              {phase ? (
+                <Pill tone={phase.tone} title={"title" in phase ? phase.title : undefined}>
+                  {phase.label}
+                </Pill>
+              ) : null}
               {ungrounded ? (
                 <Pill tone="warn" title={UNGROUNDED_TITLE}>
                   {UNGROUNDED_LABEL}
