@@ -60,6 +60,15 @@ its retryable flag - a query the engine itself refuses is an honest, retryable e
 timeout is terminal) and `SecurityViolation` when an inner layer trips, which the agent never
 retries (ADR 0011).
 
+`execute_unscoped_browse` is the ONE deliberately unscoped read here, and the only exception to
+"every read of tenant data is scoped". It exists for the auditor listings of ADR 0014 (as
+rewritten): the Records and Notes tabs show the whole dataset so a reader can see what exists and
+then watch the agent reach only its own tenant's part of it, and a listing that spans tenants
+cannot go through a function that binds one tenant by construction. Unscoped means "not filtered
+to one tenant" and nothing more - it keeps layer 2, layer 2.5, the row cap and the audit row, and
+drops only what returning every tenant makes meaningless (layer 3's rewrite, layer 4a's proof of
+it, and layer 4b's tenant comparison). Nothing the model can call is closed over it.
+
 The retrieval path (ADR 0010) adds a second, narrow seam, because this module owns every
 `sqlite3.connect` in the repo while `rag.py` owns embedding and orchestration:
 
@@ -374,6 +383,60 @@ def execute_scoped(
         attempt.executed_sql = scoped.sql(dialect=_DIALECT)
         result = _run(db_path, attempt.executed_sql, _count_sql(scoped), bound)
         _verify_rows(result, tenant_id)
+        attempt.approve(result.returned_count)
+        return result
+    except QueryRejected as rejected:
+        attempt.reject("malformed_sql" if rejected.retryable else "policy_violation")
+        raise
+    except SecurityViolation as violation:
+        attempt.reject(violation.kind)
+        raise
+    except _EngineFailure as failure:
+        attempt.fail(failure.kind)
+        raise QueryRejected(failure.reason, retryable=failure.retryable) from failure
+    finally:
+        _write_audit(_audit_path(db_path), attempt, clock)
+
+
+def execute_unscoped_browse(
+    sql: str,
+    reader_tenant: str,
+    *,
+    params: Sequence[object] = (),
+    db_path: Path = DB_PATH,
+    clock: Callable[[], datetime] = _utc_now,
+) -> QueryResult:
+    """THE ONE UNSCOPED READ IN THIS REPO: the whole dataset, for the auditor listings only.
+
+    The Records and Notes listings are the control group for the isolation claim (ADR 0014 as
+    rewritten): they show every tenant's rows so a reader can see what exists and then watch the
+    agent, in the same app, reach only its own tenant's part of it. A listing that spans tenants
+    cannot go through `execute_scoped`, which binds one tenant by construction, so this is the
+    single deliberate exception - named so it cannot be mistaken for the ordinary path, and
+    called from nothing but `browse.py`'s fixed listing templates.
+
+    Unscoped means "not filtered to one tenant" and nothing else. Layer 2 (`validate_sql`, with
+    the caller's declared parameter count) still refuses everything but one SELECT over
+    employees; layer 2.5 is the same read-only connection, employees-only authorizer,
+    `sqlite3_limit` caps and query deadline `execute_scoped` opens; the row cap of ADR 0007 still
+    trims the result; and the call is audited like every other, under `reader_tenant` - the
+    identity of whoever browsed, an audit field and never a filter.
+
+    Three things are absent because returning every tenant makes them meaningless rather than
+    because they were skipped: layer 3 does not rewrite the query, layer 4a therefore has no
+    scoping to prove, and layer 4b's row check would refuse the foreign rows that are the whole
+    point. The audit row shows it - `executed_sql` carries no scoping subquery - and the tenant a
+    reader wants is an ordinary bound filter value in `browse.py` instead.
+
+    Nothing the model can reach is closed over this function: no agent tool calls it, which
+    `tests/test_db.py` asserts over the built tool set itself and over every module's source.
+    """
+    attempt = _Attempt(generated_sql=sql, tenant=reader_tenant)
+    filters = tuple(params)
+    try:
+        approved = validate_sql(sql, parameters=len(filters))
+        attempt.executed_sql = approved.sql(dialect=_DIALECT)
+        result = _run(db_path, attempt.executed_sql, _count_sql(approved), filters)
         attempt.approve(result.returned_count)
         return result
     except QueryRejected as rejected:

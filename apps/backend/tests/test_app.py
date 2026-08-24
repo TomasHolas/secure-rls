@@ -226,6 +226,7 @@ BROWSE_ROWS = (
 )
 ACME_ROWS = 3
 BETA_ROWS = 2
+ALL_ROWS = ACME_ROWS + BETA_ROWS
 BETA_SECRET = "beta secret"
 NOTE_HITS = [
     {"user_id": 1, "name": "Ada Lovelace", "note": "shipped the compiler", "distance": 0.21}
@@ -235,6 +236,7 @@ PROTECTED_ROUTES = [
     ("GET", "/models"),
     ("GET", "/records"),
     ("GET", "/records/departments"),
+    ("GET", "/records/tenants"),
     ("GET", "/notes"),
     ("GET", "/notes/search?q=compiler"),
     ("GET", "/notes/flagged"),
@@ -740,50 +742,45 @@ def test_models_answers_502_generically_when_the_endpoint_is_down(tmp_path):
     assert "host.example" not in response.text
 
 
-def test_records_serves_only_the_rows_of_the_tokens_tenant(wiring):
-    """The isolation the Records tab demonstrates, asserted through the HTTP surface (ADR 0014)."""
+def test_records_serves_the_whole_dataset_whichever_token_asks(wiring):
+    """The control group over HTTP: the listing is the dataset, so both tokens see all of it.
+
+    This replaced "records serves only the rows of the token's tenant" (issue #117). The property
+    that survived - the AGENT sees one tenant - is asserted on the chat path, not here.
+    """
     acme = wiring.client.get("/records", headers=_headers(wiring.client, ALICE)).json()
     beta = wiring.client.get("/records", headers=_headers(wiring.client, BOB)).json()
 
-    assert acme["total"] == ACME_ROWS
-    assert beta["total"] == BETA_ROWS
-    assert {row[acme["columns"].index("tenant_id")] for row in acme["rows"]} == {ACME}
-    assert {row[beta["columns"].index("tenant_id")] for row in beta["rows"]} == {BETA}
+    assert acme["total"] == beta["total"] == ALL_ROWS
+    assert acme["rows"] == beta["rows"]
+    assert {row[acme["columns"].index("tenant_id")] for row in acme["rows"]} == {ACME, BETA}
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        {"tenant_id": BETA},
-        {"tenant": BETA},
-        {"tenant_id": BETA, "name": "grace"},
-        {"db_path": "/etc/passwd"},
-    ],
-)
-def test_a_tenant_the_client_invents_is_ignored(wiring, query):
-    """`Filters` is the allowlist: a parameter that is not one of its fields is not read at all."""
+def test_the_tenant_filter_narrows_the_listing_over_http(wiring):
+    """`tenant_id` is a query parameter of the same kind as `department`, and it is honored."""
+    body = wiring.client.get(
+        "/records", params={"tenant_id": BETA}, headers=_headers(wiring.client, ALICE)
+    ).json()
+
+    assert body["total"] == BETA_ROWS
+    assert {row[body["columns"].index("tenant_id")] for row in body["rows"]} == {BETA}
+    assert body["ignored"] == []
+
+
+@pytest.mark.parametrize("query", [{"tenant": BETA}, {"db_path": "/etc/passwd"}])
+def test_a_parameter_that_is_not_a_filter_is_still_not_read(wiring, query):
+    """`Filters` is the allowlist: a name that is not one of its fields changes nothing at all.
+
+    The `tenant_id=beta` case that used to live in this parametrization moved out: it is a filter
+    now. `tenant` - a name the listing does not have - keeps the property asserted.
+    """
     response = wiring.client.get(
         "/records", params=query, headers=_headers(wiring.client, ALICE)
     )
 
     assert response.status_code == 200
-    assert BETA not in response.text
-    assert BETA_SECRET not in response.text
-
-
-def test_a_tenant_a_request_names_is_answered_with_the_reason_it_cannot(wiring):
-    """The 200 stays a 200 over the caller's own rows, and now it says what it ignored (#107)."""
-    response = wiring.client.get(
-        "/records", params={"tenant_id": BETA}, headers=_headers(wiring.client, ALICE)
-    )
-    body = response.json()
-
-    assert response.status_code == 200
-    assert body["total"] == ACME_ROWS
-    assert [param["name"] for param in body["ignored"]] == ["tenant_id"]
-    assert "verified token" in body["ignored"][0]["reason"]
-    assert "ADR 0002" in body["ignored"][0]["reason"]
-    assert BETA not in response.text
+    assert response.json()["total"] == ALL_ROWS
+    assert [param["name"] for param in response.json()["ignored"]] == list(query)
 
 
 def test_an_unknown_parameter_is_reported_rather_than_swallowed(wiring):
@@ -792,7 +789,7 @@ def test_an_unknown_parameter_is_reported_rather_than_swallowed(wiring):
         "/records", params={"db_path": "/etc/passwd"}, headers=_headers(wiring.client, ALICE)
     ).json()
 
-    assert body["total"] == ACME_ROWS
+    assert body["total"] == ALL_ROWS
     assert [param["name"] for param in body["ignored"]] == ["db_path"]
     assert "not a parameter this listing reads" in body["ignored"][0]["reason"]
 
@@ -801,22 +798,22 @@ def test_an_accepted_filter_is_not_reported_as_ignored(wiring):
     """The report is about what was discarded; a filter that worked is visible in the rows."""
     body = wiring.client.get(
         "/records",
-        params={"name": "ada", "sort": "salary", "page_size": 2},
+        params={"tenant_id": ACME, "name": "ada", "sort": "salary", "page_size": 2},
         headers=_headers(wiring.client, ALICE),
     ).json()
 
     assert body["ignored"] == []
 
 
-def test_the_notes_listing_reports_a_tenant_a_request_names_too(wiring):
-    """Both listings take the same filters, so both owe the same sentence (ADR 0014 as amended)."""
+def test_the_notes_listing_reports_an_unread_parameter_too(wiring):
+    """Both listings take the same filters, so both owe the same report (ADR 0014 as amended)."""
     body = wiring.client.get(
         "/notes", params={"tenant": BETA}, headers=_headers(wiring.client, BOB)
     ).json()
 
-    assert body["total"] == BETA_ROWS
+    assert body["total"] == ALL_ROWS
     assert [param["name"] for param in body["ignored"]] == ["tenant"]
-    assert "verified token" in body["ignored"][0]["reason"]
+    assert "not a parameter this listing reads" in body["ignored"][0]["reason"]
 
 
 @pytest.mark.parametrize(
@@ -838,13 +835,15 @@ def test_a_hostile_filter_over_http_leaks_neither_a_row_nor_an_error(wiring, hos
 def test_records_filters_and_pages_with_the_true_total(wiring):
     headers = _headers(wiring.client, ALICE)
 
-    filtered = wiring.client.get("/records", params={"name": "ada"}, headers=headers).json()
+    filtered = wiring.client.get(
+        "/records", params={"tenant_id": ACME, "name": "ada"}, headers=headers
+    ).json()
     paged = wiring.client.get(
         "/records", params={"page": 2, "page_size": 1, "sort": "salary"}, headers=headers
     ).json()
 
     assert filtered["total"] == 1
-    assert paged["total"] == ACME_ROWS
+    assert paged["total"] == ALL_ROWS
     assert paged["page"] == 2
     assert len(paged["rows"]) == 1
 
@@ -882,23 +881,46 @@ def test_records_defaults_to_the_primary_key_sort(wiring):
     assert response.json()["sort"] == DEFAULT_SORT
 
 
-def test_the_departments_offered_are_the_callers_own(wiring):
-    acme = wiring.client.get(
-        "/records/departments", headers=_headers(wiring.client, ALICE)
+def test_the_departments_offered_count_the_listing_and_narrow_with_the_tenant(wiring):
+    """The option counts follow the tenant filter, so no number on the picker is orphaned."""
+    headers = _headers(wiring.client, ALICE)
+
+    everyone = wiring.client.get("/records/departments", headers=headers).json()
+    acme_only = wiring.client.get(
+        "/records/departments", params={"tenant_id": ACME}, headers=headers
     ).json()
 
-    assert acme == [
-        {"department": "Engineering", "employees": 2},
-        {"department": "Sales", "employees": 1},
+    assert everyone == [
+        {"value": "Engineering", "employees": 3},
+        {"value": "Sales", "employees": 2},
+    ]
+    assert acme_only == [
+        {"value": "Engineering", "employees": 2},
+        {"value": "Sales", "employees": 1},
     ]
 
 
-def test_the_notes_corpus_is_the_callers_own(wiring):
+def test_the_tenants_offered_are_the_datasets_own_with_their_row_counts(wiring):
+    """The tenant picker states the control group: this is what the dataset holds (ADR 0014)."""
+    body = wiring.client.get("/records/tenants", headers=_headers(wiring.client, ALICE)).json()
+
+    assert body == [
+        {"value": ACME, "employees": ACME_ROWS},
+        {"value": BETA, "employees": BETA_ROWS},
+    ]
+
+
+def test_the_notes_corpus_is_the_whole_corpus_whichever_token_asks(wiring):
+    """A reader must be able to READ another tenant's planted note; the search still cannot.
+
+    Replaces "the notes corpus is the caller's own" (issue #117). The asymmetry it creates is
+    asserted right below, on `/notes/search`, which stays scoped to the token's tenant.
+    """
     acme = wiring.client.get("/notes", headers=_headers(wiring.client, ALICE))
     beta = wiring.client.get("/notes", headers=_headers(wiring.client, BOB))
 
-    assert acme.json()["total"] == ACME_ROWS
-    assert BETA_SECRET not in acme.text
+    assert acme.json()["total"] == beta.json()["total"] == ALL_ROWS
+    assert BETA_SECRET in acme.text
     assert BETA_SECRET in beta.text
 
 
@@ -981,8 +1003,13 @@ def test_a_notes_search_without_an_index_reports_retrieval_offline(tmp_path, bro
     assert "index" in response.json()["detail"]
 
 
-def test_the_flagged_notes_are_the_callers_own_manifest_rows(wiring):
-    """The committed manifest, filtered to the token's tenant so the tab can mark the payloads."""
+def test_the_flagged_notes_are_the_manifests_rows_across_every_tenant(wiring):
+    """The committed manifest, unfiltered now that the corpus listing shows every tenant's notes.
+
+    Filtering it to the caller was right while the corpus was the caller's; it would now hide
+    exactly the foreign planted payload the demo points at (issue #117). A token is still
+    required, which `PROTECTED_ROUTES` asserts.
+    """
     response = wiring.client.get("/notes/flagged", headers=_headers(wiring.client, ALICE))
 
     assert response.status_code == 200
