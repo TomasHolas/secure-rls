@@ -3,8 +3,9 @@
  * fixed set. It exists because a filter must not let a reader type a department the tenant does
  * not have: the options are whatever the server listed, and the empty option is "no filter".
  *
- * The control is a native `<select>` on the same `.select` metrics `chat/ModelPicker` uses, in
- * the `.field` + label pattern `TextField` owns, so a filter row mixes the two without restyling.
+ * The control is a native `<select>` on the shared `.select` metrics, in the `.field` + label
+ * pattern `TextField` owns, so a filter row mixes the two without restyling. `chat/ModelPicker`
+ * is the same element with its chrome stripped, because the prompt bar around it owns the border.
  */
 
 export interface Option {

@@ -300,10 +300,12 @@ afterEach(() => {
 });
 
 describe("the chat view", () => {
-  it("preselects the default model from the live list", async () => {
-    await renderReady();
+  it("preselects the default model from the live list, in the prompt bar", async () => {
+    const { view } = await renderReady();
 
-    expect(screen.getByLabelText("Model")).toBeTruthy();
+    const bar = view.container.querySelector(".composer-bar")!;
+    expect(bar.contains(screen.getByLabelText("Model"))).toBe(true);
+    expect(view.container.querySelector(".page-head select")).toBeNull();
     expect(screen.getByText(/Ask a question to start/)).toBeTruthy();
   });
 

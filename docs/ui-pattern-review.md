@@ -55,6 +55,45 @@ the tokens are the source of colour and type, and a utility framework would fork
 only (`App.tsx` passes it as the shell's `sidebar` when that tab is open), so duplicating session
 status there added furniture without adding access to the action on Records or Notes.
 
+### Adopted — the prompt bar (issue #159)
+
+The pass above judged the reference's components against the transcript and never touched the
+control the reader actually uses: our composer was a caps **QUESTION** label over a two-row
+textarea with a resize handle, a hint line and a word-labelled **Ask** button, with the model
+picker parked in the page header. The owner's ruling is the sidebar ruling again: **port the
+reference's PromptBar patterns into our own CSS and tokens** — no Tailwind, no new dependency,
+nothing from its `glimm` shader.
+
+| Pattern | What we did | Why |
+|---|---|---|
+| **One bar, not a labelled block** | `Composer` is a single rounded `.composer-bar` holding the textarea, the picker and send; the caps label and the `Ask` block are gone | The label named what the only text box on the screen was for, and the button spelled out what its arrow says. Both were height taken from the transcript above them |
+| **The textarea grows with the draft, then scrolls** | `scrollHeight` measured on every draft (`height: auto` then the measured height), capped by `--composer-cap` on the bar - five lines at our own type metrics - with `overflow-y: auto` past it | A fixed two-row box is wrong twice: too tall for the one-line question that is most questions, too short for a multi-clause one, and its resize handle made the reader fix it by hand. The ceiling is the stylesheet's, so the number lives beside the metrics it is derived from and no test or component duplicates it |
+| **The model picker moves into the bar** | Same `ModelPicker`, same live `GET /models` contract, restyled as the quiet text-and-chevron trigger: `.select`'s metrics with the chrome stripped, `appearance: none`, our own chevron `Icon` | The model is a property of the question being composed, not of the page. In the header it read as configuration; in the bar it reads as part of the send, which is what it is |
+| **Send as an arrow in a filled square** | `.composer-send` on the existing `.btn-icon` hit area: the inverse surface while there is something to send, the muted register (disabled) when the draft is empty or a turn is streaming, `aria-label="Send"`, a slight active scale | A control that cannot act must not look like it can, and the word "Ask" beside an arrow was the arrow explained. The square reuses the app's one icon-button geometry rather than inventing a second |
+| **The focus ring belongs to the bar** | `.composer-bar:focus-within` takes the accent border; the textarea inside carries none | Three controls in one shell that light up separately read as three controls. One ring says the bar is the field |
+
+**The hint line is gone, and did not move into the placeholder whole.** The key that sends is in
+the placeholder (`... - Enter sends`), where it is on screen exactly while the box is empty; the
+full contract, Shift+Enter included, is on send's tooltip. A placeholder spelling out both keys
+wraps at a 900px viewport, which would cost the bar the one line at rest that is the point of
+the rebuild - measured on screenshots at 1680, 1280 and 900, not assumed.
+
+**The guardrail pill stays in the page header.** It was the alternative to the picker's old slot,
+and the screenshots settled it: the pill is a statement about the run, read once before a question
+is asked, while the bar is a control. Putting a security claim inside the control that sends a
+question would have it compete with the picker for the same row and read as if it were a setting
+of the send.
+
+**What we left, and why.** Its **attach/files**, **@ data sources**, **/ commands** and
+**dictation** controls - this product has no upload, no source picker, no command palette and no
+speech input, so each would be a control that does nothing: decoration that lies about what the
+app can do, which on a security demo is the one thing that must not be on screen. Its **Connect
+rows** (connect Drive, Slack, ...) - the same objection plus an integrations story we do not have.
+Its **`glimm` rainbow sweep on model change** - a new dependency and a celebration animation, on a
+screen whose subject is a refusal; declined on both counts. Its **demo autoplay loop**, which
+types a canned prompt on a timer - reference-site furniture, and here it would put words the
+reader did not write into the box that sends them.
+
 ## Rejected
 
 | Pattern | Why not |
