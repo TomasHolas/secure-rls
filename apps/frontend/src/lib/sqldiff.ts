@@ -23,7 +23,12 @@
  * card that claims to show what ran shows nothing else. What the rewrite replaced is not marked
  * here: the generated statement sits on screen beside it and carries that text verbatim.
  *
- * Pure functions over two strings - no React, no DOM - so the alignment is testable directly.
+ * A fixed-template tool (`get_stats`, `plot`, `detect_anomalies`) has no generated side to diff
+ * against - the model never wrote SQL there - so `markScoping` finds the same injected subquery in
+ * the single statement by its known shape and returns the same segments, which is what lets one
+ * mark, one legend and one set of rules serve both cards.
+ *
+ * Pure functions over strings - no React, no DOM - so both are testable directly.
  */
 
 /** What the rewrite did to one run of the executed statement. */
@@ -52,6 +57,14 @@ type Kept = { kind: SegmentKind; index: number };
 
 /** The keyword whose insertion also claims the identifier after it, because that is its alias. */
 const ALIAS_KEYWORD = "as";
+
+/**
+ * The subquery layer 3 injects around an `employees` reference, alias included - `db.py`'s
+ * `_SCOPED_SELECT` as sqlglot renders it, spelled tolerantly of spacing and keyword case. It is a
+ * structural identity, not a tunable: a statement that does not carry it was not scoped this way.
+ */
+const SCOPING_PATTERN =
+  /\(\s*SELECT\s+\*\s+FROM\s+employees\s+WHERE\s+employees\.tenant_id\s*=\s*\?\s*\)(?:\s+AS\s+[A-Za-z_][\w$]*)?/gi;
 
 /** Quoted strings stay whole; words and numbers are single tokens; every other glyph is its own. */
 const TOKEN_PATTERN = /'(?:[^']|'')*'|"(?:[^"]|"")*"|[A-Za-z_][\w$]*|\d+(?:\.\d+)?|\S/g;
@@ -91,6 +104,26 @@ export function diffSql(generated: string, executed: string): DiffSegment[] | nu
   if (to.length === 0) return [{ kind: "same", text: executed }];
   const kept = align(from, to).filter((op): op is Kept => op.kind !== "del");
   return merge(render(claimAliases(kept, to), to, executed));
+}
+
+/**
+ * One statement as diff segments with every scoping subquery in it marked `add`, or null when the
+ * statement carries none. Used where there is no generated side to diff - a fixed template, whose
+ * SQL the server wrote and whose scoping is therefore a known pattern rather than an alignment.
+ * Null is the honest answer for a statement without the pattern: the caller renders it unmarked
+ * instead of guessing which of its runs the security layer contributed.
+ */
+export function markScoping(executed: string): DiffSegment[] | null {
+  const parts: DiffSegment[] = [];
+  let cursor = 0;
+  for (const match of executed.matchAll(SCOPING_PATTERN)) {
+    parts.push({ kind: "same", text: executed.slice(cursor, match.index) });
+    parts.push({ kind: "add", text: match[0] });
+    cursor = match.index + match[0].length;
+  }
+  if (parts.length === 0) return null;
+  parts.push({ kind: "same", text: executed.slice(cursor) });
+  return merge(parts);
 }
 
 /**
