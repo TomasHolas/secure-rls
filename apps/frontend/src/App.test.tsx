@@ -46,7 +46,12 @@ const api = vi.hoisted(() => ({
 
 vi.mock("./lib/api", () => ({
   ApiError: class ApiError extends Error {
-    status = 500;
+    status: number;
+
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
   },
   ...api,
 }));
@@ -625,6 +630,16 @@ describe("the location in the URL", () => {
     await waitFor(() => expect(window.location.hash).toBe("#/chat"));
     expect(api.getConversation).toHaveBeenCalledTimes(1);
     expect(screen.getByText("Could not open that conversation.")).toBeTruthy();
+  });
+
+  it("passes on the registry's own 404, which reads the same for a foreign id", async () => {
+    const { ApiError } = await import("./lib/api");
+    api.getConversation.mockRejectedValue(new ApiError(404, "That conversation no longer exists."));
+
+    await reloadAt("#/chat/6f1e2d3c4b5a69788796a5b4c3d2e1f0");
+
+    expect(await screen.findByText("That conversation no longer exists.")).toBeTruthy();
+    await waitFor(() => expect(window.location.hash).toBe("#/chat"));
   });
 
   it("treats a tab it does not have as the chat, and the id under it as nothing", async () => {
