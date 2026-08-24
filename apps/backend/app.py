@@ -20,7 +20,7 @@ Endpoints:
 - `GET  /notes/flagged`     which of the caller's rows the committed poison manifest plants.
 - `GET  /conversations`     the caller's threads, newest first.
 - `POST /conversations`     a new thread; the title is the first user message, truncated.
-- `GET  /conversations/{id}` the caller's own thread row plus its replayed transcript.
+- `GET  /conversations/{id}` the caller's own thread row, its transcript and its turn history.
 - `PATCH /conversations/{id}` the thread retitled from its first exchange by the model.
 - `DELETE /conversations/{id}` the thread plus its checkpointer rows.
 
@@ -45,17 +45,20 @@ memory silently continues. The identity check comes first and is unchanged: the 
 consulted before the checkpointer is opened, so a foreign or missing id is the same 404 and no
 transcript is read for a thread the caller may not see.
 
-Replayed tool evidence (ADR 0012 as amended). The same response carries `tool_results`, the
-server-produced payload of every `tool_result` the thread's turns produced, keyed by the turn
-whose question opened them - so a reopened thread renders its charts, its generated-versus-
-executed SQL pair and its tables through the same bricks a live turn does, instead of prose
-where a plot used to be. The evidence is collected off the `/chat` stream as it passes (`_recorded`)
-and written once the turn is over, under the turn number the transcript then reports: one turn
-is one question, so counting the questions is what aligns the evidence with the answer above it.
-A turn that broke mid-flight stores the payloads it did produce, and a storage failure is logged
-and never reaches the reader - the answer already streamed, and losing a replayable chart is not
-worth failing a turn over. What stays session-only is the thinking: the reasoning, the retries
-and the node steps are the transport of the turn that produced them and are not stored anywhere.
+Replayed turn history (ADR 0012 as amended, issue #90). The same response carries `turns`, the
+trace each of the thread's turns produced, keyed by the turn whose question opened it: the
+model's reasoning per round, every tool call with the arguments it wrote, the one outcome that
+settled each call - its payload, the retry with its reason, or the refusal with the layer that
+fired - and the terminal frame with the turn's status, its telemetry and the prompt-guardrail
+position that produced it. So a reopened thread replays the conversation that happened, through
+the same bricks a live turn renders through, instead of a tidied answer. What history keeps of a
+frame is `turns.py`'s decision; this module only feeds it every frame `_sse` puts on the wire and
+writes once the turn is over, under the turn number the transcript then reports: one turn is one
+question, so counting the questions is what aligns the history with the answer above it. A turn
+that broke mid-flight stores what it did produce, and a storage failure is logged and never
+reaches the reader - the answer already streamed, and losing a replayable trace is not worth
+failing a turn over. The read path is the strict one: a history that cannot be reconstructed
+raises rather than replaying a partial turn as a whole one.
 
 Browsing the data itself (ADR 0014). The Records and Notes tabs read through `browse.py`, whose
 two allowlisted templates go down the same `db.execute_scoped` path the agent's tools do, and
@@ -175,12 +178,10 @@ from pydantic import BaseModel
 
 from agent import (
     EVENT_DONE,
-    EVENT_TOOL_RESULT,
     ROLE_USER,
     STATUS_FAILED,
     DoneEvent,
     Message,
-    ToolResultEvent,
     TraceEvent,
     build_agent,
     run_turn,
@@ -207,12 +208,13 @@ from browse import (
     departments,
     flagged_user_ids,
 )
-from conversations import ConversationRegistry, NotFound, Thread, ToolResult
+from conversations import ConversationRegistry, NotFound, Thread, TurnHistory
 from db import DEFAULT_CSV_PATH, DEFAULT_DB_PATH, SecurityViolation, employee_rows, init_db
 from rag import OllamaEmbed, RetrievalUnavailable, ensure_index, search_notes_scoped
 from runtime import runtime
 from security import QueryRejected
 from titles import TitleModel, generate_title
+from turns import TurnLog
 
 API_VERSION = "0.1.0"
 FRONTEND_ORIGIN = "http://localhost:3002"
@@ -318,13 +320,13 @@ class NoteHits:
 
 @dataclass(frozen=True)
 class Conversation:
-    """One thread as `GET /conversations/{id}` serves it: the row, the transcript, the evidence."""
+    """One thread as `GET /conversations/{id}` serves it: the row, the transcript, the history."""
 
     thread_id: str
     title: str
     created: str
     messages: list[Message]
-    tool_results: list[ToolResult]
+    turns: list[TurnHistory]
 
 
 def bounded_model(base_url: str, model: str, *, reasoning: bool) -> ChatOllama:
@@ -619,22 +621,25 @@ def create_app(
     ) -> StreamingResponse:
         """Stream one turn as SSE; the thread must belong to the token's identity.
 
-        The turn's tool payloads are kept for replay on the way past (ADR 0012 as amended). The
-        recording sits between the runner and the SSE framing, so the frames on the wire are
-        exactly what the agent yielded and a storage failure cannot change a single one of them.
+        The turn's history is kept for replay on the way past (ADR 0012 as amended): the log is
+        offered every frame the framing puts on the wire, so what a reopened thread replays is
+        provably what the reader watched, and it is written once the stream is over, so a storage
+        failure cannot change a single frame of it.
         """
         threads.get_thread(identity, body.thread_id)
         model = _resolve_model(body.model, list_models)
-        events = _recorded(
-            run_chat(
-                tenant_id=identity.tenant_id,
-                thread_id=body.thread_id,
-                message=body.message,
-                model=model,
-            ),
-            lambda results: _keep_results(threads, replay, identity, body.thread_id, results),
+        events = run_chat(
+            tenant_id=identity.tenant_id,
+            thread_id=body.thread_id,
+            message=body.message,
+            model=model,
         )
-        stream = StreamingResponse(_sse(events, model), media_type="text/event-stream")
+        history = TurnLog(
+            lambda kept, cut: _keep_turn(threads, replay, identity, body.thread_id, kept, cut)
+        )
+        stream = StreamingResponse(
+            _sse(events, model, history), media_type="text/event-stream"
+        )
         refreshed = response.headers.get(REFRESHED_TOKEN_HEADER)
         if refreshed is not None:
             stream.headers[REFRESHED_TOKEN_HEADER] = refreshed
@@ -750,22 +755,20 @@ def create_app(
     def get_conversation(
         thread_id: str, identity: Annotated[Identity, Depends(_identity)]
     ) -> Conversation:
-        """The caller's own thread, its transcript and its tool evidence; a foreign id is a 404.
+        """The caller's own thread, its transcript and its turn history; a foreign id is a 404.
 
         The registry answers first, so an id the caller does not own never reaches the
-        checkpointer and never reaches the payload store. `messages` replays what was said - the
-        questions asked and the answers given - and `tool_results` the server-produced payload of
-        each turn's tool calls, which is what lets a reopened thread re-render its charts, SQL
-        pair and tables (ADR 0012 as amended). The thinking around them stays session-only: the
-        model's reasoning, the retries and the graph steps are the SSE transport of the turn that
-        produced them, watched once and never re-served. A thread never chatted in replays as two
-        empty lists.
+        checkpointer and never reaches the history store. `messages` replays what was said - the
+        questions asked and the answers given - and `turns` the trace each turn produced: the
+        reasoning per model round, every tool call with the arguments the model wrote, the outcome
+        that settled it, and the terminal frame with the turn's status and telemetry (ADR 0012 as
+        amended). A thread never chatted in replays as two empty lists.
         """
         thread = threads.get_thread(identity, thread_id)
         return Conversation(
             **asdict(thread),
             messages=replay(thread_id),
-            tool_results=threads.thread_tool_results(identity, thread_id),
+            turns=threads.thread_turns(identity, thread_id),
         )
 
     @app.patch("/conversations/{thread_id}")
@@ -867,39 +870,15 @@ def _resolve_model(requested: str | None, list_models: ModelLister) -> str:
     return requested
 
 
-def _recorded(
-    events: Iterator[TraceEvent], keep: Callable[[list[ToolResultEvent]], None]
-) -> Iterator[TraceEvent]:
-    """Pass the turn through untouched, keeping its tool results for the store when it ends.
-
-    The write happens once, on the way out, so it costs the stream nothing while tokens are
-    flowing and so a turn that broke mid-flight still stores the payloads it did produce - the
-    `finally` runs whether the stream ended or raised. A turn that called no tool writes nothing
-    and is not even looked up. A storage failure is logged and swallowed here: by then the answer
-    has streamed, and a lost replayable chart is not worth turning a good turn into a failed one.
-    """
-    results: list[ToolResultEvent] = []
-    try:
-        for event in events:
-            if event["type"] == EVENT_TOOL_RESULT:
-                results.append(event)
-            yield event
-    finally:
-        try:
-            if results:
-                keep(results)
-        except Exception:
-            _LOG.exception("the turn's tool results were not stored")
-
-
-def _keep_results(
+def _keep_turn(
     threads: ConversationRegistry,
     transcript: Callable[[str], list[Message]],
     identity: Identity,
     thread_id: str,
-    results: list[ToolResultEvent],
+    events: list[dict[str, object]],
+    cut: int,
 ) -> None:
-    """Store one turn's tool payloads under the turn its question opened (ADR 0012 as amended).
+    """Store one turn's history under the turn its question opened (ADR 0012 as amended).
 
     The turn number is the count of questions the thread now holds: `/chat` appends exactly one
     of them per turn, so counting them in the transcript gives the same ordinal the SPA arrives
@@ -907,17 +886,10 @@ def _keep_results(
     checkpoint that made it the newest question is already written.
     """
     turn = sum(1 for message in transcript(thread_id) if message.role == ROLE_USER)
-    threads.record_tool_results(
-        identity,
-        thread_id,
-        [
-            ToolResult(turn=turn, tool=result["tool"], data=dict(result["data"]))
-            for result in results
-        ],
-    )
+    threads.record_turn(identity, thread_id, TurnHistory(turn=turn, events=events, cut=cut))
 
 
-def _sse(events: Iterator[TraceEvent], model: str) -> Iterator[str]:
+def _sse(events: Iterator[TraceEvent], model: str, history: TurnLog) -> Iterator[str]:
     """Frame each trace event as one SSE `data:` record, and never end the stream on silence.
 
     A run that breaks before `done` - an unreachable model endpoint, a recursion limit, anything
@@ -932,31 +904,37 @@ def _sse(events: Iterator[TraceEvent], model: str) -> Iterator[str]:
     never answered has no answer a tool result could stand behind. The prompt-guardrail position
     is read off the knob rather than off the broken run, since a run that never built a prompt
     never chose a position of its own (ADR 0011 as amended).
+
+    History is written from here rather than from around the runner (issue #90), so every frame the
+    reader was sent - this terminal one included - is a frame the turn's stored history holds, and
+    the write happens once the stream is over whether it ended or raised. What that costs the
+    stream is one append per frame; the store is touched after the last one.
     """
     closed = False
     started = perf_counter()
     try:
         for event in events:
             closed = event["type"] == EVENT_DONE
+            history.add(event)
             yield _frame(event)
     except Exception:
         _LOG.exception("the chat stream failed")
         if not closed:
-            yield _frame(
-                DoneEvent(
-                    type=EVENT_DONE,
-                    status=STATUS_FAILED,
-                    answer=_TURN_FAILED,
-                    grounded=False,
-                    model=model,
-                    prompt_guardrails=runtime().agent.prompt_guardrails,
-                    input_tokens=0,
-                    output_tokens=0,
-                    duration_s=round(
-                        perf_counter() - started, runtime().agent.duration_decimals
-                    ),
-                )
+            terminal = DoneEvent(
+                type=EVENT_DONE,
+                status=STATUS_FAILED,
+                answer=_TURN_FAILED,
+                grounded=False,
+                model=model,
+                prompt_guardrails=runtime().agent.prompt_guardrails,
+                input_tokens=0,
+                output_tokens=0,
+                duration_s=round(perf_counter() - started, runtime().agent.duration_decimals),
             )
+            history.add(terminal)
+            yield _frame(terminal)
+    finally:
+        history.close()
 
 
 def _frame(event: TraceEvent) -> str:
