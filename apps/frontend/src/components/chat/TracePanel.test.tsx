@@ -189,9 +189,26 @@ describe("a tool card's own state", () => {
     ]);
 
     expect(screen.queryByText("running")).toBeNull();
-    expect(screen.getByText("3 rows")).toBeTruthy();
+    expect(container.querySelector(".trace-step-meta")?.textContent).toContain("3 rows");
     expect(container.querySelector(".sql-rewrite")).not.toBeNull();
     expect(container.querySelectorAll("td")).toHaveLength(2);
+  });
+
+  it("puts the pipeline strip under the SQL pair, every step lit and the rows on the last chip", () => {
+    const { container } = panel([
+      ...CALL,
+      { type: "tool_result", id: "c1", tool: "query_db", content: "d | a", data: RESULT_DATA },
+    ]);
+    const strip = container.querySelector(".pipeline-strip");
+
+    expect(strip).not.toBeNull();
+    // The journey reads after the statement it is about, never before it.
+    expect(
+      container.querySelector(".sql-rewrite")?.compareDocumentPosition(strip as Node),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(strip?.querySelectorAll(".pipeline-strip-passed")).toHaveLength(6);
+    expect(strip?.querySelector(".pipeline-strip-note")?.textContent).toBe("model");
+    expect([...strip!.querySelectorAll(".pipeline-strip-note")].pop()?.textContent).toBe("3");
   });
 
   it("states the truncation on the card that was capped", () => {
@@ -210,7 +227,7 @@ describe("a tool card's own state", () => {
   });
 
   it("says the model read less of a result than the table beside it shows", () => {
-    panel([
+    const { container } = panel([
       { type: "tool_call", id: "c1", tool: "query_db", args: { sql: "SELECT * FROM employees" } },
       {
         type: "tool_result",
@@ -223,7 +240,7 @@ describe("a tool card's own state", () => {
     ]);
 
     expect(screen.getByText("183 lines withheld from the model")).toBeTruthy();
-    expect(screen.getByText("3 rows")).toBeTruthy();
+    expect(container.querySelector(".trace-step-meta")?.textContent).toContain("3 rows");
   });
 
   it("says nothing about the model's copy when it was handed the whole result", () => {
@@ -279,6 +296,30 @@ describe("a tool card's own state", () => {
     expect(screen.getByText("blocked")).toBeTruthy();
     expect(screen.getByText(/the statement filters another tenant/)).toBeTruthy();
     expect(screen.getByText(/query validation/)).toBeTruthy();
+  });
+
+  it("shows the path dying at the layer that refused it, under the reason", () => {
+    const { container } = panel([
+      { type: "tool_call", id: "c1", tool: "query_db", args: { sql: FOREIGN } },
+      {
+        type: "security_event",
+        id: "c1",
+        tool: "query_db",
+        layer: "query validation",
+        kind: "policy_violation",
+        reason: "the statement filters another tenant",
+      },
+    ]);
+    const steps = [...container.querySelectorAll(".pipeline-strip-step")];
+
+    expect(steps.map((step) => step.classList[1])).toEqual([
+      "pipeline-strip-passed",
+      "pipeline-strip-stopped",
+      "pipeline-strip-unreached",
+      "pipeline-strip-unreached",
+      "pipeline-strip-unreached",
+      "pipeline-strip-unreached",
+    ]);
   });
 });
 
@@ -339,6 +380,19 @@ describe("a replayed turn", () => {
 
     expect(titles(replay.container)).toEqual(["query_db", "get_stats", "query_db"]);
     expect(replay.container.innerHTML).toBe(liveHtml);
+  });
+
+  it("draws the same pipeline strips for a replayed turn as the live one drew", () => {
+    const { container } = render(
+      <TracePanel items={replayedItems(SETTLED)} streaming={false} open />,
+    );
+    const strips = [...container.querySelectorAll(".pipeline-strip")];
+
+    // One for the statement that ran, one for the statement that was refused; get_stats retried
+    // rather than executed, so it has no journey to draw.
+    expect(strips).toHaveLength(2);
+    expect(strips[0].querySelectorAll(".pipeline-strip-passed")).toHaveLength(6);
+    expect(strips[1].querySelectorAll(".pipeline-strip-stopped")).toHaveLength(1);
   });
 
   it("renders a replayed thought through the same step, minus the span this browser measured", () => {
