@@ -9,6 +9,9 @@ const EXECUTED =
   "SELECT department, AVG(salary) AS avg_salary FROM " +
   "(SELECT * FROM employees WHERE employees.tenant_id = ?) AS employees GROUP BY department";
 
+/** What layer 3 wraps around one `employees` reference, subquery and alias together. */
+const SCOPING = "(SELECT * FROM employees WHERE employees.tenant_id = ?) AS employees";
+
 function text(segments: DiffSegment[]): string {
   return segments.map((segment) => segment.text).join("");
 }
@@ -20,13 +23,12 @@ function added(segments: DiffSegment[]): string[] {
 describe("diffSql", () => {
   it("reproduces the executed statement exactly from its kept and added segments", () => {
     const segments = diffSql(GENERATED, EXECUTED) ?? [];
-    expect(text(segments.filter((segment) => segment.kind !== "del"))).toBe(EXECUTED);
+    expect(text(segments)).toBe(EXECUTED);
   });
 
   it("marks the scoping subquery as the only addition", () => {
     const segments = diffSql(GENERATED, EXECUTED) ?? [];
-    expect(added(segments)).toEqual(["(SELECT * FROM employees WHERE employees.tenant_id = ?) AS"]);
-    expect(segments.some((segment) => segment.kind === "del")).toBe(false);
+    expect(added(segments)).toEqual([SCOPING]);
   });
 
   it("ignores sqlglot's re-rendering: keyword case and the model's line breaks", () => {
@@ -35,7 +37,7 @@ describe("diffSql", () => {
       "SELECT name, salary FROM (SELECT * FROM employees WHERE employees.tenant_id = ?) " +
       "AS employees WHERE salary > 100";
     const segments = diffSql(generated, executed) ?? [];
-    expect(added(segments)).toEqual(["(SELECT * FROM employees WHERE employees.tenant_id = ?) AS"]);
+    expect(added(segments)).toEqual([SCOPING]);
   });
 
   it("marks the tenant predicate once per scoped reference when the table is joined to itself", () => {
@@ -46,21 +48,33 @@ describe("diffSql", () => {
       "ON a.department = b.department";
     const segments = diffSql(generated, executed) ?? [];
     expect(added(segments).filter((mark) => mark.includes("tenant_id"))).toHaveLength(2);
-    expect(text(segments.filter((segment) => segment.kind !== "del"))).toBe(executed);
+    expect(text(segments)).toBe(executed);
     expect(segments[segments.length - 1]).toEqual({
       kind: "same",
-      text: " b ON a.department = b.department",
+      text: " ON a.department = b.department",
     });
   });
 
-  it("shows a replaced stretch as one deletion beside its replacement, never as nothing", () => {
+  it("marks the alias of an inserted AS, never leaving the highlight on a dangling keyword", () => {
+    const segments =
+      diffSql(
+        "SELECT MAX(hire_date) AS latest_hire FROM employees",
+        "SELECT MAX(hire_date) AS latest_hire FROM " +
+          "(SELECT * FROM employees WHERE employees.tenant_id = ?) AS employees",
+      ) ?? [];
+    expect(added(segments)).toEqual([SCOPING]);
+  });
+
+  it("leaves an alias the model itself wrote alone", () => {
+    const segments = diffSql(GENERATED, EXECUTED) ?? [];
+    expect(added(segments).join("")).not.toContain("avg_salary");
+  });
+
+  it("marks a replacement as an addition and never carries the replaced text into what ran", () => {
     const segments = diffSql("SELECT name FROM employees LIMIT 5", "SELECT name FROM x LIMIT 9") ?? [];
-    expect(segments.filter((segment) => segment.kind === "del").map((s) => s.text)).toEqual([
-      "employees LIMIT 5",
-    ]);
-    expect(text(segments.filter((segment) => segment.kind !== "del"))).toBe(
-      "SELECT name FROM x LIMIT 9",
-    );
+    expect(text(segments)).toBe("SELECT name FROM x LIMIT 9");
+    expect(added(segments).join(" ")).not.toContain("employees");
+    expect(added(segments).join("")).toContain("x");
   });
 
   it("declines to align a statement past the token cap so a huge query is shown whole", () => {

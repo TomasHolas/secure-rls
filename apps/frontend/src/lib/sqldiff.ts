@@ -5,8 +5,8 @@
  * `(SELECT * FROM employees WHERE employees.tenant_id = ?) AS employees` and renders the whole
  * tree back through sqlglot, so the executed statement differs from the generated one in two
  * unrelated ways: the scoping subquery, which is the security story, and sqlglot's own
- * formatting - one flat line, uppercased keywords - which is noise. Two consequences for how the
- * diff is computed:
+ * formatting - one flat line, uppercased keywords - which is noise. Three consequences for how
+ * the diff is computed:
  *
  * - It diffs TOKENS, not lines, and compares them case-insensitively. A line diff would report
  *   the whole statement as changed and say nothing.
@@ -14,13 +14,24 @@
  *   subquery repeats the words around it (`employees`, `WHERE`, `FROM`), so the alignment with
  *   the most matched tokens strands the model's own words inside the insertion and renders the
  *   rewrite as confetti. Scoring a run once and its length cheaply keeps it one block.
+ * - An alias belongs to the `AS` that introduced it, which the alignment cannot see because it
+ *   scores tokens and not syntax. The rewrite spells its alias like the table the model wrote, so
+ *   the cheapest alignment explains the alias with that token and ends the insertion on a
+ *   dangling `AS`; one pass afterwards hands the alias back to the insertion.
+ *
+ * The segments cover the EXECUTED statement only, so they concatenate back to it exactly and the
+ * card that claims to show what ran shows nothing else. What the rewrite replaced is not marked
+ * here: the generated statement sits on screen beside it and carries that text verbatim.
  *
  * Pure functions over two strings - no React, no DOM - so the alignment is testable directly.
  */
 
+/** What the rewrite did to one run of the executed statement. */
+export type SegmentKind = "same" | "add";
+
 /** One run of the executed statement, tagged by what the rewrite did to it. */
 export interface DiffSegment {
-  kind: "same" | "add" | "del";
+  kind: SegmentKind;
   text: string;
 }
 
@@ -32,9 +43,15 @@ interface Token {
 
 /** What the alignment decided about one token: kept, inserted by the rewrite, or replaced by it. */
 interface Op {
-  kind: "same" | "add" | "del";
+  kind: SegmentKind | "del";
   index: number;
 }
+
+/** An op that survives into the executed statement, so its `index` is a token of that side. */
+type Kept = { kind: SegmentKind; index: number };
+
+/** The keyword whose insertion also claims the identifier after it, because that is its alias. */
+const ALIAS_KEYWORD = "as";
 
 /** Quoted strings stay whole; words and numbers are single tokens; every other glyph is its own. */
 const TOKEN_PATTERN = /'(?:[^']|'')*'|"(?:[^"]|"")*"|[A-Za-z_][\w$]*|\d+(?:\.\d+)?|\S/g;
@@ -63,16 +80,32 @@ const STATES = 3;
 
 /**
  * The executed statement as diff segments against the generated one, or null when either side is
- * too long to align. `add` is what the scoping layer inserted, `del` what it replaced - text taken
- * from the generated statement, so nothing is silently dropped - and `same` the model's own words.
+ * too long to align. `add` is what the scoping layer inserted and `same` the model's own words;
+ * the alignment's deletions are what it read the generated side against, and are dropped here
+ * because a segment of the generated statement is not part of the statement that ran.
  */
 export function diffSql(generated: string, executed: string): DiffSegment[] | null {
   const from = tokenize(generated);
   const to = tokenize(executed);
   if (from.length > MAX_TOKENS || to.length > MAX_TOKENS) return null;
   if (to.length === 0) return [{ kind: "same", text: executed }];
-  const ops = align(from, to);
-  return merge(render(ops, from, to, generated, executed));
+  const kept = align(from, to).filter((op): op is Kept => op.kind !== "del");
+  return merge(render(claimAliases(kept, to), to, executed));
+}
+
+/**
+ * The alias of an inserted `AS` marked as inserted too. `db.execute_scoped` emits
+ * `(...) AS employees`, so the alias is spelled like the table reference the model wrote and the
+ * alignment can always account for it with that token - which ends the highlight on an `AS` with
+ * nothing after it, a construct no SQL reader recognises. The alias is the rewrite's own word.
+ */
+function claimAliases(ops: Kept[], to: Token[]): Kept[] {
+  return ops.map((op, position) => {
+    const previous = ops[position - 1];
+    const aliased =
+      op.kind === "same" && previous?.kind === "add" && key(to[previous.index]) === ALIAS_KEYWORD;
+    return aliased ? { kind: "add", index: op.index } : op;
+  });
 }
 
 function tokenize(sql: string): Token[] {
@@ -158,34 +191,21 @@ function align(from: Token[], to: Token[]): Op[] {
 }
 
 /**
- * The ops as segments over the two statements. The whitespace after a token belongs to its own
- * run only when the next op continues that run, so an inserted run highlights as one block
- * instead of striping at every space and the mark never bleeds onto the model's own words.
+ * The kept ops as segments over the executed statement. The whitespace after a token belongs to
+ * its own run only when the next op continues that run, so an inserted run highlights as one
+ * block instead of striping at every space and the mark never bleeds onto the model's own words.
  */
-function render(
-  ops: Op[],
-  from: Token[],
-  to: Token[],
-  generated: string,
-  executed: string,
-): DiffSegment[] {
+function render(ops: Kept[], to: Token[], executed: string): DiffSegment[] {
   const out: DiffSegment[] = [{ kind: "same", text: executed.slice(0, to[0].start) }];
   ops.forEach((op, position) => {
-    const deleted = op.kind === "del";
-    const tokens = deleted ? from : to;
-    const source = deleted ? generated : executed;
-    const token = tokens[op.index];
-    const next = tokens[op.index + 1];
+    const token = to[op.index];
+    const next = to[op.index + 1];
     const continues = ops[position + 1]?.kind === op.kind;
-    out.push({ kind: op.kind, text: source.slice(token.start, token.end) });
-    // A deletion's trailing whitespace belongs to the generated statement, so it is carried only
-    // while the deletion runs on; otherwise the gap is the executed statement's own.
-    if (!deleted || continues) {
-      out.push({
-        kind: continues && op.kind !== "same" ? op.kind : "same",
-        text: source.slice(token.end, next ? next.start : source.length),
-      });
-    }
+    out.push({ kind: op.kind, text: executed.slice(token.start, token.end) });
+    out.push({
+      kind: continues && op.kind === "add" ? "add" : "same",
+      text: executed.slice(token.end, next ? next.start : executed.length),
+    });
   });
   return out;
 }
