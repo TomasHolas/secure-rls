@@ -19,7 +19,7 @@ components/
   Button.tsx       the one button brick — variants primary/ghost
   Icon.tsx         <Icon name="..." /> — Google Material Symbols only
   Pill.tsx         the status chip — tones neutral/accent/ok/warn/danger
-  Loader.tsx       the one loading signal — pixel grid, optional label, optional elapsed
+  Loader.tsx       the one loading signal — pixel grid (droppable), label, elapsed
   CodeBlock.tsx    labelled monospace block with a copy control (SQL lives here)
   SqlRewrite.tsx   the generated/executed pair, scoping highlighted in the executed card
   Markdown.tsx     render a markdown string as sanitized GFM HTML
@@ -109,23 +109,28 @@ separate because it is the identity chip, not a status.
 ### Loader — the one "work is in flight" signal
 
 ```tsx
-<Loader />                                            {/* a pending button, the trace header */}
+<Loader />                                             {/* a pending button */}
+<Loader label="thinking" />                            {/* the answer card before its first token */}
 <Loader scale="page" label="Loading notes…" />         {/* a panel with nothing in it yet */}
-<Loader label="Thinking" since={item.startedAt} />     {/* and how long it has been */}
+<Loader label="Thinking" since={x} grid={false} />     {/* how long, where a grid already shows */}
 ```
 
 A 3x3 pixel grid whose chevron wavefront sweeps across it — the middle row leads, the
 corners trail — with an optional shimmering label and an optional live elapsed time. It
 replaced a spinning `progress_activity` glyph at every place the app shows work in
-flight (issue #123), so there is one loading idiom rather than one per view: the trace
-header while a turn streams, the thinking step, the login button's pending state, and
-the Records and Notes tabs before their first page arrives.
+flight (issue #123), so there is one loading idiom rather than one per view: the answer
+card before its first token arrives, the trace's thinking step, the login button's
+pending state, and the Records and Notes tabs before their first page arrives.
 
 It composes rather than insisting. The grid alone is the whole loader where the text
 beside it already says what is happening; `label` turns it into a panel's loading state;
 `since` (a start timestamp) adds the elapsed time where how long this is taking is the
 reader's real question — the model thinking. `scale` is `inline` (default, a 22px grid in
 a row of text or a button) or `page` (a 41px grid, centred in the empty panel it fills).
+`grid={false}` leaves the shimmering label as the whole signal, for a place that would
+otherwise put a second wavefront on screen beside a first: the chat flow carries the grid
+once, on the answer card's placeholder, and the trace's thinking row shimmers without one
+(the owner's placement ruling on #123, `docs/ui-pattern-review.md`).
 
 Every metric — cell, gap, the wavefront's step and cycle, the two opacities — is a custom
 property in `app.css`'s own `:root`, so nothing is a number in JSX and the two scales

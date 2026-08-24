@@ -21,7 +21,7 @@ is why several patterns the issue expected us to want are already in place.
 | **Auto state + user override** | `TraceStep`'s `open` is now the state a step is *in* until the reader clicks, not merely the one it mounted in (`choice ?? open`) | The mechanism the fold-when-settled behaviour needs, and it deleted state rather than adding it |
 | **Counts always singularized** | `formatCount` in `lib/format.ts`, used by the trace chips and the Records/Notes totals and pagers; `1 row`, not `1 rows` | One formatter, and "1 rows" is visible at demo distance the moment a filter matches a single row |
 | **Honour reduced motion** | The shimmer and the loader grid stop under `prefers-reduced-motion` | The reference does this properly; we had no such block at all |
-| **Their loader: a pixel grid with a wavefront** | New `Loader` brick (issue #123): a 3x3 grid whose chevron wavefront sweeps, the shimmering label above folded into it, and an elapsed time subtracted from a start timestamp. It replaced the spinning `progress_activity` glyph at every call site — trace header, thinking step, login button, Records and Notes loading states | A spinner says "something is happening" and nothing else, in five places that had each sized it differently. A wavefront with a running clock says *how long*, which on a demo is the question the room is actually asking while the model thinks — and one brick means the answer looks the same everywhere |
+| **Their loader: a pixel grid with a wavefront** | New `Loader` brick (issue #123): a 3x3 grid whose chevron wavefront sweeps, the shimmering label above folded into it, and an elapsed time subtracted from a start timestamp. It replaced the spinning `progress_activity` glyph at every call site — the answer card's pre-token placeholder, the thinking step, the login button, the Records and Notes loading states | A spinner says "something is happening" and nothing else, in five places that had each sized it differently. A wavefront with a running clock says *how long*, which on a demo is the question the room is actually asking while the model thinks — and one brick means the answer looks the same everywhere. **Where it goes** was wrong when this row first shipped and was corrected on owner review — see the placement verdict below. |
 
 ### Adopted — the sidebar (issue #114)
 
@@ -163,6 +163,39 @@ tint *plus* a heavier weight *plus* a solid rule under every wrapped fragment,
 with a legend naming it. Verified by screenshot with `filter: grayscale(1)` over
 the whole page — with hue removed entirely the marked region is still the
 obvious one.
+
+## The loader placement verdict
+
+The brick is unchanged; where it was hung was wrong, and this is the honest
+record of it.
+
+**What issue #123 shipped.** The grid went wherever the app said work was in
+flight, which in the chat flow meant twice inside the trace panel: one beside
+the **TRACE** header for as long as the turn streamed, and one as the live
+thinking step's title. The answer card's own placeholder — the `thinking` line
+that stands where the answer will be until its first token lands — was left as
+it had always been: dead text, no shimmer, no grid.
+
+**What live use showed.** That is exactly backwards. The placeholder is where a
+reader is already looking, and for the seconds before the first token it is the
+only thing on screen that could say the turn is alive — so it was the one place
+that needed the grid and the one place that did not have it. Meanwhile the trace
+ran two wavefronts at once for a single fact, and a panel with two animations
+competing reads as decoration rather than as signal.
+
+**What we do now.** The grid appears exactly once in a streaming turn: on the
+answer card's placeholder, as `<Loader label="thinking" />` — grid plus
+shimmering label, no clock, because how long the answer has been coming is
+already on the thinking row. Inside the trace the grid is gone from both places.
+The thinking step keeps its shimmering label and its counting clock, which is
+what says *live* there, and the **TRACE** header animates nothing at all.
+
+The brick took one prop for it rather than a second implementation:
+`grid={false}` renders the label and the clock without the 3x3, so the trace and
+the placeholder are still the same owner and there is no hand-rolled shimmer
+anywhere. Reduced motion is unaffected — the placeholder is the same brick, so
+`prefers-reduced-motion` freezes its grid dim and stops its label sweeping, as it
+did in the trace.
 
 ## Attribution
 
