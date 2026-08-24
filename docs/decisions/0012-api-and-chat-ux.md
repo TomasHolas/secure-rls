@@ -105,10 +105,12 @@ limit", beside the answer it did get.
 - Conversations persist server-side: a registry table (thread_id, user,
   tenant, title, created) plus LangGraph's SQLite checkpointer for state.
   A thread is created titled with its first user message, truncated, and is
-  then retitled by the model (see **Generated titles** below).
+  then retitled by the model while it is young (see **Generated titles**
+  below). The row also carries whether the reader renamed it themselves.
 - Endpoints: `GET /conversations` (list, JWT-scoped), `POST /conversations`
   (new thread), `GET /conversations/{id}` (history replay),
-  `PATCH /conversations/{id}` (retitle from the first exchange),
+  `PATCH /conversations/{id}` (the reader's own rename with a title in the
+  body, or a generated one when the body carries none),
   `DELETE /conversations/{id}`. Every access verifies the thread belongs to
   the authenticated user+tenant — the conversation store is a fifth
   tenant-scoped data path under the same identity layer (ADR 0002 L1). The
@@ -230,7 +232,7 @@ or rendered as text rather than trusted as record (OWASP LLM05), and stored
 results are capped rather than unbounded (ADR 0007) — plus the product's own
 stated purpose, which is to be checkable after the fact.
 
-### Generated titles (amended after issue #72)
+### Generated titles (amended after issues #72 and #118)
 
 The original line here read "Title = first user message, truncated (no LLM
 call)". It made the rail unreadable: the demo's own history showed
@@ -239,6 +241,40 @@ types is a question, not a name for the conversation they are about to have.
 The amendment: the first-message truncation becomes the *fallback*, and the
 title a thread settles on is a few-word label the model writes for it.
 
+- **How often it runs: after each of the thread's first `title_turns` turns,
+  then never again** (amended for issue #118; `title_turns` defaults to 3).
+  The original rule ran the titler exactly once, after the first turn. Live use
+  showed why that is wrong: a thread opened with "Hello, how are you" has
+  nothing nameable in its first exchange, so the model reaches for the domain
+  and answers "HR data" — and because titling never ran again, that label was
+  the thread's name forever, indistinguishable from every other thread in the
+  rail. Naming the thread again after each of its first few turns fixes it
+  without a heuristic that can misfire: by turn two or three the real subject
+  exists, and the label follows it. The window then closes, because a name that
+  churns after a thread has settled is its own defect, and because the cost has
+  to stay bounded — at most `title_turns` small calls per thread, whatever the
+  thread's length. Rejected: classifying "is this smalltalk" (a classifier that
+  will be wrong live), deferring the first title to turn N (leaves the
+  placeholder on screen during the most-watched part of a demo), and titling
+  from the whole transcript on every turn (unbounded cost, churning names).
+  The titler reads the exchanges inside that window, each message clipped to a
+  cap, so the prompt cannot grow with an answer that happens to be a big table.
+- **The reader's own name wins, permanently.** A `PATCH` carrying
+  `{"title": ...}` is a rename typed by a person, and the registry marks the
+  row: `retitle_thread` (the generated write) carries that flag in its `WHERE`
+  clause, so no automatic re-title can overwrite a name a reader chose. The
+  flag is a stored column rather than a guess about the title's text, because
+  nothing in the text distinguishes a reader's name from a generated label. A
+  state file written before the flag existed gains the column defaulting to
+  false: the alternative default would freeze every existing thread's name for
+  good, and the cost of this one is at most one re-title of a thread that had
+  been renamed before the upgrade.
+- **A failed titling call leaves the standing name.** With the titler running
+  more than once, the old fallback (the first user message) would have let a
+  timeout on turn two destroy the good label turn one produced. So the fallback
+  is the title the thread already has; the first question is used only while
+  the thread still carries the unnamed placeholder, which is the case #72 was
+  about.
 - **Where the call runs.** In `PATCH /conversations/{id}`, a separate small
   request the SPA makes once the turn's `done` frame has landed — never inside
   the `/chat` stream. Titling is an LLM call against the same endpoint the turn
@@ -250,9 +286,10 @@ title a thread settles on is a few-word label the model writes for it.
   direction — a turn that was blocked or failed still gets a title, because the
   label describes the conversation, not the outcome.
 - **It always answers.** The titler returns a title in every case: the model's
-  when it gives a usable one, the thread's first question when the call raises
-  or returns junk, the title the thread already has when there is nothing to
-  name yet (a turn that broke before the checkpointer stored anything). So the
+  when it gives a usable one, the title the thread already has when the call
+  raises or returns junk or when there is nothing to name yet (a turn that
+  broke before the checkpointer stored anything), and the first question when
+  the thread is still unnamed. So the
   endpoint has no failure mode of its own — it either improves the title or
   leaves it as good as it was — and the SPA adopts the row it answers with
   rather than re-listing.
@@ -266,7 +303,18 @@ title a thread settles on is a few-word label the model writes for it.
   the fallback. The registry normalizes again on write, so no path stores a
   title the sidebar cannot render, and the SPA renders it as a text node,
   never through Markdown.
-- **The titling call is given nothing to abuse.** It sees one exchange, with no
+- **Thinking is switched off for the titling call.** Ollama enables it by
+  default on a model that supports one, and measured against this project's
+  configured model a titling call then spent 245-918 generation tokens
+  reasoning its way to a six-word label — 7 to 17 seconds per call, which is
+  what produced every timed-out titling call observed in real use (the
+  measurement is in issue #118). A label needs no reasoning, so the request
+  says `think: false`; the endpoint rejects only thinking asked of a model that
+  cannot do it, never thinking declined. Since the same measurement put a
+  no-thinking call as high as 15.9s under load, and re-titling makes the call up
+  to `title_turns` times per thread, `title_timeout_s` moved from 20s to 30s.
+- **The titling call is given nothing to abuse.** It sees the young thread's
+  exchanges, with no
   tools, no schema, no tenant context and no memory. The transcript it reads is
   untrusted text (a user's question, an answer about tenant data, possibly note
   text quoted into it), so a prompt-injected transcript can at worst produce a
@@ -520,6 +568,11 @@ about the marking is unchanged; three things follow.
   https://www.unicode.org/reports/tr36/
 - RFC 5789, PATCH Method for HTTP — the partial-update semantics the retitle
   endpoint uses — https://www.rfc-editor.org/rfc/rfc5789
+- Ollama, `/api/chat` `think` parameter, and its server-side validation showing
+  that only thinking *asked of* a model that cannot think is refused
+  (`server/routes.go`) — the basis for declining thinking on the titling call —
+  https://docs.ollama.com/api and
+  https://github.com/ollama/ollama/blob/main/server/routes.go
 - beautifului.dev, a free MIT-licensed pattern library for AI-native interfaces
   (Turbo / Shane Levine) — the source of the mark-the-edit-in-place and
   thinking-summary patterns adopted above; no code taken —

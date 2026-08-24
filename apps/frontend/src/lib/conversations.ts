@@ -8,12 +8,19 @@
  * New chat therefore opens an empty draft and `startThread` registers it the moment there is
  * a question.
  *
- * `titleThread` is the second half of that (ADR 0012 as amended): once the first turn is over,
- * the server generates the few-word label from the exchange and this store adopts the row it
- * answers with. Adopting the response rather than re-listing is deliberate - the PATCH body IS
+ * `titleThread` is the second half of that (ADR 0012 as amended): once a turn is over, the
+ * server generates the few-word label from the thread's exchanges and this store adopts the row
+ * it answers with. Adopting the response rather than re-listing is deliberate - the PATCH body IS
  * the stored row, so one request settles it and the rail cannot reorder or flicker around the
  * thread the reader is looking at. A failed refresh is logged and nothing else: the thread
- * keeps the first-message title it already had, which is a title, not an error to report.
+ * keeps the title it already had, which is a title, not an error to report.
+ *
+ * It runs more than once now (issue #118): the chat view asks again after each of the thread's
+ * first `title_turns` turns, so a thread that opened with a greeting ends up named after the
+ * question that followed, and the rail re-renders from this store either way. When the window
+ * closes, or when the reader has renamed the thread themselves, the server answers with the row
+ * unchanged - which is why this store can stay a plain "ask and adopt" and hold no rule of its
+ * own about which name wins.
  *
  * `replay` holds what the server remembers of the open thread, already folded into turns by
  * `lib/trace.ts`: the questions, the answers, and the whole trace each turn produced - its

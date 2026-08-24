@@ -341,7 +341,7 @@ Everything but `/health` and `/login` requires `Authorization: Bearer <jwt>`.
 | `POST /chat` | One turn as an SSE stream of typed trace events |
 | `GET /conversations` | The caller's own threads, newest first |
 | `POST /conversations` | Register a thread for the caller |
-| `PATCH /conversations/{id}` | Retitle a thread from its first exchange; the model's label, sanitized and capped, with the first question as the fallback |
+| `PATCH /conversations/{id}` | Name a thread: the reader's own title from the body (final - nothing generated overwrites it), or the model's label from the thread's exchanges when the body carries none. Generated naming runs after each of the thread's first `conversations.title_turns` turns and then stops; a failed call leaves the standing title |
 | `GET/DELETE /conversations/{id}` | Replay or delete the caller's own thread. A foreign id and a missing id return the same 404 |
 | `GET /records`, `GET /records/departments` | The caller's own rows, paged, filtered and sorted through allowlisted templates — the Records tab (ADR 0014) |
 | `GET /notes`, `GET /notes/search`, `GET /notes/flagged` | The caller's own notes, the agent's own retrieval path, and which of them carry a planted injection payload |

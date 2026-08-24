@@ -9,7 +9,8 @@ drops any the client invents, so a body claiming another tenant is silently inef
 
 Endpoints:
 
-- `GET  /health`            open; liveness, the API version, the prompt-guardrail position.
+- `GET  /health`            open; liveness, the API version, the guardrail position, the titling
+  window.
 - `POST /login`             credentials for a token, or 401.
 - `GET  /models`            the endpoint's live chat-capable models plus the default it resolves.
 - `POST /chat`              one turn as an SSE stream of ADR 0012 trace events.
@@ -21,7 +22,7 @@ Endpoints:
 - `GET  /conversations`     the caller's threads, newest first.
 - `POST /conversations`     a new thread; the title is the first user message, truncated.
 - `GET  /conversations/{id}` the caller's own thread row, its transcript and its turn history.
-- `PATCH /conversations/{id}` the thread retitled from its first exchange by the model.
+- `PATCH /conversations/{id}` the thread named by the reader, or by the model while it is young.
 - `DELETE /conversations/{id}` the thread plus its checkpointer rows.
 
 Conversation titles (ADR 0012 as amended). A thread is created titled with its first user
@@ -29,6 +30,14 @@ message, truncated (`POST /conversations {"title": ...}`) - the SPA has that mes
 before it opens the stream, and a thread created without one carries the configured default.
 `PATCH /conversations/{id}` then replaces it with the few-word label `titles.py` gets from the
 model, and returns the updated row.
+
+That naming runs again while the thread is young and then stops (issue #118): after each of the
+first `conversations.title_turns` turns the SPA asks again and the label follows what the
+conversation turned out to be about, which is how a thread opened with "Hello, how are you" ends
+up named after the question that followed. Past the window nothing regenerates - a name that
+churns after a thread has settled is its own defect. A PATCH carrying `{"title": ...}` is the
+other half: that is the reader naming their own thread, and the registry marks the row so no
+generated label ever writes over it.
 
 That PATCH is deliberately its own request rather than a step inside the `/chat` stream: the
 titling call is an LLM call, and one that hangs, times out or dies must not be able to delay a
@@ -217,7 +226,7 @@ from paths import CHECKPOINT_DB_PATH, DB_PATH, STATE_DB_PATH
 from rag import OllamaEmbed, RetrievalUnavailable, ensure_index, search_notes_scoped
 from runtime import runtime
 from security import QueryRejected
-from titles import TitleModel, generate_title
+from titles import TitleModel, generate_title, should_title
 from turns import TurnLog
 
 API_VERSION = "0.1.0"
@@ -234,6 +243,7 @@ _THINKING_CAPABILITY = "thinking"
 _INVALID_CREDENTIALS = "invalid credentials"
 _INVALID_TOKEN = "invalid or expired token"
 _UNKNOWN_MODEL = "unknown model"
+_EMPTY_TITLE = "a title cannot be blank"
 _NO_CHAT_MODEL = "the model endpoint serves no chat-capable model"
 _ENDPOINT_UNAVAILABLE = "the model endpoint is unavailable"
 _TURN_FAILED = (
@@ -305,6 +315,12 @@ class ChatRequest(BaseModel):
 
 class ConversationRequest(BaseModel):
     """A new thread, titled with the first user message when the client has one."""
+
+    title: str | None = None
+
+
+class RetitleRequest(BaseModel):
+    """A PATCH body: the name a reader typed, or nothing - which asks the model for one."""
 
     title: str | None = None
 
@@ -429,6 +445,13 @@ def ollama_titler(base_url: str) -> TitleModel:
     not a turn: no tools, no tenant, no checkpoint, one prompt and one line back. What it does
     need is a hard deadline, which is why it sits next to the other two raw-httpx callers here.
     An unreachable or slow endpoint raises, and `titles.generate_title` falls back.
+
+    Thinking is switched off for this call (issue #118). Ollama turns it on by default for a model
+    that supports it, and measured on the configured model a titling call then spent 245-918
+    generation tokens reasoning about a six-word label: 7-17 seconds against a timeout, and every
+    read timeout observed in the owner's real threads. A label needs no reasoning, so the request
+    says so, and `think: false` is rejected by no model - the endpoint refuses only thinking asked
+    of a model that cannot (ollama/ollama `server/routes.go`).
     """
 
     def ask(prompt: str) -> str:
@@ -442,6 +465,7 @@ def ollama_titler(base_url: str) -> TitleModel:
                     "model": runtime().agent.model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "think": False,
                 },
             )
             response.raise_for_status()
@@ -586,12 +610,19 @@ def create_app(
     app.add_exception_handler(SecurityViolation, _forbidden)
 
     @app.get("/health")
-    def health() -> dict[str, str | bool]:
-        """Liveness plus the prompt-guardrail position, so the SPA can state it before a turn."""
+    def health() -> dict[str, str | bool | int]:
+        """Liveness, the prompt-guardrail position and the titling window the SPA plays along with.
+
+        Both knobs are server-side settings the SPA has to reflect rather than decide: the
+        guardrail position so it can state the mode before a turn, and `title_turns` so it stops
+        asking for a generated title once the thread is past the window (issue #118). The window
+        is enforced here either way - this only spares the SPA a request whose answer is known.
+        """
         return {
             "status": "ok",
             "version": API_VERSION,
             "prompt_guardrails": runtime().agent.prompt_guardrails,
+            "title_turns": runtime().conversations.title_turns,
         }
 
     @app.post("/login")
@@ -773,21 +804,36 @@ def create_app(
 
     @app.patch("/conversations/{thread_id}")
     def retitle_conversation(
-        thread_id: str, identity: Annotated[Identity, Depends(_identity)]
+        thread_id: str,
+        identity: Annotated[Identity, Depends(_identity)],
+        body: RetitleRequest | None = None,
     ) -> Thread:
-        """Retitle the caller's own thread from its first exchange, and return the updated row.
+        """Name the caller's own thread - as they typed it, or as the model reads it.
 
         The order is the contract. The registry answers first, so a foreign or missing id is the
         same 404 as everywhere else and no transcript is read and no model called for a thread
-        the caller may not see. Then the titler gets the exchange and returns a title in every
-        case (ADR 0012 as amended): the model's when it gives a usable one, the first question
-        when the call fails or answers with junk, the current title when there is nothing to
-        name yet. So this endpoint has no failure mode of its own - it either renames the thread
-        to something better or leaves it as good as it was.
+        the caller may not see.
+
+        A body carrying a title is the reader naming their thread, and it is stored as theirs for
+        good: nothing generated writes over it afterwards (issue #118). A body with no title asks
+        for a generated one, which happens only while the thread is young - `titles.should_title`
+        is that window, and past it the thread keeps the name it settled on rather than churning.
+        Inside the window the titler gets the exchanges so far and returns a title in every case
+        (ADR 0012 as amended): the model's when it gives a usable one, the standing title when the
+        call fails or answers with junk, the first question when the thread is still unnamed. So
+        this endpoint has no failure mode of its own - it either names the thread better or leaves
+        it as good as it was.
         """
         thread = threads.get_thread(identity, thread_id)
-        title = generate_title(replay(thread_id), ask_title, current=thread.title)
-        return threads.rename_thread(identity, thread_id, title)
+        if body is not None and body.title is not None:
+            if not body.title.strip():
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, _EMPTY_TITLE)
+            return threads.rename_thread(identity, thread_id, body.title)
+        messages = replay(thread_id)
+        if not should_title(messages):
+            return thread
+        title = generate_title(messages, ask_title, current=thread.title)
+        return threads.retitle_thread(identity, thread_id, title)
 
     @app.delete("/conversations/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_conversation(
