@@ -55,7 +55,7 @@ them:
 
 ```bash
 cd apps/backend && uv run pytest -q     # 1060 tests
-cd apps/frontend && npm test            # 360 tests, 22 files
+cd apps/frontend && npm test            # 370 tests, 23 files
 ```
 
 The backend suite is weighted toward the boundary: 272 tests on the SQL
