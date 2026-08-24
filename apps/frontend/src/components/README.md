@@ -257,7 +257,8 @@ a click. `confirmLabel` defaults to "Delete" and renders in the `.btn-danger` re
 
 The card a standalone form sits in: title, optional subtitle, the fields as children
 (ending in a `btn-block` Button), and the error slot. `onSubmit` is wired to a real
-form submit, so Enter works from any field.
+form submit, so Enter works from any field. The wrapper centres the card in the main
+region, vertically as well as horizontally.
 
 ```tsx
 <FormCard title="Sign in" subtitle="..." error={error} onSubmit={submit}>
@@ -544,7 +545,13 @@ every stored payload has structured keys, so the fallback is a live-turn path on
   `.form-card`, `.capture-error` -> `.form-error`.
 - `FormCard` / `TextField` have no KB counterpart component: KB writes the
   `.capture-card` + `.field` + `.input` markup inline in each view. The CSS is ported
-  verbatim; the components are new so this app has one owner per form shape.
+  verbatim apart from `.form-card-wrap`; the components are new so this app has one
+  owner per form shape.
+- `.form-card-wrap` is the one rule that diverges: KB pads its card down from the top of a
+  document that grows, which in this viewport-height shell left the login card in the upper
+  third of the page. Here the wrapper's auto margins centre it in `.main` and collapse to
+  zero when the card is taller than the region, so a short viewport scrolls rather than
+  clipping (issue #116).
 - `TenantPill` is new (KB has no tenants); its visual is KB's `.category-pill` shape
   with the accent color instead of the per-category one.
 - `Markdown` drops KB's `[[wiki-link]]` chips, `[n]` citation chips and the `inline`

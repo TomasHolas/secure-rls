@@ -161,7 +161,8 @@
 .tenant-pill-user { color: var(--fg-3); font-weight: 500; }
 
 /* ---------------- Standalone form card (login) ---------------- */
-.form-card-wrap { max-width: 420px; margin: 0 auto; padding: var(--space-16) var(--space-4) 0; }
+/* Auto margins centre the card and collapse when it outgrows the column, so a short viewport scrolls. */
+.form-card-wrap { max-width: 420px; margin: auto; padding: var(--space-8) var(--space-4); }
 .form-card {
   background: var(--bg-surface); border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xl); padding: var(--space-8); box-shadow: var(--shadow-md);
