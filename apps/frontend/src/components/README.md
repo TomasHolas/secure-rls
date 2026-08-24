@@ -75,14 +75,14 @@ for forms. Never hand-write `<button className="btn ...">`.
 Every icon comes from **Google Material Symbols**
 (https://fonts.google.com/icons) — no other icon library, no hand-rolled SVGs.
 `Icon.tsx` maps our stable `name` keys to Material ligatures and renders them via a
-**self-hosted subset font** (`public/fonts/material-symbols-subset.v2.woff2`,
+**self-hosted subset font** (`public/fonts/material-symbols-subset.v3.woff2`,
 `@font-face` in `tokens.css`). The map mirrors exactly the glyphs in that subset, so
 to add an icon: add a mapping in `MATERIAL_SYMBOLS`, then regenerate the subset woff2
 — fetch
 `https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined&icon_names=<comma,list>`
 (the `icon_names` list must cover **every** value in `MATERIAL_SYMBOLS`), download the
 linked woff2 and save it under a **bumped version suffix**
-(`...subset.v3.woff2`, ...), updating the `@font-face` url in `tokens.css` to match.
+(`...subset.v4.woff2`, ...), updating the `@font-face` url in `tokens.css` to match.
 The version bump is the cache-bust: `public/` assets are not fingerprinted by the
 bundler, so reusing the filename makes browsers serve the stale font and new glyphs
 render as literal text. A name whose ligature is not in the subset renders as literal
