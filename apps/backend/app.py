@@ -11,7 +11,7 @@ Endpoints:
 
 - `GET  /health`            open; liveness, the API version, the prompt-guardrail position.
 - `POST /login`             credentials for a token, or 401.
-- `GET  /models`            the endpoint's live chat-capable models plus the configured default.
+- `GET  /models`            the endpoint's live chat-capable models plus the default it resolves.
 - `POST /chat`              one turn as an SSE stream of ADR 0012 trace events.
 - `GET  /records`           one filtered, sorted page of the caller's own employee rows.
 - `GET  /records/departments` the caller's departments and headcounts, for the filter's options.
@@ -78,8 +78,16 @@ model misbehaving - a bare 403 that is logged in full server-side and says nothi
 
 Model selection (ADR 0005 as amended). The client never learns `OLLAMA_BASE_URL`: `/models`
 proxies the endpoint's `/api/tags`, and a client-chosen `model` on `/chat` is honored only if
-it is in that live list at request time - an allowlist over untrusted input. Absent, the
-`runtime.json` `agent.model` default applies.
+it is in that live list at request time - an allowlist over untrusted input.
+
+Absent one, the default is derived from the same live list rather than asserted (issue #111).
+`runtime.json`'s `agent.model` is a preference: honored when the endpoint serves it, and
+otherwise replaced by the served chat id that sorts first - a rule over the set, not over
+`/api/tags`'s modification-time ordering, so the same live list always resolves the same id.
+`_effective_default_model` is the one place that decides it, and both readers go through it:
+`/models` reports as `default` exactly the id a default turn's `done.model` will name, so the
+picker's preselection and the model pill cannot drift apart. An endpoint serving no chat-capable
+model at all is a 502, never a silent turn on an id nothing serves.
 
 The list is filtered to models that can actually hold a conversation: an endpoint also serves
 embedding-only models (`nomic-embed-text`, which this app itself uses for RAG), and picking one
@@ -224,6 +232,7 @@ _THINKING_CAPABILITY = "thinking"
 _INVALID_CREDENTIALS = "invalid credentials"
 _INVALID_TOKEN = "invalid or expired token"
 _UNKNOWN_MODEL = "unknown model"
+_NO_CHAT_MODEL = "the model endpoint serves no chat-capable model"
 _ENDPOINT_UNAVAILABLE = "the model endpoint is unavailable"
 _TURN_FAILED = (
     "The turn ended in a server-side failure before an answer was composed. Nothing is left "
@@ -593,8 +602,14 @@ def create_app(
 
     @app.get("/models", dependencies=[Depends(_identity)])
     def models() -> dict[str, object]:
-        """The endpoint's live chat-capable models plus the configured default (ADR 0005)."""
-        return {"models": list_models(), "default": runtime().agent.model}
+        """The endpoint's live chat-capable models plus the default a turn would run on.
+
+        Both fields come from one reading of the live list (ADR 0005 as amended), so `default` is
+        the id `/chat` resolves for a request that names none - never a configured id the endpoint
+        does not serve.
+        """
+        served = list_models()
+        return {"models": served, "default": _effective_default_model(served)}
 
     @app.post("/chat")
     def chat(
@@ -819,11 +834,35 @@ def _hit_count(requested: int | None) -> int:
     return min(max(requested, 1), config.browse.max_search_hits)
 
 
+def _effective_default_model(served: list[str]) -> str:
+    """The model a default turn runs on, derived from what the endpoint actually serves.
+
+    `runtime.json`'s `agent.model` stays the preference and is honored whenever the live
+    chat-capable list carries it. When it does not, the default is the served chat id that sorts
+    first by Python's string order - a rule over the set rather than over the endpoint's own
+    ordering, which `/api/tags` returns by modification time and therefore reshuffles as models
+    are pulled or run. The same live set thus always yields the same id, so the picker's
+    preselection and the turn's `done.model` cannot disagree between turns.
+
+    An endpoint serving no chat-capable model at all is an upstream failure, not a default: it
+    answers 502 like every other model-endpoint condition rather than inventing an id to run on.
+    """
+    if not served:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _NO_CHAT_MODEL)
+    configured = runtime().agent.model
+    return configured if configured in served else min(served)
+
+
 def _resolve_model(requested: str | None, list_models: ModelLister) -> str:
-    """Honor a client model id only if the endpoint serves it for chat now; else the configured."""
+    """Honor a client model id only if the endpoint serves it now; else the effective default.
+
+    One live list serves both branches, so the default is validated against exactly the list the
+    picker was offered without the turn making a second call to the endpoint.
+    """
+    served = list_models()
     if requested is None:
-        return runtime().agent.model
-    if requested not in list_models():
+        return _effective_default_model(served)
+    if requested not in served:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _UNKNOWN_MODEL)
     return requested
 
