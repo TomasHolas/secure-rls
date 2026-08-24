@@ -414,10 +414,16 @@ class GatedRunner:
     release: threading.Event = field(default_factory=threading.Event)
     finished: threading.Event = field(default_factory=threading.Event)
 
-    def __call__(self, *, tenant_id, thread_id, message, model):
+    def __call__(self, *, tenant_id, all_tenants, thread_id, message, model):
         """Yield the canned events, holding at the gate once the first one is out."""
         self.calls.append(
-            {"tenant_id": tenant_id, "thread_id": thread_id, "message": message, "model": model}
+            {
+                "tenant_id": tenant_id,
+                "all_tenants": all_tenants,
+                "thread_id": thread_id,
+                "message": message,
+                "model": model,
+            }
         )
         try:
             for index, event in enumerate(EVENTS):
