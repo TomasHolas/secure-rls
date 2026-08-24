@@ -354,8 +354,10 @@
 /* The pixel-grid loader (issue #123), ported from beautifului.dev onto our tokens: one 3x3 grid
    and one chevron wavefront, which is a front crossing the grid rather than nine cells blinking.
    The cells take currentColor, so the loader is the colour of whatever row it sits in - fg-4 in
-   the trace header, the button's own foreground on a pending button - and needs no colour of its
-   own to keep in step with the palette. */
+   the answer card's pending placeholder, the button's own foreground on a pending button - and
+   needs no colour of its own to keep in step with the palette. The grid appears exactly once in a
+   streaming turn, on that placeholder: the trace signals live by its thinking label's shimmer
+   alone (the owner's placement ruling on issue #123, docs/ui-pattern-review.md). */
 .loader { display: inline-flex; align-items: center; gap: var(--space-2); }
 .loader-grid { display: grid; grid-template-columns: repeat(3, var(--loader-cell)); gap: var(--loader-gap); }
 .loader-cell {
@@ -517,6 +519,8 @@
    whitespace. Same specificity as .msg-text and later in the file, so the markdown body wins
    on the wrapper too, not only on the blocks .markdown-body p/li already reach. */
 .msg-text.markdown-body { white-space: normal; }
+/* The answer card with no token in it yet: the `Loader` sits in this paragraph and takes its
+   colour, so the grid is as quiet as the word beside it. */
 .msg-pending { margin: 0; color: var(--fg-4); font-size: var(--text-sm); }
 .msg-footer { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-4); }
 .msg .form-error { margin-top: 0; }

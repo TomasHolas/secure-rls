@@ -90,14 +90,15 @@ describe("the entries the panel renders", () => {
     expect(rendered).toHaveLength(3);
   });
 
-  it("counts up on the round still thinking and shows the pixel grid while the turn streams", () => {
+  it("shimmers and counts up on the round still thinking, with no pixel grid anywhere", () => {
     const { container } = panel(TWO_ROUNDS, true);
 
     const live = container.querySelector(".trace-step-muted:last-of-type .loader");
-    expect(live?.querySelectorAll(".loader-cell")).toHaveLength(9);
     expect(live?.querySelector(".loader-label")?.textContent).toBe("Thinking");
     expect(live?.querySelector(".loader-elapsed")?.textContent).toMatch(/^[\d.]+s$/);
-    expect(container.querySelector(".trace-head .loader")).not.toBeNull();
+    // The owner's placement ruling on #123: one grid per turn, and it is the answer card's.
+    expect(container.querySelectorAll(".loader-cell")).toHaveLength(0);
+    expect(container.querySelector(".trace-head .loader")).toBeNull();
   });
 
   it("names no graph node anywhere in the rendered trace", () => {

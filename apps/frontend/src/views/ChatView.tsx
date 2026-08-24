@@ -57,6 +57,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ChatMessage, Composer, ModelPicker, TracePanel } from "../components/chat";
 import { EmptyState, Page, PageHeader } from "../components/layout";
+import { Loader } from "../components/Loader";
 import { Pill } from "../components/Pill";
 import { ApiError, getHealth, listModels, openChatStream } from "../lib/api";
 import { readTraceEvents } from "../lib/sse";
@@ -65,6 +66,8 @@ import { applyEvent, failTurn, startTurn, tokensPerSecond } from "../lib/trace";
 import type { Turn, TurnUsage } from "../lib/trace";
 
 const STREAM_CUT = "The stream ended before the turn finished.";
+/** The answer card before its first token: the one place in the chat that carries the pixel grid. */
+const PENDING_LABEL = "thinking";
 const GENERIC_FAILURE = "The turn failed. Try again.";
 /** A generation rate reads as a speed, not a measurement: one decimal is all it carries. */
 const RATE_DECIMALS = 1;
@@ -356,7 +359,9 @@ function TurnView({
         }
       >
         {!turn.answer && turn.phase === "streaming" ? (
-          <p className="msg-pending">thinking</p>
+          <p className="msg-pending">
+            <Loader label={PENDING_LABEL} />
+          </p>
         ) : null}
         {turn.error ? <p className="form-error">{turn.error}</p> : null}
       </ChatMessage>
