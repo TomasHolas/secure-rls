@@ -21,7 +21,8 @@ Endpoints:
 - `GET  /records/departments` the departments the listing holds and their counts.
 - `GET  /records/tenants`   the dataset's tenants and their row counts, for the tenant filter.
 - `GET  /notes`             one page of the whole note corpus.
-- `GET  /notes/search`      the agent's own retrieval path, run for a reader's query - scoped.
+- `GET  /notes/search`      the agent's own retrieval path, run for a reader's query - in the
+  scope the token grants.
 - `GET  /notes/flagged`     which rows the committed poison manifest plants a payload in.
 - `GET  /audit`             one newest-first page of the audit log, all tenants' entries.
 - `GET  /conversations`     the caller's threads, newest first.
@@ -84,9 +85,13 @@ filter of the same kind as `department`. They read through `browse.py`'s allowli
 down `db.execute_unscoped`, the one deliberately unscoped read in the repo: validator,
 engine authorizer, limit caps, deadline, row cap and audit row all still apply, and only the
 tenant scoping and its egress comparison are absent, because returning every tenant is the point.
-The notes SEARCH is the opposite and stays that way: it delegates to `rag.search_notes_scoped`,
-the `search_notes` tool's own path, for the token's tenant alone. A reader can therefore read
-another tenant's planted payload in the list and watch their own search fail to retrieve it.
+The notes SEARCH is the opposite and stays that way: it delegates to the `search_notes` tool's
+own path, in the scope the verified token grants - `rag.search_notes_scoped` for the token's
+tenant, and for an all-tenant identity (ADR 0009 as amended) the partition-less
+`rag.search_notes_unscoped` its own tools are bound to. A tenant reader can therefore read
+another tenant's planted payload in the list and watch their own search fail to retrieve it,
+which is unchanged; what the amendment fixes is an admin session searching a tenant partition
+its token never named and being told, wrongly, that the corpus holds nothing.
 
 `GET /audit` is the third listing of that surface (ADR 0014 as amended): the audit log every read
 above already writes, newest first, paged the same way, all tenants' entries and no filters. An
@@ -259,7 +264,13 @@ from conversations import ConversationRegistry, NotFound, Thread, TurnHistory
 from db import DEFAULT_CSV_PATH, SecurityViolation, employee_rows, init_db
 from inflight import InFlightTurns, TurnBusy
 from paths import CHECKPOINT_DB_PATH, DB_PATH, STATE_DB_PATH
-from rag import OllamaEmbed, RetrievalUnavailable, ensure_index, search_notes_scoped
+from rag import (
+    OllamaEmbed,
+    RetrievalUnavailable,
+    ensure_index,
+    search_notes_scoped,
+    search_notes_unscoped,
+)
 from runtime import runtime
 from security import QueryRejected
 from titles import TitleModel, generate_title, should_title
@@ -325,10 +336,12 @@ class ModelLister(Protocol):
 
 
 class NoteSearch(Protocol):
-    """Runs one notes retrieval for a tenant: the agent's own path, called by the Notes tab."""
+    """Runs one notes retrieval for an identity: the agent's own path, called by the Notes tab."""
 
-    def __call__(self, *, query: str, tenant_id: str, k: int) -> list[dict[str, object]]:
-        """The scoped hits for query, or raise RetrievalUnavailable when no index exists."""
+    def __call__(
+        self, *, query: str, tenant_id: str, all_tenants: bool, k: int
+    ) -> list[dict[str, object]]:
+        """The hits for query in the caller's scope, or raise RetrievalUnavailable with no index."""
         ...
 
 
@@ -578,11 +591,22 @@ def build_note_index(base_url: str, db_path: Path) -> None:
 
 
 def ollama_note_search(base_url: str, db_path: Path) -> NoteSearch:
-    """The production notes search: `rag.search_notes_scoped`, the agent's retrieval path itself."""
+    """The production notes search: the agent's own retrieval path, in the caller's scope.
 
-    def search(*, query: str, tenant_id: str, k: int) -> list[dict[str, object]]:
-        """Return the tenant's nearest notes for query, scored, exactly as the tool sees them."""
-        return search_notes_scoped(db_path, OllamaEmbed(base_url), query, tenant_id, k)
+    Which of the two retrievals runs is the same decision `agent._build_tools` makes, made here
+    per call because this seam is wired once for the process rather than once per identity. The
+    scope still arrives only from the verified token - the handler reads it off `Identity` and
+    nothing else can supply it.
+    """
+
+    def search(
+        *, query: str, tenant_id: str, all_tenants: bool, k: int
+    ) -> list[dict[str, object]]:
+        """Return the nearest notes in the caller's scope, scored, exactly as the tool sees them."""
+        embedder = OllamaEmbed(base_url)
+        if all_tenants:
+            return search_notes_unscoped(db_path, embedder, query, k)
+        return search_notes_scoped(db_path, embedder, query, tenant_id, k)
 
     return search
 
@@ -831,14 +855,18 @@ def create_app(
     ) -> NoteHits:
         """The agent's own retrieval path, run for a reader's query and scored (ADR 0010).
 
-        Not a second search: `rag.search_notes_scoped` is what the `search_notes` tool calls, so
-        the hits and their distances are what the model would have been handed for that query.
-        Each hit is then annotated with its row's department and score through the scoped
-        executor, so a reader can check a retrieval claim against the data (ADR 0014).
+        Not a second search: this is the very call the `search_notes` tool makes for this
+        identity, so the hits and their distances are what the model would have been handed for
+        that query. Each hit is then annotated with its row's department and score, read back
+        through the same scope, so a reader can check a retrieval claim against the data
+        (ADR 0014).
 
-        This is the one thing on the Notes tab that stays scoped to the token's tenant while the
-        corpus listing beside it shows every tenant's. That asymmetry is the demonstration: the
-        payload a reader can read in the list is one their own search will never return.
+        Both halves follow the token and nothing else. For a tenant identity that is the scoped
+        retrieval and the scoped lookup, unchanged: the payload a reader can read in the corpus
+        listing beside it is one their own search will never return, which is the asymmetry the
+        tab exists to show. For an all-tenant identity it is the partition-less retrieval its own
+        agent uses and the same unscoped read the listings take - the tab shows what that session
+        can actually reach rather than searching a tenant its token never named.
         """
         wanted = _hit_count(k)
         return NoteHits(
@@ -846,7 +874,13 @@ def create_app(
             k=wanted,
             hits=annotate_note_hits(
                 identity.tenant_id,
-                search_notes(query=q, tenant_id=identity.tenant_id, k=wanted),
+                search_notes(
+                    query=q,
+                    tenant_id=identity.tenant_id,
+                    all_tenants=identity.all_tenants,
+                    k=wanted,
+                ),
+                all_tenants=identity.all_tenants,
                 db_path=db_path,
             ),
         )
