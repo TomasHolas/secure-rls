@@ -4,6 +4,12 @@
    ported bricks use are carried over, unchanged apart from dropped KB-only
    selectors. The shell is a persistent top header + scrolling main column. */
 
+/* ======================== App-level metrics ======================== */
+/* tokens.css is KB's verbatim copy (ADR 0006), so a metric KB does not define belongs here or
+   the next sync would drop it. --control-height is the one height every control in a control
+   row takes, so a control added to such a row cannot silently disagree (issue #115). */
+:root { --control-height: 48px; }
+
 /* ============================ App shell ============================ */
 /* KB's shell grows with the document; a chat needs the opposite, so this one is exactly the
    viewport and every scroll happens inside it. Header and rail are flex furniture measured by
@@ -189,6 +195,17 @@
 .input:disabled { opacity: 0.6; cursor: not-allowed; }
 /* Single clean ring: the accent border. Suppress the global :focus-visible box-shadow so it does not stack into a double outline (KB convention). */
 .input:focus, .input:focus-visible { border-color: var(--border-accent); box-shadow: none; }
+
+/* A row of controls that must agree: every control in it takes one height from one place and
+   ends on one baseline, whatever element it is, so a text box, a select and a button read as
+   one row (issue #115). The element selector is deliberate - a control this rule does not name
+   would have to opt out of being an input, a select or a button to escape it. */
+.control-row :is(input, select, button, textarea) { height: var(--control-height); padding-block: 0; }
+/* The row owns the rhythm, so a label + input pair adds no bottom margin of its own to align
+   against, and the input sits at the bottom of its cell even where a label wraps to two lines. */
+.control-row .field { margin-bottom: 0; justify-content: flex-end; }
+/* A select in a control row is a filter, not the chat's compact model picker: field metrics. */
+.control-row .select { width: 100%; box-sizing: border-box; font-family: var(--font-body); font-size: var(--text-md); padding-inline: var(--space-4); }
 
 .form-error {
   margin-top: var(--space-4); padding: var(--space-3) var(--space-4);
@@ -500,17 +517,23 @@
 .tab-panel[hidden] { display: none; }
 
 /* ---------------- Browse (Records / Notes tabs) ---------------- */
+/* Six cells - four single filters and three bound pairs, each pair one cell - so the grid is
+   full at three, two and one column and no cell is ever stranded. A pair is one cell rather
+   than two, which is what makes "from" and "to" unsplittable by the wrap (issue #115). */
 .filter-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0 var(--space-4); padding: var(--space-5);
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-5); padding: var(--space-5);
 }
-/* The fields carry the row's rhythm themselves, so the grid does not double their gap. */
-.filter-grid .field { margin-bottom: var(--space-4); }
-.filter-grid .select { width: 100%; box-sizing: border-box; font-family: var(--font-body); font-size: var(--text-md); padding: var(--space-3) var(--space-4); }
-.filter-actions { display: flex; align-items: flex-end; gap: var(--space-2); margin-bottom: var(--space-4); }
+@media (max-width: 1180px) { .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 720px) { .filter-grid { grid-template-columns: minmax(0, 1fr); } }
+/* The two bounds of one filter, side by side inside their cell; they stack only when the cell
+   itself is too narrow for both, and then they still stay together. */
+.field-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: var(--space-3); align-items: end; }
+/* The actions close the form on their own full-width row, ending where the last column ends. */
+.filter-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: var(--space-2); }
 
-.search-row { display: flex; align-items: flex-end; gap: var(--space-3); padding: var(--space-5) var(--space-5) 0; }
-.search-row .field { flex: 1; margin-bottom: var(--space-4); }
+.search-row { display: flex; align-items: flex-end; gap: var(--space-3); padding: var(--space-5); }
+.search-row .field { flex: 1; }
 
 .pager { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4) 0 0; }
 .pager-state { color: var(--fg-4); font-size: var(--text-xs); }

@@ -15,6 +15,8 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // Real styles in jsdom, so the control-row height contract is asserted rather than eyeballed.
+    css: true,
     setupFiles: ["./src/test/setup.ts"],
   },
 });
