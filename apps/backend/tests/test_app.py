@@ -99,6 +99,7 @@ CAPABILITIES: dict[str, list[str] | None] = {
 }
 CHOSEN_MODEL = CHAT_MODELS[1]
 UNKNOWN_MODEL = "nonexistent-model:9b"
+SERVED_DEFAULT = min(CHAT_MODELS)
 
 ANSWER = "acme has 6 employees"
 QUESTION = "how many employees?"
@@ -476,6 +477,14 @@ def _new_thread(client: TestClient, headers: dict[str, str], title: str = "first
     return response.json()["thread_id"]
 
 
+def _pin_model(monkeypatch, model_id: str) -> None:
+    """Pin `runtime.json`'s `agent.model` for one test, the way a deployment's config would."""
+    config = runtime()
+    monkeypatch.setattr(
+        app, "runtime", lambda: replace(config, agent=replace(config.agent, model=model_id))
+    )
+
+
 def _sse_events(body: str) -> list[dict]:
     """Parse an SSE body: records split on the blank line, each one a `data:` JSON payload."""
     records = [record for record in body.split("\n\n") if record.strip()]
@@ -526,11 +535,53 @@ def test_every_non_login_route_rejects_a_forged_token(wiring, method, path):
     assert response.status_code == 401
 
 
-def test_models_returns_the_chat_capable_list_and_the_configured_default(wiring):
+def test_models_returns_the_chat_capable_list_and_the_default_it_resolves(wiring):
+    """The fake endpoint does not serve the committed `agent.model`, so the fallback is reported."""
     response = wiring.client.get("/models", headers=_headers(wiring.client, ALICE))
     assert response.status_code == 200
-    assert response.json() == {"models": CHAT_MODELS, "default": runtime().agent.model}
+    assert response.json() == {"models": CHAT_MODELS, "default": SERVED_DEFAULT}
     assert EMBED_MODEL not in response.json()["models"]
+
+
+def test_models_reports_the_configured_default_when_the_endpoint_serves_it(wiring, monkeypatch):
+    """The preference wins whenever it is live: the fallback is the exception, not the rule."""
+    _pin_model(monkeypatch, CHOSEN_MODEL)
+
+    response = wiring.client.get("/models", headers=_headers(wiring.client, ALICE))
+
+    assert response.json() == {"models": CHAT_MODELS, "default": CHOSEN_MODEL}
+
+
+def test_models_reports_a_served_default_when_the_configured_one_is_absent(wiring, monkeypatch):
+    """A pinned id the endpoint dropped must not be reported as the default (issue #111)."""
+    _pin_model(monkeypatch, UNKNOWN_MODEL)
+
+    body = wiring.client.get("/models", headers=_headers(wiring.client, ALICE)).json()
+
+    assert body["default"] == SERVED_DEFAULT
+    assert body["default"] in body["models"]
+
+
+def test_the_resolved_default_does_not_depend_on_the_order_the_endpoint_listed(tmp_path):
+    """`/api/tags` orders by modification time, so the rule reads the set, not the order."""
+    forward = _client(tmp_path, model_lister=lambda: list(SERVED_MODELS))
+    reversed_order = _client(tmp_path, model_lister=lambda: list(reversed(SERVED_MODELS)))
+
+    first = forward.get("/models", headers=_headers(forward, ALICE)).json()
+    second = reversed_order.get("/models", headers=_headers(reversed_order, ALICE)).json()
+
+    assert first["default"] == second["default"] == SERVED_DEFAULT
+    assert sorted(first["models"]) == sorted(second["models"])
+
+
+def test_models_answers_502_when_the_endpoint_serves_no_chat_capable_model(tmp_path):
+    """No chat model is an upstream failure, not a default: nothing is invented to run on."""
+    client = _client(tmp_path, model_lister=lambda: [EMBED_MODEL])
+
+    response = client.get("/models", headers=_headers(client, ALICE))
+
+    assert response.status_code == 502
+    assert "chat-capable" in response.json()["detail"]
 
 
 def test_models_falls_back_to_the_embed_model_prefix_without_declared_capabilities(tmp_path):
@@ -898,7 +949,7 @@ def test_chat_closes_a_broken_stream_with_a_terminal_failed_frame(tmp_path):
     assert [event["type"] for event in events] == ["node_start", "token", "done"]
     assert events[-1]["status"] == STATUS_FAILED
     assert events[-1]["answer"]
-    assert events[-1]["model"] == runtime().agent.model
+    assert events[-1]["model"] == SERVED_DEFAULT
     assert SECRET_HOST not in response.text
 
 
@@ -1005,11 +1056,70 @@ def test_a_note_index_that_cannot_be_built_does_not_stop_the_app_from_booting(tm
     assert chat.status_code == 200
 
 
-def test_chat_defaults_to_the_configured_model(wiring):
+def test_chat_defaults_to_the_configured_model_when_the_endpoint_serves_it(wiring, monkeypatch):
+    """The unchanged case: a live preference is what a default turn runs on and reports."""
+    _pin_model(monkeypatch, CHOSEN_MODEL)
     headers = _headers(wiring.client, ALICE)
     thread_id = _new_thread(wiring.client, headers)
-    wiring.client.post("/chat", json={"thread_id": thread_id, "message": "hi"}, headers=headers)
-    assert wiring.runner.last["model"] == runtime().agent.model
+
+    response = wiring.client.post(
+        "/chat", json={"thread_id": thread_id, "message": "hi"}, headers=headers
+    )
+
+    assert wiring.runner.last["model"] == CHOSEN_MODEL
+    assert _sse_events(response.text)[-1]["model"] == CHOSEN_MODEL
+
+
+def test_chat_falls_back_to_a_served_model_when_the_configured_one_is_absent(wiring, monkeypatch):
+    """A pinned id the endpoint dropped must not refuse a turn other models can answer (#111)."""
+    _pin_model(monkeypatch, UNKNOWN_MODEL)
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers)
+
+    response = wiring.client.post(
+        "/chat", json={"thread_id": thread_id, "message": "hi"}, headers=headers
+    )
+
+    assert response.status_code == 200
+    assert wiring.runner.last["model"] == SERVED_DEFAULT
+    assert _sse_events(response.text)[-1]["model"] == SERVED_DEFAULT
+
+
+def test_chat_answers_502_when_the_endpoint_serves_no_chat_capable_model(tmp_path):
+    """The turn fails loudly with the reason, and no model is run on an invented id."""
+    runner = FakeRunner()
+    client = _client(tmp_path, chat_runner=runner, model_lister=lambda: [EMBED_MODEL])
+    headers = _headers(client, ALICE)
+    thread_id = _new_thread(client, headers)
+
+    response = client.post(
+        "/chat", json={"thread_id": thread_id, "message": "hi"}, headers=headers
+    )
+
+    assert response.status_code == 502
+    assert "chat-capable" in response.json()["detail"]
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize(
+    "pinned", [CHOSEN_MODEL, UNKNOWN_MODEL], ids=["configured is served", "configured is absent"]
+)
+def test_the_model_models_reports_as_default_is_the_one_a_default_turn_runs_on(
+    wiring, monkeypatch, pinned
+):
+    """The two reporting paths cannot drift: one resolver answers the picker and the turn alike."""
+    _pin_model(monkeypatch, pinned)
+    headers = _headers(wiring.client, ALICE)
+    thread_id = _new_thread(wiring.client, headers)
+
+    listed = wiring.client.get("/models", headers=headers).json()
+    response = wiring.client.post(
+        "/chat", json={"thread_id": thread_id, "message": "hi"}, headers=headers
+    )
+
+    assert listed["default"] in listed["models"]
+    assert wiring.runner.last["model"] == listed["default"]
+    assert _sse_events(response.text)[-1]["model"] == listed["default"]
 
 
 def test_chat_honors_a_model_from_the_live_list(wiring):
