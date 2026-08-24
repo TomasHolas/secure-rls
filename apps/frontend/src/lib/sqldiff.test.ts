@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { diffSql } from "./sqldiff";
+import { diffSql, markScoping } from "./sqldiff";
 import type { DiffSegment } from "./sqldiff";
 
 /** The statements come from db.execute_scoped: the model's text, then sqlglot's render of the tree. */
@@ -84,5 +84,41 @@ describe("diffSql", () => {
 
   it("treats an empty executed statement as nothing to mark", () => {
     expect(diffSql("SELECT 1", "")).toEqual([{ kind: "same", text: "" }]);
+  });
+});
+
+describe("markScoping", () => {
+  it("marks the scoping subquery, alias included, in a fixed template's statement", () => {
+    const segments = markScoping(EXECUTED) ?? [];
+
+    expect(added(segments)).toEqual([SCOPING]);
+    expect(text(segments)).toBe(EXECUTED);
+  });
+
+  it("marks every scoped reference when a template names the table more than once", () => {
+    const executed =
+      "SELECT AVG(a.salary) FROM (SELECT * FROM employees WHERE employees.tenant_id = ?) AS a, " +
+      "(SELECT * FROM employees WHERE employees.tenant_id = ?) AS b WHERE a.salary > b.salary";
+    const segments = markScoping(executed) ?? [];
+
+    expect(added(segments)).toEqual([
+      "(SELECT * FROM employees WHERE employees.tenant_id = ?) AS a",
+      "(SELECT * FROM employees WHERE employees.tenant_id = ?) AS b",
+    ]);
+    expect(text(segments)).toBe(executed);
+  });
+
+  it("leaves the template's own words - its bound arguments and grouping - unmarked", () => {
+    const segments = markScoping(EXECUTED) ?? [];
+
+    expect(added(segments).join(" ")).not.toContain("AVG");
+    expect(added(segments).join(" ")).not.toContain("GROUP BY");
+  });
+
+  it("declines to mark a statement that does not carry the scoping pattern", () => {
+    const unscoped = "SELECT department, AVG(salary) FROM employees GROUP BY department";
+
+    expect(markScoping(unscoped)).toBeNull();
+    expect(markScoping("")).toBeNull();
   });
 });
