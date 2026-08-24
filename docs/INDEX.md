@@ -10,6 +10,11 @@ docs in the same change.
 - [requirements.md](requirements.md) — the assignment, distilled: hard
   requirements, MVP features, deliverables, demo-call agenda.
 
+## Quickstart
+
+- [quickstart.md](quickstart.md) — configure the two variables, run compose or
+  dev mode, the endpoint requirements and every test command.
+
 ## Architecture
 
 - [architecture.md](architecture.md) — system overview, the five RLS defense
