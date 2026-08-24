@@ -55,7 +55,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ChatMessage, Composer, ModelPicker, TracePanel } from "../components/chat";
+import { ChatMessage, Composer, TracePanel } from "../components/chat";
 import { EmptyState, Page, PageHeader } from "../components/layout";
 import { Loader } from "../components/Loader";
 import { Pill } from "../components/Pill";
@@ -251,12 +251,6 @@ export function ChatView({
         actions={
           <div className="chat-toolbar">
             <GuardrailPill state={guardrails} />
-            <ModelPicker
-              models={models}
-              value={model}
-              onChange={setModel}
-              disabled={streaming}
-            />
           </div>
         }
       />
@@ -291,7 +285,13 @@ export function ChatView({
         ))}
       </div>
 
-      <Composer onSend={(message) => void send(message)} disabled={streaming} />
+      <Composer
+        onSend={(message) => void send(message)}
+        models={models}
+        model={model}
+        onModelChange={setModel}
+        disabled={streaming}
+      />
     </Page>
   );
 }

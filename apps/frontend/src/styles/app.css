@@ -502,26 +502,64 @@
 .msg-footer { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-4); }
 .msg .form-error { margin-top: 0; }
 
-/* ---------------- Composer ---------------- */
+/* ---------------- Composer: the prompt bar ---------------- */
 /* Pinned to the bottom by being the last item of the full-height chat column - outside the
    scroll container, so it can never sit over the message a scroll-to-bottom just revealed. */
-.composer { flex: 0 0 auto; display: flex; flex-direction: column; background: var(--bg-page); border-top: 1px solid var(--border-subtle); padding: var(--space-4) 0; }
-.composer-label { margin-bottom: var(--space-2); font-size: var(--text-2xs); font-weight: 600; letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--fg-4); }
-.composer-input { width: 100%; box-sizing: border-box; background: var(--bg-surface-2); border: 1px solid var(--border-default); border-radius: var(--radius-md); color: var(--fg-1); font-family: var(--font-body); font-size: var(--text-md); line-height: var(--leading-normal); padding: var(--space-3) var(--space-4); resize: vertical; outline: none; transition: border-color var(--dur-fast) var(--ease-out); }
-/* Single clean ring: the accent border, with the global :focus-visible shadow suppressed. */
-.composer-input:focus, .composer-input:focus-visible { border-color: var(--border-accent); box-shadow: none; }
-.composer-input:disabled { opacity: 0.6; cursor: not-allowed; }
-.composer-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-3); }
-.composer-hint { color: var(--fg-4); font-size: var(--text-xs); }
+.composer { flex: 0 0 auto; background: var(--bg-page); border-top: 1px solid var(--border-subtle); padding: var(--space-4) 0; }
+/* One bar holds the question, the model picker and send (issue #159). The ring is on the bar,
+   not on the box inside it, so the three controls read as one field. --composer-cap is the
+   ceiling the brick's scrollHeight measurement grows the textarea to: five lines at
+   --text-md/--leading-normal, after which the textarea scrolls inside itself instead of
+   pushing the transcript up. */
+.composer-bar {
+  --composer-cap: 124px;
+  display: flex; flex-direction: column; gap: var(--space-2);
+  background: var(--bg-surface-2); border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg); padding: var(--space-3);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.composer-bar:focus-within { border-color: var(--border-accent); }
+.composer-input {
+  width: 100%; box-sizing: border-box; max-height: var(--composer-cap); overflow-y: auto;
+  background: none; border: none; padding: 0 var(--space-1); margin: 0; resize: none;
+  color: var(--fg-1); font-family: var(--font-body); font-size: var(--text-md);
+  line-height: var(--leading-normal);
+}
+/* The bar already shows the focus; a second ring inside it would be two rings for one field. */
+.composer-input:focus, .composer-input:focus-visible { outline: none; box-shadow: none; }
+.composer-input:disabled { color: var(--fg-3); cursor: not-allowed; }
+.composer-input::placeholder { color: var(--fg-4); }
+.composer-tools { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+/* Armed, send is the inverse surface - the one lit thing in the bar; empty or streaming it drops
+   back to the muted register, because a control that cannot act must not look like it can. */
+.composer-send { background: var(--bg-inverse); color: var(--fg-on-inverse); }
+.composer-send:hover:not(:disabled) { background: var(--fg-1); color: var(--fg-on-inverse); }
+.composer-send:active:not(:disabled) { transform: scale(0.94); }
+.composer-send:disabled { background: var(--bg-hover); color: var(--fg-disabled); opacity: 1; cursor: not-allowed; }
 
 /* ---------------- Model picker ---------------- */
 /* KB has no select at all; this one takes .cfg-input's metrics and its border-only focus. */
-.model-picker { display: inline-flex; align-items: center; gap: var(--space-2); }
-.model-picker-label { font-size: var(--text-2xs); font-weight: 600; letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--fg-4); }
-.model-picker-empty { font-size: var(--text-xs); color: var(--caution-500); }
 .select { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-1); background: var(--bg-surface-2); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); cursor: pointer; }
 .select:focus, .select:focus-visible { outline: none; box-shadow: none; border-color: var(--border-accent); }
 .select:disabled { opacity: 0.6; cursor: not-allowed; }
+/* Inside the prompt bar that same select is stripped to a quiet text-and-chevron trigger
+   (issue #159): the bar owns the border, so the trigger carries no chrome of its own until it is
+   hovered or focused. These rules follow `.select` deliberately - they are its overrides, and at
+   equal specificity the later block is the one that wins. The chevron is our own `Icon` because
+   `appearance: none` is what takes the platform's arrow away. The width is 36 characters plus
+   this trigger's own padding (`box-sizing: border-box` counts it), which holds a served id whole
+   - `huihui_ai/qwen3-abliterated:30b-a3b` is 35 - and ellipsises a longer one rather than
+   letting it push send off the row. */
+.model-picker { position: relative; display: inline-flex; align-items: center; min-width: 0; }
+.model-picker-select {
+  appearance: none; background: none; border-color: transparent; color: var(--fg-3);
+  max-width: calc(36ch + var(--space-6) + var(--space-4)); text-overflow: ellipsis;
+  padding: var(--space-1) calc(var(--space-6) + var(--space-1)) var(--space-1) var(--space-2);
+}
+.model-picker-select:hover:not(:disabled) { background: var(--bg-hover); color: var(--fg-1); }
+.model-picker-select:focus, .model-picker-select:focus-visible { border-color: var(--border-accent); color: var(--fg-1); }
+.model-picker-chevron { position: absolute; right: var(--space-2); color: var(--fg-4); pointer-events: none; }
+.model-picker-empty { font-size: var(--text-xs); color: var(--caution-500); }
 
 /* ---------------- Live trace ---------------- */
 /* Disclosure from KB's Collapsible (chevron + caps label + count chip); the step rail is
