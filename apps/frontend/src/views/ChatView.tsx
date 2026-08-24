@@ -68,6 +68,8 @@ import type { Turn, TurnUsage } from "../lib/trace";
 const STREAM_CUT = "The stream ended before the turn finished.";
 /** The answer card before its first token: the one place in the chat that carries the pixel grid. */
 const PENDING_LABEL = "working on it";
+const UNKEPT_TEXT =
+  "This turn ended without a stored answer, and its trace is older than the kept history.";
 const GENERIC_FAILURE = "The turn failed. Try again.";
 /** A generation rate reads as a speed, not a measurement: one decimal is all it carries. */
 const RATE_DECIMALS = 1;
@@ -362,6 +364,9 @@ function TurnView({
           <p className="msg-pending">
             <Loader label={PENDING_LABEL} />
           </p>
+        ) : null}
+        {!turn.answer && turn.items.length === 0 && turn.phase === "replayed" ? (
+          <p className="msg-unkept">{UNKEPT_TEXT}</p>
         ) : null}
         {turn.error ? <p className="form-error">{turn.error}</p> : null}
       </ChatMessage>

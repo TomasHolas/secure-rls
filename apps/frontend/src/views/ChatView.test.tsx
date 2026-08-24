@@ -456,6 +456,29 @@ describe("the chat view", () => {
     expect(screen.getByText("history not kept")).toBeTruthy();
   });
 
+  it("explains a replayed turn that has no answer and no trace, beside the pill", async () => {
+    const bare = replayTurns([{ role: "user", content: REPLAY_QUESTION }], []);
+
+    await renderReady({ threadId: "t7", replay: bare });
+
+    expect(screen.getByText("history not kept")).toBeTruthy();
+    expect(screen.getByText(/ended without a stored answer/i)).toBeTruthy();
+  });
+
+  it("does not explain when the replayed turn still has its answer text", async () => {
+    const textOnly = replayTurns(
+      [
+        { role: "user", content: REPLAY_QUESTION },
+        { role: "assistant", content: "Engineering averages 91000." },
+      ],
+      [],
+    );
+
+    await renderReady({ threadId: "t7", replay: textOnly });
+
+    expect(screen.queryByText(/ended without a stored answer/i)).toBeNull();
+  });
+
   it("says nothing about missing history for a turn that replayed its own frame", async () => {
     await renderReady({ threadId: "t7", replay: replayed() });
 
