@@ -16,8 +16,14 @@ const EXECUTED =
 const COST = { input_tokens: 250, output_tokens: 28, duration_s: 2 };
 
 /** A terminal frame as the backend sends it: how the turn ended, what grounds it, what it cost. */
-function done(status: TurnStatus, answer: string, model = "m", grounded = true): DoneEvent {
-  return { type: "done", status, answer, grounded, model, ...COST };
+function done(
+  status: TurnStatus,
+  answer: string,
+  model = "m",
+  grounded = true,
+  guardrails = true,
+): DoneEvent {
+  return { type: "done", status, answer, grounded, model, prompt_guardrails: guardrails, ...COST };
 }
 
 /** One scripted second between events, so a reasoning span asserts as a round number of seconds. */
@@ -87,6 +93,26 @@ describe("a turn that answers", () => {
     ]);
 
     expect(recalled.grounded).toBe(false);
+  });
+
+  it("carries the prompt-guardrail position the terminal frame reported", () => {
+    expect(turn.guardrails).toBe(true);
+    expect(fold([done("ok", "yes", "qwen3:8b", true, false)]).guardrails).toBe(false);
+  });
+
+  it("claims no position before the terminal frame or when the frame omits it", () => {
+    // A frame off the wire is unvalidated JSON, so the missing field is reachable at runtime.
+    const silent = {
+      type: "done",
+      status: "ok",
+      answer: "yes",
+      grounded: true,
+      model: "m",
+      ...COST,
+    } as unknown as TraceEvent;
+
+    expect(startTurn("hello").guardrails).toBeNull();
+    expect(fold([silent]).guardrails).toBeNull();
   });
 
   it("renders no step for a graph node: the items are the thinking and the call", () => {
@@ -284,6 +310,7 @@ describe("what a turn cost", () => {
         answer: "no",
         grounded: false,
         model: "m",
+        prompt_guardrails: true,
         input_tokens: 40,
         output_tokens: 0,
         duration_s: 0.5,
@@ -470,6 +497,7 @@ describe("a reopened thread", () => {
     ]);
     expect(turns.every((turn) => turn.phase === "replayed")).toBe(true);
     expect(turns.every((turn) => turn.grounded === null)).toBe(true);
+    expect(turns.every((turn) => turn.guardrails === null)).toBe(true);
   });
 
   it("puts each stored payload back on the turn that asked for it", () => {

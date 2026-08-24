@@ -87,9 +87,11 @@ text, so keep the map and the subset in sync.
 ```
 
 Every short status label in the app: a turn's verdict, the ADR 0007 truncation notice,
-a retry counter, the model that answered. `tone` is `neutral | accent | ok | warn |
-danger`, mapped onto the `--positive-500` / `--caution-500` / `--critical-500` state
-tokens. `TenantPill` stays separate because it is the identity chip, not a status.
+a retry counter, the model that answered, the prompt-guardrail position of the session
+and of each finished turn (`ChatView`'s `GuardrailPill`, `danger` when the guardrails
+are off). `tone` is `neutral | accent | ok | warn | danger`, mapped onto the
+`--positive-500` / `--caution-500` / `--critical-500` state tokens. `TenantPill` stays
+separate because it is the identity chip, not a status.
 
 ### CodeBlock
 

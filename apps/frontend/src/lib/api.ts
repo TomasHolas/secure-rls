@@ -28,6 +28,18 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The `GET /health` body: liveness, the API version, and the prompt-guardrail position.
+ *
+ * The position is what lets the shell state the mode before the first turn of a session; every
+ * turn then carries its own on the `done` frame, which is the authoritative record of the two.
+ */
+export interface Health {
+  status: string;
+  version: string;
+  prompt_guardrails: boolean;
+}
+
 /** The `GET /models` body: the endpoint's live ids plus the id the server defaults to. */
 export interface ModelList {
   models: string[];
@@ -248,6 +260,27 @@ export async function login(username: string, password: string): Promise<string>
   const body = (await response.json()) as { token?: unknown };
   if (typeof body.token !== "string") throw new ApiError(response.status, "Login failed. Try again.");
   return body.token;
+}
+
+/**
+ * GET /health: liveness plus the prompt-guardrail position the server is running in.
+ *
+ * Only an explicit `true` reads as on. A body that does not say is reported as off, because the
+ * one claim this pill must never make on a guess is that the model was asked to police itself.
+ */
+export async function getHealth(): Promise<Health> {
+  const response = await apiFetch("/health");
+  if (!response.ok) throw new ApiError(response.status, "The server status is unavailable.");
+  const body = (await response.json()) as {
+    status?: unknown;
+    version?: unknown;
+    prompt_guardrails?: unknown;
+  };
+  return {
+    status: isString(body.status) ? body.status : "",
+    version: isString(body.version) ? body.version : "",
+    prompt_guardrails: body.prompt_guardrails === true,
+  };
 }
 
 /** GET /models: the endpoint's live model ids plus the configured default (ADR 0005). */

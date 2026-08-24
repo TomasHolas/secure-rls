@@ -192,3 +192,37 @@ describe("sliding session", () => {
     expect(auth.getSession()).toBeNull();
   });
 });
+
+describe("health", () => {
+  it("reports the prompt-guardrail position the server states", async () => {
+    const { api } = await load();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse({ status: "ok", version: "0.1.0", prompt_guardrails: false }),
+        ),
+    );
+
+    await expect(api.getHealth()).resolves.toEqual({
+      status: "ok",
+      version: "0.1.0",
+      prompt_guardrails: false,
+    });
+  });
+
+  it("never reads a body that does not say as guardrails on", async () => {
+    const { api } = await load();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ status: "ok" })));
+
+    await expect(api.getHealth()).resolves.toMatchObject({ prompt_guardrails: false });
+  });
+
+  it("raises an ApiError when the server cannot answer", async () => {
+    const { api } = await load();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, 503)));
+
+    await expect(api.getHealth()).rejects.toMatchObject({ name: "ApiError", status: 503 });
+  });
+});
